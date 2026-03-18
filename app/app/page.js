@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useTheme } from '../providers'
 import * as XLSX from 'xlsx'
 
@@ -7,6 +7,12 @@ export default function AppPage() {
   const { dark, setDark } = useTheme()
   const [mode, setMode] = useState('preview')
   const [activeTool, setActiveTool] = useState(null)
+  const [toolResult, setToolResult] = useState(null) // { type, data }
+  const [editingCell, setEditingCell] = useState(null) // { canvasId, rowIndex }
+  const [editingCellVal, setEditingCellVal] = useState('')
+  const [highlightEmpty, setHighlightEmpty] = useState(false)
+  const [duplicateMap, setDuplicateMap] = useState({}) // colId -> Set of duplicate values
+  const [trimOptions, setTrimOptions] = useState({ spaces: true, casing: 'none' })
   const [files, setFiles] = useState([])
   const [expandedFile, setExpandedFile] = useState(null)
   const [showHidden, setShowHidden] = useState(false)
@@ -19,6 +25,10 @@ export default function AppPage() {
   const [selectedSidebarCols, setSelectedSidebarCols] = useState([])
   const [pinnedColIds, setPinnedColIds] = useState([])
   const [activeSheet, setActiveSheet] = useState('canvas') // 'canvas' or file sheet key
+  const [contextMenu, setContextMenu] = useState(null) // { x, y, rowIndex }
+  const [canvasZoom, setCanvasZoom] = useState(1)
+  const [copiedRow, setCopiedRow] = useState(null) // array of values per column
+  const [hiddenRows, setHiddenRows] = useState(new Set()) // set of row indices
   const isPanning = useRef(false)
   const panStart = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
   const canvasScrollRef = useRef(null)
@@ -234,10 +244,12 @@ export default function AppPage() {
 
   function handleCanvasZoneDrop(e) {
     e.preventDefault()
+    // dragData is cleared by handleThDrop if drop landed on a column — skip
     if (!dragData.current) return
     if (dragData.current.type === 'sidebar') {
       addColumnsToCanvas(dragData.current.cols, null)
     }
+    dragData.current = null
     setInsertAt(null)
     lastInsert.current = null
   }
@@ -275,26 +287,27 @@ export default function AppPage() {
 
   // ── Pan navigation ───────────────────────────────────────────
   function handleCanvasMouseDown(e) {
-    // Only pan on left click on the background — not on buttons/inputs/th
-    if (e.target.closest('th,td,button,input')) return
-    if (e.button !== 0) return
-    isPanning.current = true
-    panStart.current = {
-      x: e.clientX,
-      y: e.clientY,
-      scrollLeft: canvasScrollRef.current?.scrollLeft || 0,
-      scrollTop: canvasScrollRef.current?.scrollTop || 0,
-    }
-    e.currentTarget.style.cursor = 'grabbing'
+    if (e.button !== 2) return
+    if (e.target.closest('button,input')) return
     e.preventDefault()
-  }
+    const startX = e.clientX
+    const startY = e.clientY
+    const startLeft = canvasScrollRef.current?.scrollLeft || 0
+    const startTop  = canvasScrollRef.current?.scrollTop  || 0
 
-  function handleCanvasMouseMove(e) {
-    if (!isPanning.current || !canvasScrollRef.current) return
-    const dx = e.clientX - panStart.current.x
-    const dy = e.clientY - panStart.current.y
-    canvasScrollRef.current.scrollLeft = panStart.current.scrollLeft - dx
-    canvasScrollRef.current.scrollTop  = panStart.current.scrollTop  - dy
+    function onMove(ev) {
+      if (!canvasScrollRef.current) return
+      canvasScrollRef.current.scrollLeft = startLeft - (ev.clientX - startX)
+      canvasScrollRef.current.scrollTop  = startTop  - (ev.clientY - startY)
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (canvasScrollRef.current) canvasScrollRef.current.style.cursor = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    canvasScrollRef.current.style.cursor = 'grabbing'
   }
 
   function handleCanvasMouseUp(e) {
@@ -302,11 +315,190 @@ export default function AppPage() {
     if (canvasScrollRef.current) e.currentTarget.style.cursor = ''
   }
 
+  function closeContextMenu() { setContextMenu(null) }
+
+  // ── Non-passive wheel listener — intercepts Ctrl+scroll before browser zoom ──
+  useEffect(() => {
+    const el = canvasScrollRef.current
+    if (!el) return
+    const handler = (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault()
+        setCanvasZoom(prev => {
+          const delta = e.deltaY > 0 ? -0.1 : 0.1
+          return Math.min(2, Math.max(0.4, Math.round((prev + delta) * 10) / 10))
+        })
+        return
+      }
+      if (e.shiftKey) {
+        e.preventDefault()
+        el.scrollLeft += e.deltaY * 0.8
+        return
+      }
+      el.scrollLeft += e.deltaX
+      el.scrollTop  += e.deltaY * 0.8
+      e.preventDefault()
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [canvasScrollRef.current])
+
   function handleCanvasWheel(e) {
     if (!canvasScrollRef.current) return
     e.preventDefault()
-    canvasScrollRef.current.scrollLeft += e.deltaX
-    canvasScrollRef.current.scrollTop  += e.deltaY * 0.8 // slightly smoothed
+    if (e.ctrlKey) {
+      // Ctrl+wheel = zoom
+      setCanvasZoom(prev => {
+        const delta = e.deltaY > 0 ? -0.1 : 0.1
+        return Math.min(2, Math.max(0.5, Math.round((prev + delta) * 10) / 10))
+      })
+      return
+    }
+    if (e.shiftKey) {
+      canvasScrollRef.current.scrollLeft += e.deltaY * 0.8
+    } else {
+      canvasScrollRef.current.scrollLeft += e.deltaX
+      canvasScrollRef.current.scrollTop  += e.deltaY * 0.8
+    }
+  }
+
+  // ── Tool functions ──────────────────────────────────────────
+
+  function runTrim() {
+    const { spaces, casing } = trimOptions
+    setCanvasColumns(prev => prev.map(col => ({
+      ...col,
+      rows: col.rows.map(val => {
+        if (val === undefined || val === null) return val
+        let s = String(val)
+        if (spaces) s = s.trim().replace(/\s+/g, ' ')
+        if (casing === 'lower') s = s.toLowerCase()
+        if (casing === 'upper') s = s.toUpperCase()
+        if (casing === 'title') s = s.replace(/\b\w/g, c => c.toUpperCase())
+        return s
+      })
+    })))
+    setToolResult({ type: 'trim', message: 'Trim & Clean applied to all columns.' })
+    setActiveTool(null)
+  }
+
+  function runHighlightEmpty() {
+    setHighlightEmpty(h => !h)
+    setActiveTool(null)
+  }
+
+  function runDuplicates() {
+    const map = {}
+    canvasColumns.forEach(col => {
+      const counts = {}
+      col.rows.forEach(val => {
+        if (val === undefined || val === null || val === '') return
+        const k = String(val).trim().toLowerCase()
+        counts[k] = (counts[k] || 0) + 1
+      })
+      map[col.canvasId] = new Set(Object.keys(counts).filter(k => counts[k] > 1))
+    })
+    setDuplicateMap(map)
+    const total = Object.values(map).reduce((sum, s) => sum + s.size, 0)
+    setToolResult({ type: 'duplicates', message: `Found ${total} duplicate value${total !== 1 ? 's' : ''} across ${canvasColumns.length} column${canvasColumns.length !== 1 ? 's' : ''}.` })
+    setActiveTool(null)
+  }
+
+  function runStats() {
+    const stats = canvasColumns.map(col => {
+      const vals = col.rows.filter(v => v !== undefined && v !== null && v !== '')
+      const nums = vals.map(v => parseFloat(v)).filter(n => !isNaN(n))
+      const unique = new Set(vals.map(v => String(v).trim().toLowerCase())).size
+      return {
+        label: col.label,
+        total: col.rows.length,
+        filled: vals.length,
+        empty: col.rows.length - vals.length,
+        unique,
+        min: nums.length ? Math.min(...nums) : '—',
+        max: nums.length ? Math.max(...nums) : '—',
+        sum: nums.length ? nums.reduce((a, b) => a + b, 0) : '—',
+      }
+    })
+    setToolResult({ type: 'stats', data: stats })
+    setActiveTool(null)
+  }
+
+  // ── Cell editing ─────────────────────────────────────────────
+  function startCellEdit(canvasId, rowIndex, currentVal) {
+    setEditingCell({ canvasId, rowIndex })
+    setEditingCellVal(currentVal === undefined || currentVal === null ? '' : String(currentVal))
+  }
+
+  function commitCellEdit() {
+    if (!editingCell) return
+    const { canvasId, rowIndex } = editingCell
+    setCanvasColumns(prev => prev.map(col => {
+      if (col.canvasId !== canvasId) return col
+      const newRows = [...col.rows]
+      newRows[rowIndex] = editingCellVal
+      return { ...col, rows: newRows }
+    }))
+    setEditingCell(null)
+  }
+
+  function handleCellKeyDown(e) {
+    if (e.key === 'Enter') { commitCellEdit(); e.preventDefault() }
+    if (e.key === 'Escape') { setEditingCell(null) }
+    if (e.key === 'Tab') { commitCellEdit() }
+  }
+
+  function deleteRow(rowIndex) {
+    setCanvasColumns(prev => prev.map(col => {
+      const newRows = [...col.rows]
+      newRows.splice(rowIndex, 1)
+      return { ...col, rows: newRows }
+    }))
+    setEditingCell(null)
+  }
+
+  function copyRow(rowIndex) {
+    // Store value per canvasId so paste works even after reorder
+    const snapshot = {}
+    canvasColumns.forEach(col => { snapshot[col.canvasId] = col.rows[rowIndex] })
+    setCopiedRow(snapshot)
+  }
+
+  function pasteRow(atIndex, position) {
+    // position: 'above' | 'below'
+    if (!copiedRow) return
+    const insertIdx = position === 'below' ? atIndex + 1 : atIndex
+    setCanvasColumns(prev => prev.map(col => {
+      const val = copiedRow[col.canvasId] ?? ''
+      const newRows = [...col.rows]
+      newRows.splice(insertIdx, 0, val)
+      return { ...col, rows: newRows }
+    }))
+  }
+
+  function hideRow(rowIndex) {
+    setHiddenRows(prev => new Set([...prev, rowIndex]))
+  }
+
+  function showAllRows() {
+    setHiddenRows(new Set())
+  }
+
+  function addBlankColumn() {
+    const newCol = {
+      canvasId: `canvas_${Date.now()}_new`,
+      colId: `new_${Date.now()}`,
+      label: 'New Column',
+      fileName: 'manual',
+      sheetName: '',
+      rows: Array(maxRows).fill(''),
+    }
+    setCanvasColumns(prev => [...prev, newCol])
+    // Auto-rename
+    setTimeout(() => {
+      setEditingColId(newCol.canvasId)
+      setEditingLabel('New Column')
+    }, 50)
   }
 
   // ── Helpers ──────────────────────────────────────────────────
@@ -356,8 +548,63 @@ export default function AppPage() {
 
       <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleFileChange} />
 
+      {/* Row context menu */}
+      {contextMenu && (
+        <div style={{
+          position: 'fixed',
+          top: contextMenu.y,
+          left: contextMenu.x,
+          background: surface,
+          border: `1px solid ${border}`,
+          borderRadius: 8,
+          boxShadow: `0 8px 24px #00000044`,
+          zIndex: 9999,
+          minWidth: 160,
+          overflow: 'hidden',
+          fontFamily: "'DM Sans', sans-serif",
+        }}>
+          <div style={{ padding: '4px 0' }}>
+            {[
+              { label: 'Delete row', icon: '✕', color: red, action: () => { deleteRow(contextMenu.rowIndex); closeContextMenu() } },
+              { label: 'Hide row', icon: '◌', color: text2, action: () => { hideRow(contextMenu.rowIndex); closeContextMenu() } },
+              { label: 'Copy row', icon: '⊞', color: text2, action: () => { copyRow(contextMenu.rowIndex); closeContextMenu() } },
+              ...(copiedRow ? [
+                { label: 'Paste above', icon: '↑', color: accent, action: () => { pasteRow(contextMenu.rowIndex, 'above'); closeContextMenu() } },
+                { label: 'Paste below', icon: '↓', color: accent, action: () => { pasteRow(contextMenu.rowIndex, 'below'); closeContextMenu() } },
+              ] : []),
+            ].map((item, i) => (
+              <button
+                key={i}
+                onClick={item.action}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  width: '100%', padding: '8px 14px',
+                  background: 'none', border: 'none',
+                  color: item.color, fontSize: 13,
+                  fontFamily: "'DM Sans', sans-serif",
+                  cursor: 'pointer', textAlign: 'left',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = raised}
+                onMouseLeave={e => e.currentTarget.style.background = 'none'}
+              >
+                <span style={{ fontSize: 12, width: 14, textAlign: 'center' }}>{item.icon}</span>
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div
         style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: "'DM Sans', sans-serif" }}
+        onMouseDown={e => {
+          // Close context menu on any click
+          if (contextMenu) setContextMenu(null)
+          // Close cell editing if click is outside a td input
+          if (editingCell && !e.target.closest('td input')) {
+            commitCellEdit()
+          }
+        }}
         onDragOver={e => { if (dragData.current) e.preventDefault() }}
         onDrop={e => {
           e.preventDefault()
@@ -492,9 +739,14 @@ export default function AppPage() {
               {mode === 'preview' ? 'View & edit raw file data' : 'Build your custom sheet'}
             </span>
             {mode === 'canvas' && canvasColumns.length > 0 && (
-              <button onClick={() => { setCanvasColumns([]); setPinnedColIds([]) }} style={{ marginLeft: 'auto', background: 'none', border: `1px solid ${border}`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: text3, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>
-                Clear canvas
-              </button>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                <button onClick={addBlankColumn} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accent, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: 600 }}>
+                  + Column
+                </button>
+                <button onClick={() => { setCanvasColumns([]); setPinnedColIds([]) }} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: text3, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>
+                  Clear canvas
+                </button>
+              </div>
             )}
           </div>
 
@@ -586,7 +838,66 @@ export default function AppPage() {
                 ))}
               </div>
 
-              {activeTool && (
+              {/* Tool result banner */}
+              {toolResult && !activeTool && (
+                <div style={{ background: dark ? '#0d2a1a' : '#dcfce7', borderBottom: `1px solid #4ade8044`, padding: '8px 16px', fontSize: 12, color: '#4ade80', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <span>✓</span>
+                  <span>{toolResult.type === 'stats' ? 'Col Stats — see below' : toolResult.message}</span>
+                  <button onClick={() => setToolResult(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 14 }}>✕</button>
+                </div>
+              )}
+
+              {/* Active tool panels */}
+              {activeTool === 'trim' && (
+                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                  <span style={{ fontWeight: 600, color: accent }}>Trim & Clean</span>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: text2, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={trimOptions.spaces} onChange={e => setTrimOptions(p => ({ ...p, spaces: e.target.checked }))} />
+                    Strip extra spaces
+                  </label>
+                  <label style={{ fontSize: 12, color: text2, display: 'flex', alignItems: 'center', gap: 5 }}>
+                    Casing:
+                    <select value={trimOptions.casing} onChange={e => setTrimOptions(p => ({ ...p, casing: e.target.value }))} style={{ background: raised, border: `1px solid ${border}`, borderRadius: 4, padding: '2px 6px', color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer' }}>
+                      <option value="none">Keep as-is</option>
+                      <option value="lower">lowercase</option>
+                      <option value="upper">UPPERCASE</option>
+                      <option value="title">Title Case</option>
+                    </select>
+                  </label>
+                  <button onClick={runTrim} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Run</button>
+                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
+                </div>
+              )}
+
+              {activeTool === 'empty' && (
+                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                  <span style={{ fontWeight: 600, color: accent }}>Highlight Empty</span>
+                  <span style={{ fontSize: 12, color: text2 }}>Empty cells will be highlighted in red. Click any red cell to fill it in.</span>
+                  <button onClick={runHighlightEmpty} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>{highlightEmpty ? 'Turn Off' : 'Turn On'}</button>
+                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
+                </div>
+              )}
+
+              {activeTool === 'duplicates' && (
+                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                  <span style={{ fontWeight: 600, color: accent }}>Duplicates</span>
+                  <span style={{ fontSize: 12, color: text2 }}>Scans all canvas columns and highlights duplicate values in amber.</span>
+                  <button onClick={runDuplicates} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Run</button>
+                  <button onClick={() => { setDuplicateMap({}); setActiveTool(null) }} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 6, padding: '5px 10px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: text2, cursor: 'pointer' }}>Clear</button>
+                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
+                </div>
+              )}
+
+              {activeTool === 'stats' && (
+                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                  <span style={{ fontWeight: 600, color: accent }}>Col Stats</span>
+                  <span style={{ fontSize: 12, color: text2 }}>Shows count, unique, empty, min, max for each column.</span>
+                  <button onClick={runStats} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Run</button>
+                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
+                </div>
+              )}
+
+              {activeTool && !['trim','empty','duplicates','stats'].includes(activeTool) && (
                 <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '9px 16px', fontSize: 13, color: accent, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <span style={{ fontWeight: 600 }}>{tools.find(t => t.id === activeTool)?.label}</span>
                   <span style={{ color: text2, fontWeight: 400 }}>— {tools.find(t => t.id === activeTool)?.desc}</span>
@@ -601,10 +912,7 @@ export default function AppPage() {
                 onDrop={handleCanvasZoneDrop}
                 onDragLeave={handleCanvasDragLeave}
                 onMouseDown={handleCanvasMouseDown}
-                onMouseMove={handleCanvasMouseMove}
-                onMouseUp={handleCanvasMouseUp}
-                onMouseLeave={handleCanvasMouseUp}
-                onWheel={handleCanvasWheel}
+                onContextMenu={e => { e.preventDefault() }}
                 style={{ flex: 1, overflow: 'auto', background: base, position: 'relative', cursor: 'default', userSelect: 'none' }}
               >
                 {canvasColumns.length === 0 ? (
@@ -630,6 +938,8 @@ export default function AppPage() {
                 ) : (
                   <div style={{ minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
                     <div style={{ flex: 1, overflow: 'auto' }}>
+                      <div style={{ display: 'inline-block', minWidth: '100%' }}>
+                      <div style={{ transformOrigin: 'top left', transform: `scale(${canvasZoom})`, width: `${100 / canvasZoom}%`, paddingBottom: `${(1 / canvasZoom - 1) * 100}%` }}>
                       <table style={{ borderCollapse: 'collapse', fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
                         <thead>
                           <tr style={{ background: surface }}>
@@ -718,46 +1028,142 @@ export default function AppPage() {
                                 </th>
                               )
                             })}
+                            {/* + New column button in header */}
+                            <th
+                              onClick={addBlankColumn}
+                              style={{ padding: '8px 14px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, background: surface, position: 'sticky', top: 0, zIndex: 4, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: text3 }}
+                              onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = accent }}
+                              onMouseLeave={e => { e.currentTarget.style.background = surface; e.currentTarget.style.color = text3 }}
+                            >+ col</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {Array.from({ length: Math.min(maxRows, 500) }).map((_, ri) => (
+                          {Array.from({ length: Math.min(maxRows, 500) }).map((_, ri) => {
+                            if (hiddenRows.has(ri)) return null
+                            return (
                             <tr key={ri} className="canvas-row">
-                              <td style={{ padding: '5px 10px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text3, textAlign: 'center', fontSize: 10 }}>{ri + 1}</td>
+                              <td
+                                onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, rowIndex: ri }) }}
+                                style={{ padding: '5px 10px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text3, textAlign: 'center', fontSize: 10, cursor: 'context-menu', userSelect: 'none' }}
+                                onMouseEnter={e => { e.currentTarget.style.background = raised }}
+                                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                              >{ri + 1}</td>
                               {sortedCanvasCols.map((col, idx) => {
                                 const val = col.rows[ri]
                                 const isEmpty = val === undefined || val === null || val === ''
                                 const isPinned = pinnedColIds.includes(col.canvasId)
+                                const isEditing = editingCell?.canvasId === col.canvasId && editingCell?.rowIndex === ri
+                                const isDup = duplicateMap[col.canvasId]?.has(String(val).trim().toLowerCase())
+                                const isEmptyHighlight = highlightEmpty && isEmpty
+                                let bg = isPinned ? (dark ? '#1a1f4a33' : '#e8f5ee88') : 'transparent'
+                                if (isEmptyHighlight) bg = dark ? '#2a0d0d' : '#fee2e2'
+                                if (isDup) bg = dark ? '#2a1f0d' : '#fef3c7'
                                 return (
                                   <td
                                     key={col.canvasId}
                                     onDragOver={e => handleThDragOver(e, idx)}
                                     onDrop={e => handleThDrop(e, idx)}
+                                    onClick={() => !isEditing && startCellEdit(col.canvasId, ri, val)}
+                                    onContextMenu={e => {
+                                      // Only show cell context menu when this cell is being edited
+                                      if (isEditing) {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        setContextMenu({ x: e.clientX, y: e.clientY, type: 'cell', canvasId: col.canvasId, rowIndex: ri, val: editingCellVal })
+                                      }
+                                    }}
                                     style={{
-                                      padding: '5px 14px',
+                                      padding: isEditing ? '0' : '5px 14px',
                                       borderBottom: `1px solid ${border}22`,
                                       borderRight: `1px solid ${border}`,
-                                      color: isEmpty ? text3 : text2,
+                                      color: isEmptyHighlight ? '#f87171' : isDup ? '#E8B85B' : isEmpty ? text3 : text2,
                                       whiteSpace: 'nowrap',
                                       maxWidth: 240,
                                       overflow: 'hidden',
                                       textOverflow: 'ellipsis',
-                                      background: isPinned ? (dark ? '#1a1f4a33' : '#e8f5ee88') : 'transparent',
+                                      background: bg,
+                                      cursor: isEditing ? 'text' : 'default',
                                     }}
                                   >
-                                    {isEmpty ? <span style={{ fontSize: 10 }}>—</span> : String(val)}
+                                    {isEditing ? (
+                                      <input
+                                        autoFocus
+                                        value={editingCellVal}
+                                        onChange={e => setEditingCellVal(e.target.value)}
+                                        onBlur={commitCellEdit}
+                                        onKeyDown={handleCellKeyDown}
+                                        style={{
+                                          width: '100%',
+                                          padding: '5px 14px',
+                                          border: 'none',
+                                          borderBottom: `2px solid ${accent}`,
+                                          background: raised,
+                                          color: text,
+                                          fontFamily: "'DM Mono',monospace",
+                                          fontSize: 12,
+                                          outline: 'none',
+                                          boxSizing: 'border-box',
+                                        }}
+                                      />
+                                    ) : isEmptyHighlight ? (
+                                      <span style={{ fontSize: 11, color: '#f87171', fontStyle: 'italic' }}>empty — click to fill</span>
+                                    ) : isEmpty ? (
+                                      <span style={{ fontSize: 10 }}>—</span>
+                                    ) : (
+                                      String(val)
+                                    )}
                                   </td>
                                 )
                               })}
                             </tr>
-                          ))}
+                            )
+                          })}
                         </tbody>
                       </table>
+                      </div>
+                      </div>
                     </div>
-
                   </div>
                 )}
+
               </div>
+
+              {/* Stats panel */}
+              {toolResult?.type === 'stats' && (
+                <div style={{ borderTop: `1px solid ${border}`, background: surface, overflowX: 'auto', flexShrink: 0, maxHeight: 180 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
+                    <thead>
+                      <tr style={{ background: raised }}>
+                        {['Column','Total','Filled','Empty','Unique','Min','Max','Sum'].map(h => (
+                          <th key={h} style={{ padding: '6px 12px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, textAlign: 'left', color: text2, fontFamily: "'DM Sans',sans-serif", fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {toolResult.data.map((s, i) => (
+                        <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : `${raised}55` }}>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", whiteSpace: 'nowrap' }}>{s.label}</td>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{s.total}</td>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: '#4ade80' }}>{s.filled}</td>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: s.empty > 0 ? '#f87171' : text3 }}>{s.empty}</td>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{s.unique}</td>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{typeof s.min === 'number' ? s.min.toLocaleString() : s.min}</td>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{typeof s.max === 'number' ? s.max.toLocaleString() : s.max}</td>
+                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{typeof s.sum === 'number' ? s.sum.toLocaleString() : s.sum}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Hidden rows banner — always visible above sheets bar */}
+              {hiddenRows.size > 0 && (
+                <div style={{ padding: '5px 16px', background: dark ? '#2a1f0d' : '#fef3c7', borderTop: `1px solid ${amber}44`, fontSize: 11, color: amber, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <span>◌ {hiddenRows.size} row{hiddenRows.size !== 1 ? 's' : ''} hidden</span>
+                  <button onClick={showAllRows} style={{ background: 'none', border: `1px solid ${amber}44`, borderRadius: 4, padding: '2px 8px', color: amber, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>Show all</button>
+                </div>
+              )}
 
               {/* Sheets bar — always visible at bottom of canvas mode */}
               <div style={{ borderTop: `1px solid ${border}`, background: surface, display: 'flex', alignItems: 'center', flexShrink: 0, overflow: 'hidden' }}>
@@ -824,6 +1230,19 @@ export default function AppPage() {
                   <span>·</span>
                   <span>{canvasColumns.length} cols</span>
                   {maxRows > 500 && <span style={{ color: amber }}>· 500 shown</span>}
+                  <span style={{ marginLeft: 6, borderLeft: `1px solid ${border}`, paddingLeft: 8 }}>
+                    <button
+                      onClick={() => setCanvasZoom(prev => Math.min(2, Math.round((prev + 0.1) * 10) / 10))}
+                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 13, padding: '0 3px' }}
+                    >+</button>
+                    <span style={{ minWidth: 36, textAlign: 'center', display: 'inline-block', cursor: 'pointer' }} onClick={() => setCanvasZoom(1)}>
+                      {Math.round(canvasZoom * 100)}%
+                    </span>
+                    <button
+                      onClick={() => setCanvasZoom(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))}
+                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 13, padding: '0 3px' }}
+                    >−</button>
+                  </span>
                 </div>
               </div>
             </div>
