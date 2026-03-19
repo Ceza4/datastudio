@@ -1,21 +1,13 @@
 'use client'
-
 import { createContext, useContext, useState } from 'react'
 
-const ThemeContext = createContext()
+const ThemeContext = createContext({ dark: false, setDark: () => {} })
 
 export function ThemeProvider({ children }) {
-  const [dark, setDark] = useState(true)
+  const [dark, setDark] = useState(false) // light mode default
   return (
     <ThemeContext.Provider value={{ dark, setDark }}>
-      <div style={{
-        background: dark ? '#1A1917' : '#F5F3EE',
-        color: dark ? '#E8E6E1' : '#1A1917',
-        minHeight: '100vh',
-        transition: 'background .2s, color .2s'
-      }}>
-        {children}
-      </div>
+      {children}
     </ThemeContext.Provider>
   )
 }
