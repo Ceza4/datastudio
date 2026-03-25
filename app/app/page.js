@@ -32,19 +32,59 @@ export default function AppPage() {
   const [files, setFiles] = useState([])
   const [expandedFile, setExpandedFile] = useState(null)
   const [showHidden, setShowHidden] = useState(false)
-  const [canvasColumns, setCanvasColumns] = useState([])
+  
   const [insertAt, setInsertAt] = useState(null)
   const [draggingCanvasId, setDraggingCanvasId] = useState(null)
   const draggingCanvasIdRef = useRef(null)
   const [editingColId, setEditingColId] = useState(null)
   const [editingLabel, setEditingLabel] = useState('')
   const [selectedSidebarCols, setSelectedSidebarCols] = useState([])
-  const [pinnedColIds, setPinnedColIds] = useState([])
+  
   const [activeSheet, setActiveSheet] = useState('canvas')
   const [contextMenu, setContextMenu] = useState(null)
-  const [canvasZoom, setCanvasZoom] = useState(1)
+  const [colContextMenu, setColContextMenu] = useState(null)
+ const makeCanvas = (id, name) => ({ 
+  id, name, columns: [], pinnedColIds: [], hiddenRows: new Set(), zoom: 1 
+})
+const [canvases, setCanvases] = useState([makeCanvas('canvas_1', 'Canvas 1')])
+const [activeCanvasId, setActiveCanvasId] = useState('canvas_1')
+const [renamingCanvasId, setRenamingCanvasId] = useState(null)
+const [renamingCanvasLabel, setRenamingCanvasLabel] = useState('')
+
+// These keep every other function working without changes
+const activeCanvas = canvases.find(c => c.id === activeCanvasId) || canvases[0]
+const canvasColumns = activeCanvas.columns
+const pinnedColIds = activeCanvas.pinnedColIds
+const hiddenRows = activeCanvas.hiddenRows
+const canvasZoom = activeCanvas.zoom
+
+// These replace the old React setters — same names, now canvas-aware
+function setCanvasColumns(fn) {
+  setCanvases(prev => {
+    const canvas = prev.find(c => c.id === activeCanvasId) || prev[0]
+    return prev.map(c => c.id === activeCanvasId ? { ...c, columns: typeof fn === 'function' ? fn(canvas.columns) : fn } : c)
+  })
+}
+function setPinnedColIds(fn) {
+  setCanvases(prev => {
+    const canvas = prev.find(c => c.id === activeCanvasId) || prev[0]
+    return prev.map(c => c.id === activeCanvasId ? { ...c, pinnedColIds: typeof fn === 'function' ? fn(canvas.pinnedColIds) : fn } : c)
+  })
+}
+function setHiddenRows(fn) {
+  setCanvases(prev => {
+    const canvas = prev.find(c => c.id === activeCanvasId) || prev[0]
+    return prev.map(c => c.id === activeCanvasId ? { ...c, hiddenRows: typeof fn === 'function' ? fn(canvas.hiddenRows) : fn } : c)
+  })
+}
+function setCanvasZoom(fn) {
+  setCanvases(prev => {
+    const canvas = prev.find(c => c.id === activeCanvasId) || prev[0]
+    return prev.map(c => c.id === activeCanvasId ? { ...c, zoom: typeof fn === 'function' ? fn(canvas.zoom) : fn } : c)
+  })
+}
   const [copiedRow, setCopiedRow] = useState(null)
-  const [hiddenRows, setHiddenRows] = useState(new Set())
+ 
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const exportDropdownRef = useRef(null)
 
@@ -468,6 +508,70 @@ export default function AppPage() {
   }
   function hideRow(rowIndex) { setHiddenRows(prev => new Set([...prev, rowIndex])) }
   function showAllRows() { setHiddenRows(new Set()) }
+  function addCanvas() {
+  const id = `canvas_${Date.now()}`
+  const name = `Canvas ${canvases.length + 1}`
+  setCanvases(prev => [...prev, makeCanvas(id, name)])
+  setActiveCanvasId(id)
+  setActiveSheet(id)
+}
+
+function deleteCanvas(id) {
+  if (canvases.length === 1) return
+  const msg = `Delete "${canvases.find(c => c.id === id)?.name}"? This cannot be undone.`
+  if (!window.confirm(msg)) return
+  setCanvases(prev => {
+    const next = prev.filter(c => c.id !== id)
+    if (activeCanvasId === id) {
+      setActiveCanvasId(next[0].id)
+      setActiveSheet(next[0].id)
+    }
+    return next
+  })
+}
+function cleanColumn(canvasId) {
+  setCanvasColumns(prev => prev.map(col => {
+    if (col.canvasId !== canvasId) return col
+    return { ...col, rows: col.rows.map(val => {
+      if (val === undefined || val === null) return val
+      return String(val).trim().replace(/\s+/g, ' ')
+    })}
+  }))
+}
+
+function sortCanvasByCol(canvasId, dir) {
+  setCanvasColumns(prev => {
+    const col = prev.find(c => c.canvasId === canvasId)
+    if (!col) return prev
+    const rowCount = Math.max(...prev.map(c => c.rows.length))
+    const indices = Array.from({ length: rowCount }, (_, i) => i)
+    indices.sort((a, b) => {
+      const av = col.rows[a] ?? '', bv = col.rows[b] ?? ''
+      const an = parseFloat(av), bn = parseFloat(bv)
+      const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : String(av).localeCompare(String(bv))
+      return dir === 'asc' ? cmp : -cmp
+    })
+    return prev.map(c => ({ ...c, rows: indices.map(i => c.rows[i]) }))
+  })
+}
+
+function clearColumn(canvasId) {
+  setCanvasColumns(prev => prev.map(col =>
+    col.canvasId !== canvasId ? col : { ...col, rows: col.rows.map(() => '') }
+  ))
+}
+
+function duplicateColumn(canvasId) {
+  setCanvasColumns(prev => {
+    const idx = prev.findIndex(c => c.canvasId === canvasId)
+    if (idx === -1) return prev
+    const original = prev[idx]
+    const copy = { ...original, canvasId: `canvas_${Date.now()}_copy`, label: original.label + ' (copy)', rows: [...original.rows] }
+    const next = [...prev]
+    next.splice(idx + 1, 0, copy)
+    return next
+  })
+}
   function addBlankColumn() {
     const newCol = { canvasId: `canvas_${Date.now()}_new`, colId: `new_${Date.now()}`, label: 'New Column', fileName: 'manual', sheetName: '', rows: Array(maxRows).fill('') }
     setCanvasColumns(prev => [...prev, newCol])
@@ -620,10 +724,30 @@ export default function AppPage() {
           </div>
         </div>
       )}
-
+{colContextMenu && (
+  <div style={{ position: 'fixed', top: colContextMenu.y, left: colContextMenu.x, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px #00000044`, zIndex: 9999, minWidth: 180, overflow: 'hidden', fontFamily: "'DM Sans',sans-serif" }}
+    onMouseLeave={() => setColContextMenu(null)}>
+    <div style={{ padding: '6px 12px 4px', fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: text3 }}>{colContextMenu.label}</div>
+    <div style={{ padding: '4px 0 4px' }}>
+      {[
+        { label: 'Sort A → Z',     icon: '↑', color: text2,  action: () => { sortCanvasByCol(colContextMenu.canvasId, 'asc');  setColContextMenu(null) } },
+        { label: 'Sort Z → A',     icon: '↓', color: text2,  action: () => { sortCanvasByCol(colContextMenu.canvasId, 'desc'); setColContextMenu(null) } },
+        { label: 'Clean column',   icon: '✦', color: accent, action: () => { cleanColumn(colContextMenu.canvasId);             setColContextMenu(null) } },
+        { label: 'Duplicate',      icon: '⊞', color: text2,  action: () => { duplicateColumn(colContextMenu.canvasId);         setColContextMenu(null) } },
+        { label: 'Clear values',   icon: '□', color: amber,  action: () => { clearColumn(colContextMenu.canvasId);             setColContextMenu(null) } },
+      ].map((item, i) => (
+        <button key={i} onClick={item.action} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 14px', background: 'none', border: 'none', color: item.color, fontSize: 13, fontFamily: "'DM Sans',sans-serif", cursor: 'pointer', textAlign: 'left' }}
+          onMouseEnter={e => e.currentTarget.style.background = raised}
+          onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+          <span style={{ fontSize: 12, width: 14, textAlign: 'center' }}>{item.icon}</span>{item.label}
+        </button>
+      ))}
+    </div>
+  </div>
+)}
       <div
         style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: "'DM Sans',sans-serif" }}
-        onMouseDown={e => { if (contextMenu) setContextMenu(null); if (editingCell && !e.target.closest('td input')) commitCellEdit() }}
+       onMouseDown={e => { if (contextMenu) setContextMenu(null); if (colContextMenu) setColContextMenu(null); if (editingCell && !e.target.closest('td input')) commitCellEdit() }}
         onDragOver={e => { if (dragData.current) e.preventDefault() }}
         onDrop={e => { e.preventDefault(); if (!dragData.current) return; if (dragData.current.type === 'sidebar') addColumnsToCanvas(dragData.current.cols, null); setInsertAt(null); lastInsert.current = null }}
       >
@@ -1140,6 +1264,7 @@ export default function AppPage() {
                                   onDragEnd={handleCanvasDragEnd}
                                   onDragOver={e => handleThDragOver(e, idx)}
                                   onDrop={e => handleThDrop(e, idx)}
+                                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setColContextMenu({ x: e.clientX, y: e.clientY, canvasId: col.canvasId, label: col.label }) }}
                                   style={{ padding: '8px 12px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, textAlign: fmt.align || 'left', whiteSpace: 'nowrap', fontFamily: "'DM Sans',sans-serif", fontSize: fmt.fontSize || 12, fontWeight: globalFormat.boldHeader ? 700 : 600, background: isPinned ? (dark ? '#1a1f4a' : '#e8f5ee') : globalFormat.boldHeader ? globalFormat.headerColor + '22' : surface, color: globalFormat.boldHeader ? globalFormat.headerColor : text, opacity: isDraggingThis ? 0.3 : 1, position: 'sticky', top: 0, zIndex: 4, overflow: 'visible' }}
                                 >
                                   {isInsertBefore && <div style={{ position: 'absolute', left: -1, top: 0, bottom: 0, width: 3, background: accent, borderRadius: 2, zIndex: 10, pointerEvents: 'none' }}><div style={{ position: 'absolute', top: -3, left: -2, width: 7, height: 7, borderRadius: '50%', background: accent }} /></div>}
@@ -1247,13 +1372,43 @@ export default function AppPage() {
               {/* Sheets bar */}
               <div style={{ borderTop: `1px solid ${border}`, background: surface, display: 'flex', alignItems: 'center', flexShrink: 0, overflow: 'hidden' }}>
                 <div style={{ display: 'flex', alignItems: 'stretch', flex: 1, overflowX: 'auto' }}>
-                  <button onClick={() => setActiveSheet('canvas')} style={{ padding: '6px 16px', border: 'none', borderRight: `1px solid ${border}`, borderTop: activeSheet === 'canvas' ? `2px solid ${accent}` : `2px solid transparent`, background: activeSheet === 'canvas' ? base : surface, color: activeSheet === 'canvas' ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: activeSheet === 'canvas' ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>Canvas</button>
+                  {canvases.map(canvas => {
+  const isActive = activeSheet === canvas.id
+  return (
+    <div key={canvas.id} style={{ display: 'flex', alignItems: 'stretch', position: 'relative', flexShrink: 0 }}
+      onMouseEnter={e => e.currentTarget.querySelector('.del-canvas').style.opacity = '1'}
+      onMouseLeave={e => e.currentTarget.querySelector('.del-canvas').style.opacity = '0'}>
+      <button
+        onClick={() => { setActiveSheet(canvas.id); setActiveCanvasId(canvas.id) }}
+        onDoubleClick={() => { setRenamingCanvasId(canvas.id); setRenamingCanvasLabel(canvas.name) }}
+        style={{ padding: '6px 16px', border: 'none', borderRight: 'none', borderTop: isActive ? `2px solid ${accent}` : `2px solid transparent`, background: isActive ? base : surface, color: isActive ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: isActive ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}>
+        {renamingCanvasId === canvas.id ? (
+          <input autoFocus value={renamingCanvasLabel}
+            onChange={e => setRenamingCanvasLabel(e.target.value)}
+            onBlur={() => { setCanvases(prev => prev.map(c => c.id === canvas.id ? { ...c, name: renamingCanvasLabel || canvas.name } : c)); setRenamingCanvasId(null) }}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+            onClick={e => e.stopPropagation()}
+            style={{ background: 'transparent', border: 'none', color: accent, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, outline: 'none', width: Math.max(60, renamingCanvasLabel.length * 8) }} />
+        ) : canvas.name}
+      </button>
+      {canvases.length > 1 && (
+        <button className="del-canvas" onClick={() => deleteCanvas(canvas.id)}
+          style={{ opacity: 0, transition: 'opacity 0.15s', padding: '0 6px', border: 'none', borderRight: `1px solid ${border}`, borderTop: isActive ? `2px solid ${accent}` : `2px solid transparent`, background: isActive ? base : surface, color: text3, cursor: 'pointer', fontSize: 11 }}>✕</button>
+      )}
+      {!canvases.length > 1 && <div style={{ width: 1, background: border, borderTop: isActive ? `2px solid ${accent}` : `2px solid transparent` }} />}
+    </div>
+  )
+})}
                   {files.flatMap(file => file.sheets.map(sheet => { const key = `${file.id}::${sheet.name}`; const isActive = activeSheet === key; return (
-                    <button key={key} onClick={() => setActiveSheet(key)} style={{ padding: '6px 16px', border: 'none', borderRight: `1px solid ${border}`, borderTop: isActive ? `2px solid ${accent}` : `2px solid transparent`, background: isActive ? base : surface, color: isActive ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: isActive ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button key={key} onClick={() => { 
+  setActiveSheet(key)
+  setMode('preview')
+  setActivePreviewSheet({ fileId: file.id, si: file.sheets.indexOf(sheet) })
+}} style={{ padding: '6px 16px', border: 'none', borderRight: `1px solid ${border}`, borderTop: isActive ? `2px solid ${accent}` : `2px solid transparent`, background: isActive ? base : surface, color: isActive ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: isActive ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ color: text3, fontSize: 10 }}>📄</span>{file.sheets.length > 1 ? `${file.name} — ${sheet.name}` : file.name}
                     </button>
                   )}))}
-                  <button style={{ padding: '6px 12px', border: 'none', borderRight: `1px solid ${border}`, borderTop: '2px solid transparent', background: 'transparent', color: text3, cursor: 'pointer', fontSize: 16, lineHeight: 1, flexShrink: 0 }}>+</button>
+                  <button onClick={addCanvas} style={{ padding: '6px 12px', border: 'none', borderRight: `1px solid ${border}`, borderTop: '2px solid transparent', background: 'transparent', color: text3, cursor: 'pointer', fontSize: 16, lineHeight: 1, flexShrink: 0 }}>+</button>
                 </div>
                 <div style={{ padding: '0 14px', fontSize: 11, color: text3, display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, borderLeft: `1px solid ${border}` }}>
                   <span style={{ color: green, fontSize: 8 }}>●</span>
