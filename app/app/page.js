@@ -23,14 +23,15 @@ export default function AppPage() {
   const { dark, setDark } = useTheme()
   const [mode, setMode] = useState('preview')
   const [activeTool, setActiveTool] = useState(null)
-  const [toolResult, setToolResult] = useState(null)
+ const [toolResult, setToolResult] = useState(null)
+const [statCards, setStatCards] = useState([])
   const [editingCell, setEditingCell] = useState(null)
   const [editingCellVal, setEditingCellVal] = useState('')
   const [highlightEmpty, setHighlightEmpty] = useState(false)
   const [duplicateMap, setDuplicateMap] = useState({})
   const [trimOptions, setTrimOptions] = useState({ spaces: true, casing: 'none' })
   const [files, setFiles] = useState([])
-  const [expandedFile, setExpandedFile] = useState(null)
+  const [expandedFiles, setExpandedFiles] = useState(new Set())
   const [showHidden, setShowHidden] = useState(false)
   
   const [insertAt, setInsertAt] = useState(null)
@@ -298,7 +299,7 @@ function setCanvasZoom(fn) {
       })
       const newFile = { id: `file_${Date.now()}`, name: file.name, sheets }
       setFiles(prev => [...prev, newFile])
-      setExpandedFile(newFile.id)
+      setExpandedFiles(prev => { const next = new Set(prev); next.add(newFile.id); return next })
     }
     reader.readAsArrayBuffer(file)
     e.target.value = ''
@@ -476,15 +477,32 @@ function setCanvasZoom(fn) {
     const total = Object.values(map).reduce((sum, s) => sum + s.size, 0)
     setToolResult({ type: 'duplicates', message: `Found ${total} duplicate value${total !== 1 ? 's' : ''} across ${canvasColumns.length} column${canvasColumns.length !== 1 ? 's' : ''}.` }); setActiveTool(null)
   }
-  function runStats() {
-    const stats = canvasColumns.map(col => {
-      const vals = col.rows.filter(v => v !== undefined && v !== null && v !== '')
-      const nums = vals.map(v => parseFloat(v)).filter(n => !isNaN(n))
-      const unique = new Set(vals.map(v => String(v).trim().toLowerCase())).size
-      return { label: col.label, total: col.rows.length, filled: vals.length, empty: col.rows.length - vals.length, unique, min: nums.length ? Math.min(...nums) : '—', max: nums.length ? Math.max(...nums) : '—', sum: nums.length ? nums.reduce((a, b) => a + b, 0) : '—' }
-    })
-    setToolResult({ type: 'stats', data: stats }); setActiveTool(null)
-  }
+ function runStats() {
+  const cards = canvasColumns.map((col, i) => {
+    const vals = col.rows.filter(v => v !== undefined && v !== null && v !== '')
+    const nums = vals.map(v => parseFloat(v)).filter(n => !isNaN(n))
+    const unique = new Set(vals.map(v => String(v).trim().toLowerCase())).size
+    return {
+      id: col.canvasId,
+      label: col.label,
+      total: col.rows.length,
+      filled: vals.length,
+      empty: col.rows.length - vals.length,
+      unique,
+      min: nums.length ? Math.min(...nums) : '—',
+      max: nums.length ? Math.max(...nums) : '—',
+      sum: nums.length ? nums.reduce((a, b) => a + b, 0) : '—',
+      x: 80 + i * 28,
+      y: 100 + i * 28,
+    }
+  })
+  setStatCards(cards)
+  setActiveTool(null)
+}
+
+function moveStatCard(id, x, y) {
+  setStatCards(prev => prev.map(c => c.id === id ? { ...c, x, y } : c))
+}
 
   // ── Cell editing ─────────────────────────────────────────────
   function startCellEdit(canvasId, rowIndex, currentVal) { setEditingCell({ canvasId, rowIndex }); setEditingCellVal(currentVal === undefined || currentVal === null ? '' : String(currentVal)) }
@@ -661,6 +679,57 @@ function duplicateColumn(canvasId) {
   }
 
   // ── Small reusable toggle button for Format bar ──────────────
+  function StatCard({ card }) {
+  function handleMouseDown(e) {
+    if (e.target.closest('button')) return
+    e.preventDefault()
+    const startX = e.clientX - card.x
+    const startY = e.clientY - card.y
+    function onMove(ev) { moveStatCard(card.id, ev.clientX - startX, ev.clientY - startY) }
+    function onUp() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+  const rows = [
+    { label: 'Total',  value: card.total,  color: text2 },
+    { label: 'Filled', value: card.filled, color: green },
+    { label: 'Empty',  value: card.empty,  color: card.empty > 0 ? red : text3 },
+    { label: 'Unique', value: card.unique, color: text2 },
+    { label: 'Min',    value: typeof card.min === 'number' ? card.min.toLocaleString() : card.min, color: text2 },
+    { label: 'Max',    value: typeof card.max === 'number' ? card.max.toLocaleString() : card.max, color: text2 },
+    { label: 'Sum',    value: typeof card.sum === 'number' ? card.sum.toLocaleString() : card.sum, color: accent },
+  ]
+  const fillPct = card.total > 0 ? Math.round((card.filled / card.total) * 100) : 0
+  return (
+    <div onMouseDown={handleMouseDown} style={{ position: 'fixed', top: card.y, left: card.x, zIndex: 8000, width: 210, background: surface, border: `1px solid ${border}`, borderRadius: 10, boxShadow: `0 8px 32px #00000055`, fontFamily: "'DM Sans',sans-serif", cursor: 'grab', userSelect: 'none' }}>
+      {/* Header */}
+      <div style={{ padding: '9px 12px 8px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', gap: 7, background: accentDim, borderRadius: '10px 10px 0 0' }}>
+        <span style={{ fontSize: 13, color: accent }}>▦</span>
+        <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.label}</span>
+        <button onClick={() => setStatCards(prev => prev.filter(c => c.id !== card.id))} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 14, padding: '0 2px', lineHeight: 1 }}
+          onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+      </div>
+      {/* Fill bar */}
+      <div style={{ padding: '8px 12px 4px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: text3, marginBottom: 4 }}>
+          <span>Fill rate</span><span style={{ color: fillPct === 100 ? green : fillPct < 50 ? red : amber }}>{fillPct}%</span>
+        </div>
+        <div style={{ height: 4, borderRadius: 3, background: raised, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${fillPct}%`, background: fillPct === 100 ? green : fillPct < 50 ? red : amber, borderRadius: 3, transition: 'width 0.3s' }} />
+        </div>
+      </div>
+      {/* Stats rows */}
+      <div style={{ padding: '4px 0 8px' }}>
+        {rows.map(({ label, value, color }) => (
+          <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 12px' }}>
+            <span style={{ fontSize: 11, color: text3 }}>{label}</span>
+            <span style={{ fontSize: 11, color, fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
   function FmtBtn({ active, onClick, title, children }) {
     return (
       <button onClick={onClick} title={title} style={{ padding: '3px 9px', borderRadius: 5, border: `1px solid ${active ? accent : border}`, background: active ? accentDim : 'transparent', color: active ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -767,12 +836,12 @@ function duplicateColumn(canvasId) {
               </div>
             ) : files.map(file => (
               <div key={file.id} style={{ marginBottom: 6 }}>
-                <div className="file-row" onClick={() => setExpandedFile(expandedFile === file.id ? null : file.id)} style={{ padding: '6px 8px', borderRadius: 6, fontSize: 12, color: text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                <div className="file-row" onClick={() => setExpandedFiles(prev => { const next = new Set(prev); next.has(file.id) ? next.delete(file.id) : next.add(file.id); return next })} style={{ padding: '6px 8px', borderRadius: 6, fontSize: 12, color: text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
                   <span style={{ fontSize: 13 }}>📄</span>
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-                  <span style={{ color: text3, fontSize: 10 }}>{expandedFile === file.id ? '▾' : '▸'}</span>
+                  <span style={{ color: text3, fontSize: 10 }}>{expandedFiles.has(file.id) ? '▾' : '▸'}</span>
                 </div>
-                {expandedFile === file.id && file.sheets[0] && (
+                {expandedFiles.has(file.id) && file.sheets[0] && (
                   <>
                     {selectedSidebarCols.length > 1 && (
                       <div style={{ padding: '4px 8px 6px 24px' }}>
@@ -1338,29 +1407,7 @@ function duplicateColumn(canvasId) {
                 )}
               </div>
 
-              {/* Stats panel */}
-              {toolResult?.type === 'stats' && (
-                <div style={{ borderTop: `1px solid ${border}`, background: surface, overflowX: 'auto', flexShrink: 0, maxHeight: 180 }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
-                    <thead><tr style={{ background: raised }}>{['Column','Total','Filled','Empty','Unique','Min','Max','Sum'].map(h => (<th key={h} style={{ padding: '6px 12px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, textAlign: 'left', color: text2, fontFamily: "'DM Sans',sans-serif", fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap' }}>{h}</th>))}</tr></thead>
-                    <tbody>
-                      {toolResult.data.map((s, i) => (
-                        <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : `${raised}55` }}>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", whiteSpace: 'nowrap' }}>{s.label}</td>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{s.total}</td>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: '#4ade80' }}>{s.filled}</td>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: s.empty > 0 ? '#f87171' : text3 }}>{s.empty}</td>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{s.unique}</td>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{typeof s.min === 'number' ? s.min.toLocaleString() : s.min}</td>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{typeof s.max === 'number' ? s.max.toLocaleString() : s.max}</td>
-                          <td style={{ padding: '5px 12px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text2 }}>{typeof s.sum === 'number' ? s.sum.toLocaleString() : s.sum}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
+            z
               {/* Hidden rows banner */}
               {hiddenRows.size > 0 && (
                 <div style={{ padding: '5px 16px', background: dark ? '#2a1f0d' : '#fef3c7', borderTop: `1px solid ${amber}44`, fontSize: 11, color: amber, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
@@ -1425,6 +1472,8 @@ function duplicateColumn(canvasId) {
           )}
         </div>
       </div>
-    </>
+      {/* Floating stat cards */}
+      {statCards.map(card => <StatCard key={card.id} card={card} />)}
+    </>  
   )
 }
