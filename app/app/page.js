@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useTheme } from '../providers'
 import * as XLSX from 'xlsx'
 
@@ -112,6 +112,8 @@ function setCanvasZoom(fn) {
   const lastInsert = useRef(null)
   const fileInputRef = useRef(null)
   const editInputRef = useRef(null)
+  const bottomSentinelRef = useRef(null)
+  const [visibleRowCount, setVisibleRowCount] = useState(200)
 
   const base      = dark ? '#1A1917' : '#F5F3EE'
   const surface   = dark ? '#201F1C' : '#EDEAE3'
@@ -447,10 +449,9 @@ function setCanvasZoom(fn) {
       if (e.shiftKey) { e.preventDefault(); el.scrollLeft += e.deltaY * 0.8; return }
       el.scrollLeft += e.deltaX; el.scrollTop += e.deltaY * 0.8; e.preventDefault()
     }
-    el.addEventListener('wheel', handler, { passive: false })
+  el.addEventListener('wheel', handler, { passive: false })
     return () => el.removeEventListener('wheel', handler)
   }, [canvasScrollRef.current])
-
   // ── Tool functions ───────────────────────────────────────────
   function runTrim() {
     const { spaces, casing } = trimOptions
@@ -599,9 +600,21 @@ function duplicateColumn(canvasId) {
   // ── Helpers ──────────────────────────────────────────────────
   const allHiddenCols = files.flatMap(f => f.sheets.flatMap(s => s.headers.filter(h => h.hidden).map(h => ({ fileId: f.id, fileName: f.name, sheetName: s.name, col: h }))))
   const visibleHeaders = (sheet) => sheet.headers.filter(h => !h.hidden)
-  const maxRows = canvasColumns.length > 0 ? Math.max(...canvasColumns.map(c => c.rows.length)) : 0
-  const sortedCanvasCols = [...canvasColumns.filter(c => pinnedColIds.includes(c.canvasId)), ...canvasColumns.filter(c => !pinnedColIds.includes(c.canvasId))]
+  const maxRows = useMemo(() => canvasColumns.length > 0 ? Math.max(...canvasColumns.map(c => c.rows.length)) : 0, [canvasColumns])
+  const sortedCanvasCols = useMemo(() => [...canvasColumns.filter(c => pinnedColIds.includes(c.canvasId)), ...canvasColumns.filter(c => !pinnedColIds.includes(c.canvasId))], [canvasColumns, pinnedColIds])
 
+  useEffect(() => { setVisibleRowCount(200) }, [activeCanvasId, canvasColumns.length])
+
+  useEffect(() => {
+    const sentinel = bottomSentinelRef.current
+    if (!sentinel || maxRows === 0) return
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) setVisibleRowCount(prev => Math.min(prev + 200, maxRows)) },
+      { root: canvasScrollRef.current, threshold: 0.1 }
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [maxRows, activeCanvasId])
     // ── PreviewActionPanel — filter/sort/group dropdown ──────────
   function PreviewActionPanel({ action, sheet, visible, file, si, previewSortMap, setPreviewSortMap, previewFilterMap, setPreviewFilterMap, onClose }) {
     const col = visible.find(c => c.id === action.colId)
@@ -1316,7 +1329,7 @@ function duplicateColumn(canvasId) {
                   </div>
                 ) : (
                   <div style={{ display: 'inline-block', minWidth: '100%' }}>
-                    <div style={{ zoom: canvasZoom }}>
+                    <div style={{ zoom: canvasZoom, willChange: 'zoom' }}>
                       <table style={{ borderCollapse: 'collapse', fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
                         <thead>
                           <tr style={{ background: globalFormat.boldHeader ? globalFormat.headerColor + '22' : surface }}>
@@ -1359,7 +1372,7 @@ function duplicateColumn(canvasId) {
                           </tr>
                         </thead>
                         <tbody>
-                          {Array.from({ length: maxRows }).map((_, ri) => {
+                          {Array.from({ length: Math.min(visibleRowCount, maxRows) }).map((_, ri) => {
                             if (hiddenRows.has(ri)) return null
                             const isBandedRow = globalFormat.banding && ri % 2 === 0
                             return (
@@ -1402,12 +1415,13 @@ function duplicateColumn(canvasId) {
                           })}
                         </tbody>
                       </table>
+                  <div ref={bottomSentinelRef} style={{ height: 1 }} />
                     </div>
                   </div>
                 )}
               </div>
 
-            z
+            
               {/* Hidden rows banner */}
               {hiddenRows.size > 0 && (
                 <div style={{ padding: '5px 16px', background: dark ? '#2a1f0d' : '#fef3c7', borderTop: `1px solid ${amber}44`, fontSize: 11, color: amber, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
