@@ -32,8 +32,17 @@ const [statCards, setStatCards] = useState([])
   const [trimOptions, setTrimOptions] = useState({ spaces: true, casing: 'none' })
   const [files, setFiles] = useState([])
   const [expandedFiles, setExpandedFiles] = useState(new Set())
-  const [showHidden, setShowHidden] = useState(false)
-  
+ const [showHidden, setShowHidden] = useState(false)
+ const [crosscheckConfig, setCrosscheckConfig] = useState({ colAId: '', colBId: '', threshold: 85 })
+  const [crosscheckRunning, setCrosscheckRunning] = useState(false)
+  const [showCCWizard, setShowCCWizard] = useState(false)
+  const [ccStep, setCCStep] = useState(1)
+  const [ccLiveRows, setCCLiveRows] = useState([])
+  const [ccResults, setCCResults] = useState(null)
+  const [ccActiveTab, setCCActiveTab] = useState('matched')
+  const [ccConfirmed, setCCConfirmed] = useState(new Set())
+  const [ccRejected, setCCRejected] = useState(new Set())
+  const ccWorkerRef = useRef(null)
   const [insertAt, setInsertAt] = useState(null)
   const [draggingCanvasId, setDraggingCanvasId] = useState(null)
   const draggingCanvasIdRef = useRef(null)
@@ -453,6 +462,63 @@ function setCanvasZoom(fn) {
     return () => el.removeEventListener('wheel', handler)
   }, [canvasScrollRef.current])
   // ── Tool functions ───────────────────────────────────────────
+ function openCCWizard() {
+    setShowCCWizard(true)
+    setCCStep(1)
+    setCCLiveRows([])
+    setCCResults(null)
+    setCCConfirmed(new Set())
+    setCCRejected(new Set())
+    setCrosscheckConfig({ colAId: '', colBId: '', threshold: 85 })
+    setActiveTool(null)
+  }
+
+  function runCrosscheck() {
+    const colA = canvasColumns.find(c => c.canvasId === crosscheckConfig.colAId)
+    const colB = canvasColumns.find(c => c.canvasId === crosscheckConfig.colBId)
+    if (!colA || !colB) return
+    setCrosscheckRunning(true)
+    setCCStep(3)
+    setCCLiveRows([])
+    if (!ccWorkerRef.current) ccWorkerRef.current = new Worker('/crosscheck.worker.js')
+    ccWorkerRef.current.onmessage = (e) => {
+      const { results, summary } = e.data
+      const matched = results.map((r, i) => ({ ...r, original: colA.rows[i] })).filter(r => r.decision === 'matched' || r.decision === 'maybe')
+      const unmatched = results.map((r, i) => ({ ...r, original: colA.rows[i] })).filter(r => r.decision === 'unmatched')
+      setCCResults({ matched, unmatched, summary, colALabel: colA.label, colBLabel: colB.label })
+      setCCLiveRows(matched.slice(0, 8))
+      setCrosscheckRunning(false)
+      setCCStep(4)
+    }
+    ccWorkerRef.current.postMessage({ rowsA: colA.rows, rowsB: colB.rows, threshold: 95, maybeThreshold: crosscheckConfig.threshold })
+  }
+
+  function addCCToCanvas() {
+    if (!ccResults) return
+    const colA = canvasColumns.find(c => c.canvasId === crosscheckConfig.colAId)
+    if (!colA) return
+    const allRows = canvasColumns[0]?.rows.length ? Array.from({ length: maxRows }) : []
+    const matchMap = {}
+    ccResults.matched.forEach(r => {
+      if (r.decision === 'matched' || ccConfirmed.has(r.original)) {
+        matchMap[String(r.original ?? '')] = { match: r.bestMatch, score: r.score }
+      }
+    })
+    const ts = Date.now()
+    const statusRows = colA.rows.map(v => {
+      const key = String(v ?? '')
+       if (matchMap[key]) return matchMap[key].match
+      if (ccRejected.has(key)) return '✕ rejected'
+      return ''
+    })
+    setCanvasColumns(prev => {
+      const idx = prev.findIndex(c => c.canvasId === crosscheckConfig.colAId)
+      const newCol = { canvasId: `cc_${ts}`, colId: `cc_${ts}`, label: `${ccResults.colALabel} — matched`, fileName: 'Crosscheck', sheetName: '', rows: statusRows }
+      const next = [...prev]
+      next.splice(idx + 1, 0, newCol)
+      return next
+    })
+  }
   function runTrim() {
     const { spaces, casing } = trimOptions
     setCanvasColumns(prev => prev.map(col => ({ ...col, rows: col.rows.map(val => {
@@ -1301,7 +1367,15 @@ function duplicateColumn(canvasId) {
                   <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
                 </div>
               )}
-              {activeTool && !['trim','empty','duplicates','stats','format'].includes(activeTool) && (
+             {activeTool === 'crosscheck' && (
+                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                  <span style={{ fontWeight: 600, color: accent }}>⚡ Crosscheck</span>
+                  <span style={{ fontSize: 12, color: text2 }}>Fuzzy match company names across two lists</span>
+                  <button onClick={openCCWizard} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Open Crosscheck →</button>
+                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
+                </div>
+              )}
+              {activeTool && !['trim','empty','duplicates','stats','format','crosscheck'].includes(activeTool) && (
                 <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '9px 16px', fontSize: 13, color: accent, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <span style={{ fontWeight: 600 }}>{tools.find(t => t.id === activeTool)?.label}</span>
                   <span style={{ color: text2, fontWeight: 400 }}>— {tools.find(t => t.id === activeTool)?.desc}</span>
@@ -1388,17 +1462,21 @@ function duplicateColumn(canvasId) {
                                   const isDup = duplicateMap[col.canvasId]?.has(String(val ?? '').trim().toLowerCase())
                                   const isEmptyHighlight = highlightEmpty && isEmpty
                                   const fmt = getColFormat(col.canvasId)
+                                 const ccDec = col.label === 'CC Decision' ? String(val || '').toLowerCase() : null
                                   let bg = ri % 2 === 1 ? `${surface}55` : 'transparent'
                                   if (isPinned) bg = dark ? '#1a1f4a33' : '#e8f5ee88'
                                   if (isBandedRow) bg = dark ? globalFormat.headerColor + '22' : globalFormat.headerColor + '11'
                                   if (isDup) bg = dark ? '#2a1f0d' : '#fef3c7'
                                   if (isEmptyHighlight) bg = dark ? '#2a0d0d' : '#fee2e2'
+                                  if (ccDec === 'matched')   bg = dark ? '#0d2a1a' : '#dcfce7'
+                                  if (ccDec === 'maybe')     bg = dark ? '#2a1f0d' : '#fef3c7'
+                                  if (ccDec === 'unmatched') bg = dark ? '#2a0d0d' : '#fee2e2'
                                   return (
                                     <td key={col.canvasId}
                                       onDragOver={e => handleThDragOver(e, idx)}
                                       onDrop={e => handleThDrop(e, idx)}
                                       onClick={() => !isEditing && startCellEdit(col.canvasId, ri, val)}
-                                      style={{ padding: isEditing ? '0' : '5px 14px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: isEmptyHighlight ? '#f87171' : isDup ? '#E8B85B' : isEmpty ? text3 : text2, whiteSpace: fmt.wrap ? 'normal' : 'nowrap', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', background: bg, cursor: isEditing ? 'text' : 'default', fontSize: fmt.fontSize || 12, fontWeight: fmt.bold ? 700 : 400, textAlign: fmt.align || 'left' }}
+                                      style={{ padding: isEditing ? '0' : '5px 14px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: ccDec === 'matched' ? green : ccDec === 'maybe' ? amber : ccDec === 'unmatched' ? red : isEmptyHighlight ? '#f87171' : isDup ? '#E8B85B' : isEmpty ? text3 : text2, whiteSpace: fmt.wrap ? 'normal' : 'nowrap', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', background: bg, cursor: isEditing ? 'text' : 'default', fontSize: fmt.fontSize || 12, fontWeight: fmt.bold ? 700 : 400, textAlign: fmt.align || 'left' }}
                                     >
                                       {isEditing ? (
                                         <input autoFocus value={editingCellVal} onChange={e => setEditingCellVal(e.target.value)} onBlur={commitCellEdit} onKeyDown={handleCellKeyDown} style={{ width: '100%', padding: '5px 14px', border: 'none', borderBottom: `2px solid ${accent}`, background: raised, color: text, fontFamily: "'DM Mono',monospace", fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
@@ -1488,6 +1566,282 @@ function duplicateColumn(canvasId) {
       </div>
       {/* Floating stat cards */}
       {statCards.map(card => <StatCard key={card.id} card={card} />)}
-    </>  
+
+      {showCCWizard && (
+        <div onMouseDown={e => { if (e.target === e.currentTarget) setShowCCWizard(false) }}
+          style={{ position: 'fixed', inset: 0, background: '#00000077', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'DM Sans',sans-serif" }}>
+          <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: 16, width: 720, maxWidth: '95vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+            {/* Header */}
+            <div style={{ padding: '20px 28px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+              <span style={{ fontSize: 18, color: accent }}>⚡</span>
+              <span style={{ fontFamily: "'Syne',sans-serif", fontSize: 17, fontWeight: 800, color: accent, letterSpacing: '-0.3px' }}>Crosscheck</span>
+              <span style={{ fontSize: 12, color: text3, marginLeft: 4 }}>Fuzzy match company names across two lists</span>
+              <button onClick={() => setShowCCWizard(false)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '2px 6px' }}
+                onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+            </div>
+
+            {/* Step bar */}
+            <div style={{ display: 'flex', alignItems: 'center', padding: '18px 28px 0', gap: 0, flexShrink: 0 }}>
+              {[['1', 'Your check list'], ['2', 'Master list'], ['3', 'Running'], ['4', 'Results']].map(([num, label], i) => {
+                const n = i + 1
+                const isDone = ccStep > n
+                const isActive = ccStep === n
+                return (
+                  <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 0, flex: n < 4 ? 1 : 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <div style={{ width: 24, height: 24, borderRadius: '50%', background: isDone || isActive ? accent : raised, border: `1px solid ${isDone || isActive ? accent : border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: isDone || isActive ? '#fff' : text3, outline: isActive ? `3px solid ${accentDim}` : 'none', flexShrink: 0 }}>
+                        {isDone ? '✓' : num}
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: isActive ? 600 : 400, color: isActive ? text : isDone ? text2 : text3, whiteSpace: 'nowrap' }}>{label}</span>
+                    </div>
+                    {n < 4 && <div style={{ flex: 1, height: 1, background: border, margin: '0 12px' }} />}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Body */}
+            <div style={{ flex: 1, padding: '20px 28px 8px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+              {/* Step 1 — Pick check list */}
+              {ccStep === 1 && (
+                <>
+                  <div style={{ background: accentDim, border: `1px solid ${accent}33`, borderLeft: `4px solid ${accent}`, borderRadius: 8, padding: '14px 18px' }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: accent, marginBottom: 5 }}>Which list do you want to check?</div>
+                    <div style={{ fontSize: 12, color: text2, lineHeight: 1.7 }}>
+                      This is your <strong style={{ color: text }}>incoming list</strong> — the names you're not sure about. For example: a list of event exhibitors, new leads, or contacts from a trade show. These are the names Crosscheck will try to find inside your master list.
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    {canvasColumns.map(col => {
+                      const sel = crosscheckConfig.colAId === col.canvasId
+                      return (
+                        <div key={col.canvasId} onClick={() => setCrosscheckConfig(p => ({ ...p, colAId: col.canvasId }))}
+                          style={{ border: `1.5px solid ${sel ? accent : border}`, borderRadius: 10, padding: '14px 16px', cursor: 'pointer', background: sel ? accentDim : raised, transition: 'all 0.12s' }}
+                          onMouseEnter={e => { if (!sel) e.currentTarget.style.borderColor = accent + '66' }}
+                          onMouseLeave={e => { if (!sel) e.currentTarget.style.borderColor = border }}>
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                            <div style={{ width: 8, height: 8, borderRadius: 2, background: sel ? accent : text3, marginTop: 4, flexShrink: 0 }} />
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: sel ? accent : text, fontFamily: "'DM Sans',sans-serif" }}>{col.label}</div>
+                              <div style={{ fontSize: 11, color: text3, marginTop: 3 }}>{col.rows.length.toLocaleString()} rows · {col.fileName}</div>
+                              {sel && <div style={{ fontSize: 10, color: accent, fontWeight: 700, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>✓ selected as check list</div>}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {canvasColumns.length === 0 && <div style={{ fontSize: 13, color: text3, textAlign: 'center', padding: '20px 0' }}>No columns on canvas yet — drag columns from the sidebar first.</div>}
+                </>
+              )}
+
+              {/* Step 2 — Pick master list */}
+              {ccStep === 2 && (
+                <>
+                  <div style={{ background: dark ? '#0d2a1a' : '#dcfce7', border: `1px solid #4ade8033`, borderLeft: `4px solid #4ade80`, borderRadius: 8, padding: '14px 18px' }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: green, marginBottom: 5 }}>Which is your master list?</div>
+                    <div style={{ fontSize: 12, color: text2, lineHeight: 1.7 }}>
+                      This is your <strong style={{ color: text }}>source of truth</strong> — your CRM export, your account database, your existing client list. Crosscheck will search through every name here to find the closest match to each name in your check list.
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    {canvasColumns.filter(c => c.canvasId !== crosscheckConfig.colAId).map(col => {
+                      const sel = crosscheckConfig.colBId === col.canvasId
+                      return (
+                        <div key={col.canvasId} onClick={() => setCrosscheckConfig(p => ({ ...p, colBId: col.canvasId }))}
+                          style={{ border: `1.5px solid ${sel ? green : border}`, borderRadius: 10, padding: '14px 16px', cursor: 'pointer', background: sel ? (dark ? '#0d2a1a' : '#dcfce7') : raised, transition: 'all 0.12s' }}
+                          onMouseEnter={e => { if (!sel) e.currentTarget.style.borderColor = green + '66' }}
+                          onMouseLeave={e => { if (!sel) e.currentTarget.style.borderColor = border }}>
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                            <div style={{ width: 8, height: 8, borderRadius: 2, background: sel ? green : text3, marginTop: 4, flexShrink: 0 }} />
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: sel ? green : text }}>{col.label}</div>
+                              <div style={{ fontSize: 11, color: text3, marginTop: 3 }}>{col.rows.length.toLocaleString()} rows · {col.fileName}</div>
+                              {sel && <div style={{ fontSize: 10, color: green, fontWeight: 700, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>✓ selected as master list</div>}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+                    <span style={{ fontSize: 12, color: text3 }}>Sensitivity:</span>
+                    {[[75, 'Lenient — catches more'], [85, 'Medium — recommended'], [90, 'Strict — high confidence only']].map(([val, lbl]) => (
+                      <button key={val} onClick={() => setCrosscheckConfig(p => ({ ...p, threshold: val }))}
+                        style={{ padding: '5px 12px', borderRadius: 6, border: `1px solid ${crosscheckConfig.threshold === val ? accent : border}`, background: crosscheckConfig.threshold === val ? accentDim : 'transparent', color: crosscheckConfig.threshold === val ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer' }}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Step 3 — Running */}
+              {ccStep === 3 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: text }}>Finding matches...</div>
+                      <div style={{ fontSize: 12, color: text3, marginTop: 2 }}>{ccLiveRows.length} matches found so far</div>
+                    </div>
+                    <div style={{ width: 32, height: 32, borderRadius: '50%', border: `2px solid ${accent}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
+                  </div>
+                  <div style={{ height: 4, borderRadius: 2, background: raised, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', background: accent, borderRadius: 2, width: crosscheckRunning ? '70%' : '100%', transition: 'width 2s ease' }} />
+                  </div>
+                  <div style={{ border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden', maxHeight: 260, overflowY: 'auto' }}>
+                    <div style={{ display: 'flex', background: raised, borderBottom: `1px solid ${border}`, padding: '6px 0' }}>
+                      <div style={{ flex: 2, padding: '0 14px', fontSize: 10, fontWeight: 700, color: text3, textTransform: 'uppercase', letterSpacing: 0.5 }}>Your name</div>
+                      <div style={{ flex: 2, padding: '0 14px', fontSize: 10, fontWeight: 700, color: text3, textTransform: 'uppercase', letterSpacing: 0.5 }}>Match found</div>
+                      <div style={{ flex: 1, padding: '0 14px', fontSize: 10, fontWeight: 700, color: text3, textTransform: 'uppercase', letterSpacing: 0.5 }}>Confidence</div>
+                    </div>
+                    {ccLiveRows.map((r, i) => {
+                      const isReview = r.decision === 'maybe'
+                      const scoreColor = isReview ? amber : green
+                      return (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', borderBottom: `1px solid ${border}22`, background: isReview ? (dark ? '#2a1f0d33' : '#fef3c755') : 'transparent' }}>
+                          <div style={{ flex: 2, padding: '8px 14px', fontSize: 12, color: text, fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(r.original ?? '')}</div>
+                          <div style={{ flex: 2, padding: '8px 14px', fontSize: 12, color: text2, fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.bestMatch}</div>
+                          <div style={{ flex: 1, padding: '8px 14px' }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: scoreColor, fontFamily: "'DM Mono',monospace" }}>{r.score}%</div>
+                            <div style={{ height: 3, borderRadius: 2, background: raised, marginTop: 3, width: 48, overflow: 'hidden' }}>
+                              <div style={{ height: '100%', width: `${r.score}%`, background: scoreColor, borderRadius: 2 }} />
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {ccLiveRows.length === 0 && <div style={{ padding: '20px', textAlign: 'center', fontSize: 12, color: text3 }}>Starting...</div>}
+                  </div>
+                  <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+                </div>
+              )}
+
+              {/* Step 4 — Results */}
+              {ccStep === 4 && ccResults && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    {[
+                      { label: 'Matched', value: ccResults.summary.matched, color: green, bg: dark ? '#0d2a1a' : '#dcfce7' },
+                      { label: 'Need review', value: ccResults.summary.maybe, color: amber, bg: dark ? '#2a1f0d' : '#fef3c7' },
+                      { label: 'Not found', value: ccResults.summary.unmatched, color: red, bg: dark ? '#2a0d0d' : '#fee2e2' },
+                    ].map(({ label, value, color, bg }) => (
+                      <div key={label} style={{ flex: 1, background: bg, borderRadius: 10, padding: '12px 16px', textAlign: 'center', border: `1px solid ${color}33` }}>
+                        <div style={{ fontSize: 24, fontWeight: 800, color, fontFamily: "'Syne',sans-serif" }}>{value.toLocaleString()}</div>
+                        <div style={{ fontSize: 11, color, marginTop: 3, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {[['matched', `Matched & review (${ccResults.matched.length})`], ['unmatched', `Not found (${ccResults.unmatched.length})`]].map(([tab, label]) => (
+                      <button key={tab} onClick={() => setCCActiveTab(tab)}
+                        style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${ccActiveTab === tab ? accent : border}`, background: ccActiveTab === tab ? accentDim : 'transparent', color: ccActiveTab === tab ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: ccActiveTab === tab ? 600 : 400, cursor: 'pointer' }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden', maxHeight: 260, overflowY: 'auto' }}>
+                    <div style={{ display: 'flex', background: raised, borderBottom: `1px solid ${border}`, padding: '6px 0', position: 'sticky', top: 0 }}>
+                      <div style={{ flex: 2, padding: '0 14px', fontSize: 10, fontWeight: 700, color: text3, textTransform: 'uppercase', letterSpacing: 0.5 }}>Your name</div>
+                      {ccActiveTab === 'matched' && <div style={{ flex: 2, padding: '0 14px', fontSize: 10, fontWeight: 700, color: text3, textTransform: 'uppercase', letterSpacing: 0.5 }}>Best match</div>}
+                      {ccActiveTab === 'matched' && <div style={{ flex: 1, padding: '0 14px', fontSize: 10, fontWeight: 700, color: text3, textTransform: 'uppercase', letterSpacing: 0.5 }}>Confidence</div>}
+                      {ccActiveTab === 'matched' && <div style={{ width: 110, padding: '0 14px', fontSize: 10, fontWeight: 700, color: text3, textTransform: 'uppercase', letterSpacing: 0.5 }}>Status</div>}
+                    </div>
+                    {ccActiveTab === 'matched' && ccResults.matched.map((r, i) => {
+                      const isReview = r.decision === 'maybe'
+                      const key = String(r.original ?? '')
+                      const confirmed = ccConfirmed.has(key)
+                      const rejected = ccRejected.has(key)
+                      const scoreColor = confirmed ? green : isReview ? amber : green
+                      return (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', borderBottom: `1px solid ${border}22`, background: rejected ? (dark ? '#2a0d0d55' : '#fee2e255') : isReview && !confirmed ? (dark ? '#2a1f0d33' : '#fef3c755') : 'transparent' }}>
+                          <div style={{ flex: 2, padding: '8px 14px', fontSize: 12, color: rejected ? text3 : text, fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: rejected ? 'line-through' : 'none' }}>{String(r.original ?? '')}</div>
+                          <div style={{ flex: 2, padding: '8px 14px', fontSize: 12, color: text2, fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.bestMatch}</div>
+                          <div style={{ flex: 1, padding: '8px 14px' }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: scoreColor, fontFamily: "'DM Mono',monospace" }}>{r.score}%</div>
+                            <div style={{ height: 3, borderRadius: 2, background: raised, marginTop: 3, width: 48, overflow: 'hidden' }}>
+                              <div style={{ height: '100%', width: `${r.score}%`, background: scoreColor, borderRadius: 2 }} />
+                            </div>
+                          </div>
+                          <div style={{ width: 110, padding: '8px 14px', display: 'flex', gap: 5, alignItems: 'center' }}>
+                            {isReview && !confirmed && !rejected ? (
+                              <>
+                                <button onClick={() => setCCConfirmed(prev => new Set([...prev, key]))}
+                                  style={{ background: dark ? '#0d2a1a' : '#dcfce7', border: `1px solid ${green}44`, borderRadius: 4, color: green, fontSize: 11, padding: '2px 7px', cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: 600 }}>✓ Yes</button>
+                                <button onClick={() => setCCRejected(prev => new Set([...prev, key]))}
+                                  style={{ background: dark ? '#2a0d0d' : '#fee2e2', border: `1px solid ${red}44`, borderRadius: 4, color: red, fontSize: 11, padding: '2px 7px', cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>✕</button>
+                              </>
+                            ) : confirmed ? (
+                              <span style={{ fontSize: 10, color: green, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3 }}>✓ confirmed</span>
+                            ) : rejected ? (
+                              <span style={{ fontSize: 10, color: red, fontWeight: 700 }}>✕ rejected</span>
+                            ) : (
+                              <span style={{ fontSize: 10, color: green, fontWeight: 700, background: dark ? '#0d2a1a' : '#dcfce7', padding: '2px 7px', borderRadius: 4 }}>matched</span>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {ccActiveTab === 'unmatched' && ccResults.unmatched.map((r, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', borderBottom: `1px solid ${border}22` }}>
+                        <div style={{ flex: 1, padding: '8px 14px', fontSize: 12, color: text3, fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(r.original ?? '')}</div>
+                        <div style={{ padding: '8px 14px' }}><span style={{ fontSize: 10, color: red, fontWeight: 700, background: dark ? '#2a0d0d' : '#fee2e2', padding: '2px 7px', borderRadius: 4 }}>not found</span></div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: '14px 28px', borderTop: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+              {ccStep === 1 && (
+                <>
+                  <span style={{ fontSize: 11, color: text3 }}>Step 1 of 3</span>
+                  <button onClick={() => { if (crosscheckConfig.colAId) setCCStep(2) }}
+                    disabled={!crosscheckConfig.colAId}
+                    style={{ background: accent, color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 600, cursor: crosscheckConfig.colAId ? 'pointer' : 'default', opacity: crosscheckConfig.colAId ? 1 : 0.4 }}>
+                    Next — pick master list →
+                  </button>
+                </>
+              )}
+              {ccStep === 2 && (
+                <>
+                  <button onClick={() => setCCStep(1)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 7, padding: '9px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: text2, cursor: 'pointer' }}>← Back</button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 11, color: text3 }}>
+                      Checking <strong style={{ color: text }}>{canvasColumns.find(c => c.canvasId === crosscheckConfig.colAId)?.label}</strong> against <strong style={{ color: text }}>{crosscheckConfig.colBId ? canvasColumns.find(c => c.canvasId === crosscheckConfig.colBId)?.label : '—'}</strong>
+                    </span>
+                    <button onClick={runCrosscheck} disabled={!crosscheckConfig.colBId}
+                      style={{ background: accent, color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 600, cursor: crosscheckConfig.colBId ? 'pointer' : 'default', opacity: crosscheckConfig.colBId ? 1 : 0.4 }}>
+                      Run Crosscheck ⚡
+                    </button>
+                  </div>
+                </>
+              )}
+              {ccStep === 3 && (
+                <span style={{ fontSize: 12, color: text3, width: '100%', textAlign: 'center' }}>Matching in progress — please wait...</span>
+              )}
+              {ccStep === 4 && (
+                <>
+                  <button onClick={() => { setCCStep(1); setCCResults(null); setCCLiveRows([]); setCrosscheckConfig({ colAId: '', colBId: '', threshold: 85 }) }}
+                    style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 7, padding: '9px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: text2, cursor: 'pointer' }}>← Start over</button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 7, padding: '9px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: text2, cursor: 'pointer' }}>Export CSV</button>
+                    <button onClick={addCCToCanvas}
+                      style={{ background: accent, color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                      Add to canvas ✓
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+    </>
   )
 }
