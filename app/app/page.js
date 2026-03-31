@@ -27,6 +27,7 @@ export default function AppPage() {
 const [statCards, setStatCards] = useState([])
   const [editingCell, setEditingCell] = useState(null)
   const [editingCellVal, setEditingCellVal] = useState('')
+  const [selectedCell, setSelectedCell] = useState(null)
   const [highlightEmpty, setHighlightEmpty] = useState(false)
   const [duplicateMap, setDuplicateMap] = useState({})
   const [trimOptions, setTrimOptions] = useState({ spaces: true, casing: 'none' })
@@ -572,17 +573,72 @@ function moveStatCard(id, x, y) {
 }
 
   // ── Cell editing ─────────────────────────────────────────────
-  function startCellEdit(canvasId, rowIndex, currentVal) { setEditingCell({ canvasId, rowIndex }); setEditingCellVal(currentVal === undefined || currentVal === null ? '' : String(currentVal)) }
+  function startCellEdit(canvasId, rowIndex, currentVal) {
+    setSelectedCell({ canvasId, rowIndex })
+    setEditingCell({ canvasId, rowIndex })
+    setEditingCellVal(currentVal === undefined || currentVal === null ? '' : String(currentVal))
+  }
+
   function commitCellEdit() {
     if (!editingCell) return
     const { canvasId, rowIndex } = editingCell
-    setCanvasColumns(prev => prev.map(col => { if (col.canvasId !== canvasId) return col; const newRows = [...col.rows]; newRows[rowIndex] = editingCellVal; return { ...col, rows: newRows } }))
+    setCanvasColumns(prev => prev.map(col => {
+      if (col.canvasId !== canvasId) return col
+      const newRows = [...col.rows]
+      newRows[rowIndex] = editingCellVal
+      return { ...col, rows: newRows }
+    }))
     setEditingCell(null)
   }
+
+  function commitAndMove(direction) {
+    if (!editingCell) return
+    const { canvasId, rowIndex } = editingCell
+    setCanvasColumns(prev => prev.map(col => {
+      if (col.canvasId !== canvasId) return col
+      const newRows = [...col.rows]
+      newRows[rowIndex] = editingCellVal
+      return { ...col, rows: newRows }
+    }))
+    setEditingCell(null)
+    const colIdx = sortedCanvasCols.findIndex(c => c.canvasId === canvasId)
+    if (direction === 'down') {
+      const nextRow = rowIndex + 1
+      if (nextRow < maxRows) {
+        const nextVal = sortedCanvasCols[colIdx]?.rows[nextRow]
+        setTimeout(() => startCellEdit(canvasId, nextRow, nextVal), 0)
+      }
+    } else if (direction === 'right') {
+      const nextColIdx = colIdx + 1
+      if (nextColIdx < sortedCanvasCols.length) {
+        const nextCol = sortedCanvasCols[nextColIdx]
+        const nextVal = nextCol?.rows[rowIndex]
+        setTimeout(() => startCellEdit(nextCol.canvasId, rowIndex, nextVal), 0)
+      }
+    } else if (direction === 'left') {
+      const prevColIdx = colIdx - 1
+      if (prevColIdx >= 0) {
+        const prevCol = sortedCanvasCols[prevColIdx]
+        const prevVal = prevCol?.rows[rowIndex]
+        setTimeout(() => startCellEdit(prevCol.canvasId, rowIndex, prevVal), 0)
+      }
+    } else if (direction === 'up') {
+      const prevRow = rowIndex - 1
+      if (prevRow >= 0) {
+        const prevVal = sortedCanvasCols[colIdx]?.rows[prevRow]
+        setTimeout(() => startCellEdit(canvasId, prevRow, prevVal), 0)
+      }
+    }
+  }
+
   function handleCellKeyDown(e) {
-    if (e.key === 'Enter') { commitCellEdit(); e.preventDefault() }
-    if (e.key === 'Escape') setEditingCell(null)
-    if (e.key === 'Tab') commitCellEdit()
+    if (e.key === 'Enter') { e.preventDefault(); commitAndMove('down') }
+    if (e.key === 'Tab') { e.preventDefault(); commitAndMove(e.shiftKey ? 'left' : 'right') }
+    if (e.key === 'Escape') { setEditingCell(null) }
+    if (e.key === 'ArrowDown' && !e.shiftKey) { e.preventDefault(); commitAndMove('down') }
+    if (e.key === 'ArrowUp' && !e.shiftKey) { e.preventDefault(); commitAndMove('up') }
+    if (e.key === 'ArrowRight' && !e.shiftKey) { e.preventDefault(); commitAndMove('right') }
+    if (e.key === 'ArrowLeft' && !e.shiftKey) { e.preventDefault(); commitAndMove('left') }
   }
   function deleteRow(rowIndex) { setCanvasColumns(prev => prev.map(col => { const newRows = [...col.rows]; newRows.splice(rowIndex, 1); return { ...col, rows: newRows } })); setEditingCell(null) }
   function copyRow(rowIndex) { const snap = {}; canvasColumns.forEach(col => { snap[col.canvasId] = col.rows[rowIndex] }); setCopiedRow(snap) }
@@ -895,7 +951,7 @@ function duplicateColumn(canvasId) {
 )}
       <div
         style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: "'DM Sans',sans-serif" }}
-       onMouseDown={e => { if (contextMenu) setContextMenu(null); if (colContextMenu) setColContextMenu(null); if (editingCell && !e.target.closest('td input')) commitCellEdit() }}
+       onMouseDown={e => { if (contextMenu) setContextMenu(null); if (colContextMenu) setColContextMenu(null); if (editingCell && !e.target.closest('td input')) commitCellEdit(); if (!e.target.closest('td')) setSelectedCell(null) }}
         onDragOver={e => { if (dragData.current) e.preventDefault() }}
         onDrop={e => { e.preventDefault(); if (!dragData.current) return; if (dragData.current.type === 'sidebar') addColumnsToCanvas(dragData.current.cols, null); setInsertAt(null); lastInsert.current = null }}
       >
@@ -1463,6 +1519,7 @@ function duplicateColumn(canvasId) {
                                   const isEmptyHighlight = highlightEmpty && isEmpty
                                   const fmt = getColFormat(col.canvasId)
                                  const ccDec = col.label === 'CC Decision' ? String(val || '').toLowerCase() : null
+                                  const isSelected = selectedCell?.canvasId === col.canvasId && selectedCell?.rowIndex === ri && !isEditing
                                   let bg = ri % 2 === 1 ? `${surface}55` : 'transparent'
                                   if (isPinned) bg = dark ? '#1a1f4a33' : '#e8f5ee88'
                                   if (isBandedRow) bg = dark ? globalFormat.headerColor + '22' : globalFormat.headerColor + '11'
@@ -1476,7 +1533,7 @@ function duplicateColumn(canvasId) {
                                       onDragOver={e => handleThDragOver(e, idx)}
                                       onDrop={e => handleThDrop(e, idx)}
                                       onClick={() => !isEditing && startCellEdit(col.canvasId, ri, val)}
-                                      style={{ padding: isEditing ? '0' : '5px 14px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: ccDec === 'matched' ? green : ccDec === 'maybe' ? amber : ccDec === 'unmatched' ? red : isEmptyHighlight ? '#f87171' : isDup ? '#E8B85B' : isEmpty ? text3 : text2, whiteSpace: fmt.wrap ? 'normal' : 'nowrap', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', background: bg, cursor: isEditing ? 'text' : 'default', fontSize: fmt.fontSize || 12, fontWeight: fmt.bold ? 700 : 400, textAlign: fmt.align || 'left' }}
+                                     style={{ padding: isEditing ? '0' : '5px 14px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, outline: isSelected ? `2px solid ${accent}` : 'none', outlineOffset: '-2px', color: ccDec === 'matched' ? green : ccDec === 'maybe' ? amber : ccDec === 'unmatched' ? red : isEmptyHighlight ? '#f87171' : isDup ? '#E8B85B' : isEmpty ? text3 : text2, whiteSpace: fmt.wrap ? 'normal' : 'nowrap', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', background: bg, cursor: isEditing ? 'text' : 'default', fontSize: fmt.fontSize || 12, fontWeight: fmt.bold ? 700 : 400, textAlign: fmt.align || 'left' }}
                                     >
                                       {isEditing ? (
                                         <input autoFocus value={editingCellVal} onChange={e => setEditingCellVal(e.target.value)} onBlur={commitCellEdit} onKeyDown={handleCellKeyDown} style={{ width: '100%', padding: '5px 14px', border: 'none', borderBottom: `2px solid ${accent}`, background: raised, color: text, fontFamily: "'DM Mono',monospace", fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
