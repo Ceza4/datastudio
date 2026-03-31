@@ -44,6 +44,8 @@ const [statCards, setStatCards] = useState([])
   const [ccConfirmed, setCCConfirmed] = useState(new Set())
   const [ccRejected, setCCRejected] = useState(new Set())
   const ccWorkerRef = useRef(null)
+  const [dragOverFileId, setDragOverFileId] = useState(null)
+  const [dragOverSidebarCol, setDragOverSidebarCol] = useState(null)
   const [insertAt, setInsertAt] = useState(null)
   const [draggingCanvasId, setDraggingCanvasId] = useState(null)
   const draggingCanvasIdRef = useRef(null)
@@ -369,7 +371,7 @@ function setCanvasZoom(fn) {
     const colsToAdd = selectedSidebarCols.length > 1 && selectedSidebarCols.includes(col.id)
       ? selectedSidebarCols.map(id => { const f = files.find(f => f.id === fileId); const c = f?.sheets[0]?.headers.find(h => h.id === id); return c ? { fileId, fileName, sheetName, col: c } : null }).filter(Boolean)
       : [{ fileId, fileName, sheetName, col }]
-    dragData.current = { type: 'sidebar', cols: colsToAdd }
+    dragData.current = { type: 'sidebar', cols: colsToAdd, sourceFileId: fileId }
     setNativeDragImage(e, colsToAdd.length > 1 ? `${colsToAdd.length} columns` : col.label)
     e.dataTransfer.effectAllowed = 'copy'
   }
@@ -632,13 +634,17 @@ function moveStatCard(id, x, y) {
   }
 
   function handleCellKeyDown(e) {
-    if (e.key === 'Enter') { e.preventDefault(); commitAndMove('down') }
-    if (e.key === 'Tab') { e.preventDefault(); commitAndMove(e.shiftKey ? 'left' : 'right') }
+    if (['Enter','Tab','ArrowDown','ArrowUp','ArrowLeft','ArrowRight'].includes(e.key)) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    if (e.key === 'Enter') { commitAndMove('down') }
+    if (e.key === 'Tab') { commitAndMove(e.shiftKey ? 'left' : 'right') }
     if (e.key === 'Escape') { setEditingCell(null) }
-    if (e.key === 'ArrowDown' && !e.shiftKey) { e.preventDefault(); commitAndMove('down') }
-    if (e.key === 'ArrowUp' && !e.shiftKey) { e.preventDefault(); commitAndMove('up') }
-    if (e.key === 'ArrowRight' && !e.shiftKey) { e.preventDefault(); commitAndMove('right') }
-    if (e.key === 'ArrowLeft' && !e.shiftKey) { e.preventDefault(); commitAndMove('left') }
+    if (e.key === 'ArrowDown' && !e.shiftKey) { commitAndMove('down') }
+    if (e.key === 'ArrowUp' && !e.shiftKey) { commitAndMove('up') }
+    if (e.key === 'ArrowRight' && !e.shiftKey) { commitAndMove('right') }
+    if (e.key === 'ArrowLeft' && !e.shiftKey) { commitAndMove('left') }
   }
   function deleteRow(rowIndex) { setCanvasColumns(prev => prev.map(col => { const newRows = [...col.rows]; newRows.splice(rowIndex, 1); return { ...col, rows: newRows } })); setEditingCell(null) }
   function copyRow(rowIndex) { const snap = {}; canvasColumns.forEach(col => { snap[col.canvasId] = col.rows[rowIndex] }); setCopiedRow(snap) }
@@ -713,6 +719,49 @@ function duplicateColumn(canvasId) {
     return next
   })
 }
+function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
+    const col = canvasColumns.find(c => c.canvasId === canvasId)
+    if (!col) return
+    const newColId = `col_${Date.now()}_pushed`
+    setFiles(prev => prev.map(f => {
+      if (f.id !== fileId) return f
+      return {
+        ...f, sheets: f.sheets.map((s, si) => {
+          if (si !== 0) return s
+          const visibleHeaders = s.headers.filter(h => !h.hidden)
+          let insertIdx = visibleHeaders.length
+          if (insertAtColId) {
+            const targetPos = visibleHeaders.findIndex(h => h.id === insertAtColId)
+            if (targetPos !== -1) insertIdx = side === 'before' ? targetPos : targetPos + 1
+          }
+          const newHeader = { id: newColId, label: col.label, index: insertIdx, hidden: false }
+          const updatedHeaders = [
+            ...visibleHeaders.slice(0, insertIdx),
+            newHeader,
+            ...visibleHeaders.slice(insertIdx)
+          ].map((h, i) => ({ ...h, index: i }))
+          const newRows = s.rows.map((row, ri) => {
+            const newRow = [...row]
+            newRow.splice(insertIdx, 0, col.rows[ri] ?? '')
+            return newRow
+          })
+          if (newRows.length < col.rows.length) {
+            for (let i = newRows.length; i < col.rows.length; i++) {
+              const emptyRow = Array(updatedHeaders.length).fill('')
+              emptyRow[insertIdx] = col.rows[i] ?? ''
+              newRows.push(emptyRow)
+            }
+          }
+          return { ...s, headers: updatedHeaders, rows: newRows }
+        })
+      }
+    }))
+    setCanvasColumns(prev => prev.filter(c => c.canvasId !== canvasId))
+    setPinnedColIds(prev => prev.filter(id => id !== canvasId))
+    setDragOverFileId(null)
+    setDragOverSidebarCol(null)
+    dragData.current = null
+  }
   function addBlankColumn() {
     const newCol = { canvasId: `canvas_${Date.now()}_new`, colId: `new_${Date.now()}`, label: 'New Column', fileName: 'manual', sheetName: '', rows: Array(maxRows).fill('') }
     setCanvasColumns(prev => [...prev, newCol])
@@ -971,7 +1020,30 @@ function duplicateColumn(canvasId) {
               </div>
             ) : files.map(file => (
               <div key={file.id} style={{ marginBottom: 6 }}>
-                <div className="file-row" onClick={() => setExpandedFiles(prev => { const next = new Set(prev); next.has(file.id) ? next.delete(file.id) : next.add(file.id); return next })} style={{ padding: '6px 8px', borderRadius: 6, fontSize: 12, color: text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                <div className="file-row"
+                  onClick={() => setExpandedFiles(prev => { const next = new Set(prev); next.has(file.id) ? next.delete(file.id) : next.add(file.id); return next })}
+                  onDragOver={e => {
+                    const d = dragData.current
+                    if (!d) return
+                    if (d.type === 'canvas' || (d.type === 'sidebar' && d.sourceFileId !== file.id)) { e.preventDefault(); setDragOverFileId(file.id) }
+                  }}
+                  onDragLeave={() => setDragOverFileId(null)}
+                  onDrop={e => {
+                    e.preventDefault()
+                    const d = dragData.current
+                    if (!d) return
+                    if (d.type === 'canvas') {
+                      sendCanvasColToFile(d.canvasId, file.id, null, null)
+                    } else if (d.type === 'sidebar' && d.sourceFileId !== file.id) {
+                      addColumnsToCanvas(d.cols.map(c => ({ ...c, targetFileId: file.id })), null)
+                      d.cols.forEach(({ fileId: srcId, sheetName, col: c }) => {
+                        setFiles(prev => prev.map(f => f.id !== srcId ? f : { ...f, sheets: f.sheets.map(s => s.name !== sheetName ? s : { ...s, headers: s.headers.filter(h => h.id !== c.id) }) }))
+                      })
+                      setDragOverFileId(null)
+                      dragData.current = null
+                    }
+                  }}
+                  style={{ padding: '6px 8px', borderRadius: 6, fontSize: 12, color: text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, background: dragOverFileId === file.id ? accentDim : undefined, border: dragOverFileId === file.id ? `1px solid ${accent}` : '1px solid transparent' }}>
                   <span style={{ fontSize: 13 }}>📄</span>
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
                   <span style={{ color: text3, fontSize: 10 }}>{expandedFiles.has(file.id) ? '▾' : '▸'}</span>
@@ -992,7 +1064,21 @@ function duplicateColumn(canvasId) {
                         <div key={col.id} className="col-row" draggable
                           onDragStart={e => handleSidebarDragStart(e, file.id, file.name, file.sheets[0].name, col)}
                           onClick={e => toggleSidebarSelect(e, col.id)}
-                          style={{ padding: '4px 8px 4px 24px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 5, opacity: onCanvas ? 0.4 : 1, background: isSelected ? accentDim : 'transparent', border: isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}
+                          onDragOver={e => {
+                            if (dragData.current?.type !== 'canvas') return
+                            e.preventDefault(); e.stopPropagation()
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            const side = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                            setDragOverSidebarCol({ colId: col.id, side, fileId: file.id })
+                            setDragOverFileId(null)
+                          }}
+                          onDragLeave={() => setDragOverSidebarCol(null)}
+                          onDrop={e => {
+                            e.preventDefault(); e.stopPropagation()
+                            if (dragData.current?.type !== 'canvas') return
+                            sendCanvasColToFile(dragData.current.canvasId, file.id, col.id, dragOverSidebarCol?.side || 'after')
+                          }}
+                          style={{ padding: '4px 8px 4px 24px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 5, opacity: onCanvas ? 0.4 : 1, background: isSelected ? accentDim : 'transparent', borderLeft: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderRight: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderTop: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'before' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderBottom: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'after' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}
                         >
                           <div style={{ width: 6, height: 6, borderRadius: 2, background: onCanvas ? text3 : accent, flexShrink: 0 }} />
                           <span style={{ flex: 1, fontSize: 11, color: isSelected ? accent : onCanvas ? text3 : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
