@@ -719,6 +719,55 @@ function duplicateColumn(canvasId) {
     return next
   })
 }
+function moveColBetweenFiles(sourceFileId, sourceSheetName, sourceColId, targetFileId, targetColId, side) {
+    const sourceFile = files.find(f => f.id === sourceFileId)
+    const sourceSheet = sourceFile?.sheets.find(s => s.name === sourceSheetName)
+    const sourceHeader = sourceSheet?.headers.find(h => h.id === sourceColId)
+    if (!sourceHeader || !sourceSheet) return
+    const colRows = sourceSheet.rows.map(row => row[sourceHeader.index] ?? '')
+    const newColId = `col_${Date.now()}_moved`
+    setFiles(prev => prev.map(f => {
+      if (f.id === sourceFileId) {
+        return { ...f, sheets: f.sheets.map(s => s.name !== sourceSheetName ? s : {
+          ...s,
+          headers: s.headers.filter(h => h.id !== sourceColId).map((h, i) => ({ ...h, index: i })),
+          rows: s.rows.map(row => {
+            const newRow = [...row]
+            newRow.splice(sourceHeader.index, 1)
+            return newRow
+          })
+        })}
+      }
+      if (f.id === targetFileId) {
+        return { ...f, sheets: f.sheets.map((s, si) => {
+          if (si !== 0) return s
+          const visible = s.headers.filter(h => !h.hidden)
+          let insertIdx = visible.length
+          if (targetColId) {
+            const targetPos = visible.findIndex(h => h.id === targetColId)
+            if (targetPos !== -1) insertIdx = side === 'before' ? targetPos : targetPos + 1
+          }
+          const newHeader = { id: newColId, label: sourceHeader.label, index: insertIdx, hidden: false }
+          const updatedHeaders = [
+            ...visible.slice(0, insertIdx),
+            newHeader,
+            ...visible.slice(insertIdx)
+          ].map((h, i) => ({ ...h, index: i }))
+          const maxLen = Math.max(s.rows.length, colRows.length)
+          const newRows = Array.from({ length: maxLen }, (_, ri) => {
+            const row = ri < s.rows.length ? [...s.rows[ri]] : Array(insertIdx).fill('')
+            row.splice(insertIdx, 0, colRows[ri] ?? '')
+            return row
+          })
+          return { ...s, headers: updatedHeaders, rows: newRows }
+        })}
+      }
+      return f
+    }))
+    setDragOverFileId(null)
+    setDragOverSidebarCol(null)
+    dragData.current = null
+  }
 function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     const col = canvasColumns.find(c => c.canvasId === canvasId)
     if (!col) return
@@ -1029,7 +1078,7 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
                   }}
                   onDragLeave={() => setDragOverFileId(null)}
                   onDrop={e => {
-                    e.preventDefault()
+                    e.preventDefault(); e.stopPropagation()
                     const d = dragData.current
                     if (!d) return
                     if (d.type === 'canvas') {
@@ -1073,10 +1122,11 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
                             setDragOverFileId(null)
                           }}
                           onDragLeave={() => setDragOverSidebarCol(null)}
-                          onDrop={e => {
+                            onDrop={e => {
                             e.preventDefault(); e.stopPropagation()
-                            if (dragData.current?.type !== 'canvas') return
-                            sendCanvasColToFile(dragData.current.canvasId, file.id, col.id, dragOverSidebarCol?.side || 'after')
+                            const d = dragData.current
+                            if (!d || d.type !== 'canvas') return
+                            sendCanvasColToFile(d.canvasId, file.id, col.id, dragOverSidebarCol?.side || 'after')
                           }}
                           style={{ padding: '4px 8px 4px 24px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 5, opacity: onCanvas ? 0.4 : 1, background: isSelected ? accentDim : 'transparent', borderLeft: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderRight: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderTop: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'before' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderBottom: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'after' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}
                         >
