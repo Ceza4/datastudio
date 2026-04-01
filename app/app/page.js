@@ -18,7 +18,372 @@ const defaultGlobalFormat = () => ({
   headerColor: '#5B5FE8',
   exportAsTable: false, // moved into format bar
 })
+function NotebookCanvas({ nb, dark, colors, onBack, onAddBlock, onUpdateBlock, onDeleteBlock, onRenameNotebook, onSendColToCanvas, onDropColumn, onAddSheet, onDeleteSheet, onRenameSheet, onSetActiveSheet }) {
+  const { surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber } = colors
+  const containerRef = useRef(null)
+  const [pan, setPan] = useState({ x: 60, y: 60 })
+  const panRef = useRef({ x: 60, y: 60 })
+  const [renamingNb, setRenamingNb] = useState(false)
+  const [nbLabel, setNbLabel] = useState(nb.name)
+  const [sheetsOpen, setSheetsOpen] = useState(false)
+  const [renamingSheetId, setRenamingSheetId] = useState(null)
+  const [renamingSheetLabel, setRenamingSheetLabel] = useState('')
+  const [cardDrag, setCardDrag] = useState(null)
+  const [cardDragOver, setCardDragOver] = useState(null)
+  useEffect(() => { setNbLabel(nb.name) }, [nb.name])
 
+  const activeSheet = nb.sheets?.find(s => s.id === nb.activeSheetId) || nb.sheets?.[0]
+  const blocks = activeSheet?.blocks || []
+
+  function handleBgClick(e) {
+    if (e.target !== e.currentTarget) return
+    const rect = containerRef.current.getBoundingClientRect()
+    const x = e.clientX - rect.left - panRef.current.x
+    const y = e.clientY - rect.top - panRef.current.y
+    onAddBlock('text', Math.max(0, x - 140), Math.max(0, y - 20))
+  }
+  function startBlockDrag(e, blockId, blockX, blockY) {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    let dragging = false
+    const origX = blockX, origY = blockY, startMX = e.clientX, startMY = e.clientY
+    function onMove(ev) {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startMX) < 5 && Math.abs(ev.clientY - startMY) < 5) return
+        dragging = true
+      }
+      onUpdateBlock(blockId, { x: origX + ev.clientX - startMX, y: origY + ev.clientY - startMY })
+    }
+    function onUp() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp)
+  }
+  function startPan(e) {
+    if (e.button !== 2) return
+    e.preventDefault()
+    const startX = e.clientX - panRef.current.x, startY = e.clientY - panRef.current.y
+    function onMove(ev) { const nx = ev.clientX - startX, ny = ev.clientY - startY; panRef.current = { x: nx, y: ny }; setPan({ x: nx, y: ny }) }
+    function onUp() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp)
+  }
+
+  function BlockHandle({ block, label }) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px', height: 30, background: raised, borderBottom: `1px solid ${border}`, cursor: 'grab' }}
+        onMouseDown={e => startBlockDrag(e, block.id, block.x, block.y)}>
+        <span style={{ fontSize: 10, color: text3, letterSpacing: 1.5, userSelect: 'none', flexShrink: 0 }}>⠿</span>
+        <span style={{ fontSize: 9, color: text3, textTransform: 'uppercase', letterSpacing: 1, flexShrink: 0, opacity: 0.6 }}>{label}</span>
+        <input value={block.name || ''} onChange={e => onUpdateBlock(block.id, { name: e.target.value })}
+          placeholder="Untitled" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+          style={{ flex: 1, background: 'transparent', border: 'none', color: text2, fontFamily: "'DM Sans',sans-serif", fontSize: 11, outline: 'none', fontStyle: block.name ? 'normal' : 'italic' }} />
+        <button onClick={e => { e.stopPropagation(); onDeleteBlock(block.id) }}
+          style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: '0 2px', flexShrink: 0 }}
+          onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+      </div>
+    )
+  }
+
+  const CARD_COLORS = ['#5B5FE8','#4ade80','#E8B85B','#f87171','#a78bfa','#38bdf8','#fb923c']
+
+  function KanbanBlock({ block }) {
+    const [addingCard, setAddingCard] = useState({})
+    const [newCardTitle, setNewCardTitle] = useState({})
+    function addCard(laneId) {
+      const title = (newCardTitle[laneId] || '').trim()
+      if (!title) return
+      const card = { id: `card_${Date.now()}`, title, tag: '', color: CARD_COLORS[0] }
+      onUpdateBlock(block.id, { lanes: block.lanes.map(l => l.id === laneId ? { ...l, cards: [...l.cards, card] } : l) })
+      setNewCardTitle(p => ({ ...p, [laneId]: '' }))
+      setAddingCard(p => ({ ...p, [laneId]: false }))
+    }
+    function moveCard(cardId, fromLaneId, toLaneId) {
+      if (fromLaneId === toLaneId) return
+      let card
+      const newLanes = block.lanes.map(l => {
+        if (l.id === fromLaneId) { card = l.cards.find(c => c.id === cardId); return { ...l, cards: l.cards.filter(c => c.id !== cardId) } }
+        return l
+      }).map(l => l.id === toLaneId && card ? { ...l, cards: [...l.cards, card] } : l)
+      onUpdateBlock(block.id, { lanes: newLanes })
+    }
+    function deleteCard(laneId, cardId) {
+      onUpdateBlock(block.id, { lanes: block.lanes.map(l => l.id === laneId ? { ...l, cards: l.cards.filter(c => c.id !== cardId) } : l) })
+    }
+    function updateCard(laneId, cardId, patch) {
+      onUpdateBlock(block.id, { lanes: block.lanes.map(l => l.id === laneId ? { ...l, cards: l.cards.map(c => c.id === cardId ? { ...c, ...patch } : c) } : l) })
+    }
+    return (
+      <div style={{ display: 'flex', gap: 8, padding: 10, alignItems: 'flex-start', overflowX: 'auto', maxWidth: '70vw' }}>
+        {block.lanes.map(lane => (
+          <div key={lane.id}
+            onDragOver={e => { e.preventDefault(); e.stopPropagation(); setCardDragOver({ laneId: lane.id, blockId: block.id }) }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setCardDragOver(null) }}
+            onDrop={e => { e.preventDefault(); e.stopPropagation(); if (cardDrag?.blockId === block.id) { moveCard(cardDrag.cardId, cardDrag.fromLaneId, lane.id); setCardDrag(null); setCardDragOver(null) } }}
+            style={{ width: 200, background: cardDragOver?.laneId === lane.id && cardDragOver?.blockId === block.id ? accentDim : (dark ? '#1a1917' : '#DDD9CF'), borderRadius: 8, padding: 8, border: cardDragOver?.laneId === lane.id && cardDragOver?.blockId === block.id ? `1px solid ${accent}` : `1px solid ${border}`, transition: 'all 0.15s', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
+              <input value={lane.name} onChange={e => onUpdateBlock(block.id, { lanes: block.lanes.map(l => l.id === lane.id ? { ...l, name: e.target.value } : l) })}
+                onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+                style={{ flex: 1, background: 'transparent', border: 'none', fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 12, color: text, outline: 'none', minWidth: 0 }} />
+              <span style={{ fontSize: 10, color: text3, background: raised, borderRadius: 4, padding: '1px 5px', flexShrink: 0 }}>{lane.cards.length}</span>
+              <button onClick={e => { e.stopPropagation(); if (window.confirm('Delete lane?')) onUpdateBlock(block.id, { lanes: block.lanes.filter(l => l.id !== lane.id) }) }}
+                style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, flexShrink: 0 }}
+                onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+            </div>
+            {lane.cards.map(card => (
+              <div key={card.id} draggable
+                onDragStart={e => { e.stopPropagation(); setCardDrag({ cardId: card.id, fromLaneId: lane.id, blockId: block.id }) }}
+                onDragEnd={() => { setCardDrag(null); setCardDragOver(null) }}
+                onMouseDown={e => e.stopPropagation()}
+                style={{ background: surface, borderRadius: 7, padding: '8px 10px', marginBottom: 6, border: `1px solid ${border}`, borderLeft: `3px solid ${card.color}`, cursor: 'grab', position: 'relative' }}>
+                <div style={{ fontSize: 12, color: text, fontFamily: "'DM Sans',sans-serif", lineHeight: 1.4, paddingRight: 16 }}>{card.title}</div>
+                {card.tag && <div style={{ fontSize: 10, color: card.color, fontWeight: 700, background: card.color + '22', borderRadius: 3, padding: '1px 6px', display: 'inline-block', marginTop: 4 }}>{card.tag}</div>}
+                <button onClick={e => { e.stopPropagation(); deleteCard(lane.id, card.id) }}
+                  style={{ position: 'absolute', top: 5, right: 5, background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '1px 3px' }}
+                  onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+                  {CARD_COLORS.map(c => (
+                    <div key={c} onClick={e => { e.stopPropagation(); updateCard(lane.id, card.id, { color: c }) }}
+                      style={{ width: 10, height: 10, borderRadius: '50%', background: c, cursor: 'pointer', border: card.color === c ? `2px solid ${text}` : '1px solid transparent', flexShrink: 0 }} />
+                  ))}
+                </div>
+                <input value={card.tag} onChange={e => updateCard(lane.id, card.id, { tag: e.target.value })}
+                  onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+                  placeholder="tag..."
+                  style={{ width: '100%', marginTop: 5, background: 'transparent', border: 'none', borderTop: `1px solid ${border}33`, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 10, outline: 'none', padding: '3px 0', fontStyle: card.tag ? 'normal' : 'italic' }} />
+              </div>
+            ))}
+            {addingCard[lane.id] ? (
+              <div style={{ background: surface, borderRadius: 7, padding: '7px 9px', border: `1px solid ${accent}` }}>
+                <input autoFocus value={newCardTitle[lane.id] || ''}
+                  onChange={e => setNewCardTitle(p => ({ ...p, [lane.id]: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') addCard(lane.id); if (e.key === 'Escape') setAddingCard(p => ({ ...p, [lane.id]: false })) }}
+                  onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+                  placeholder="Card title..."
+                  style={{ width: '100%', background: 'transparent', border: 'none', color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 12, outline: 'none', marginBottom: 6 }} />
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button onClick={e => { e.stopPropagation(); addCard(lane.id) }} style={{ background: accent, border: 'none', borderRadius: 4, color: '#fff', fontFamily: "'DM Sans',sans-serif", fontSize: 11, padding: '3px 10px', cursor: 'pointer' }}>Add</button>
+                  <button onClick={e => { e.stopPropagation(); setAddingCard(p => ({ ...p, [lane.id]: false })) }} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, padding: '3px 8px', cursor: 'pointer' }}>✕</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={e => { e.stopPropagation(); setAddingCard(p => ({ ...p, [lane.id]: true })) }}
+                onMouseDown={e => e.stopPropagation()}
+                style={{ width: '100%', background: 'none', border: `1px dashed ${border}`, borderRadius: 6, padding: '5px', color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer' }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>+ card</button>
+            )}
+          </div>
+        ))}
+        <button onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { lanes: [...block.lanes, { id: `lane_${Date.now()}`, name: `Lane ${block.lanes.length + 1}`, cards: [] }] }) }}
+          onMouseDown={e => e.stopPropagation()}
+          style={{ width: 36, minHeight: 60, background: 'none', border: `1px dashed ${border}`, borderRadius: 8, color: text3, cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, alignSelf: 'flex-start', marginTop: 28 }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>+</button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: "'DM Sans',sans-serif" }}>
+      <div style={{ background: surface, borderBottom: `1px solid ${border}`, padding: '0 16px', height: 42, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        <button onClick={onBack}
+          style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 12, padding: '4px 8px', borderRadius: 5, fontFamily: "'DM Sans',sans-serif" }}
+          onMouseEnter={e => e.currentTarget.style.background = raised} onMouseLeave={e => e.currentTarget.style.background = 'none'}>← Back</button>
+        <span style={{ color: border, fontSize: 16 }}>|</span>
+        <span style={{ fontSize: 13 }}>📓</span>
+        {renamingNb ? (
+          <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)}
+            onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+            style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 700, outline: 'none', minWidth: 120 }} />
+        ) : (
+          <span onDoubleClick={() => setRenamingNb(true)} style={{ fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 700, color: text, cursor: 'text' }}>{nb.name}</span>
+        )}
+
+        {/* Sheets dropdown */}
+        <div style={{ position: 'relative' }}>
+          <button onClick={() => setSheetsOpen(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 5, border: `1px solid ${sheetsOpen ? accent : border}`, background: sheetsOpen ? accentDim : 'transparent', color: sheetsOpen ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer' }}>
+            <span>{activeSheet?.name || 'Sheet 1'}</span><span style={{ fontSize: 9 }}>▾</span>
+          </button>
+          {sheetsOpen && (
+            <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, background: surface, border: `1px solid ${border}`, borderRadius: 9, boxShadow: `0 8px 24px #00000044`, zIndex: 9999, minWidth: 190, overflow: 'hidden' }}>
+              {nb.sheets?.map(sheet => (
+                <div key={sheet.id} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '0 8px', background: sheet.id === nb.activeSheetId ? accentDim : 'transparent' }}>
+                  {renamingSheetId === sheet.id ? (
+                    <input autoFocus value={renamingSheetLabel} onChange={e => setRenamingSheetLabel(e.target.value)}
+                      onBlur={() => { onRenameSheet(sheet.id, renamingSheetLabel || sheet.name); setRenamingSheetId(null) }}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+                      style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 12, outline: 'none', padding: '8px 4px' }} />
+                  ) : (
+                    <button onClick={() => { onSetActiveSheet(sheet.id); setSheetsOpen(false) }}
+                      onDoubleClick={() => { setRenamingSheetId(sheet.id); setRenamingSheetLabel(sheet.name) }}
+                      style={{ flex: 1, background: 'none', border: 'none', color: sheet.id === nb.activeSheetId ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer', textAlign: 'left', padding: '8px 4px', fontWeight: sheet.id === nb.activeSheetId ? 600 : 400 }}>
+                      {sheet.id === nb.activeSheetId ? '✓ ' : ''}{sheet.name}
+                    </button>
+                  )}
+                  {nb.sheets.length > 1 && (
+                    <button onClick={() => onDeleteSheet(sheet.id)}
+                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', flexShrink: 0 }}
+                      onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+                  )}
+                </div>
+              ))}
+              <div style={{ borderTop: `1px solid ${border}`, padding: '4px 8px' }}>
+                <button onClick={() => { onAddSheet(); setSheetsOpen(false) }}
+                  style={{ width: '100%', background: 'none', border: 'none', color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer', textAlign: 'left', padding: '6px 4px', display: 'flex', alignItems: 'center', gap: 5 }}
+                  onMouseEnter={e => e.currentTarget.style.color = accent} onMouseLeave={e => e.currentTarget.style.color = text3}>+ New Sheet</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <span style={{ fontSize: 11, color: text3 }}>{blocks.length} block{blocks.length !== 1 ? 's' : ''}</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+          {[['text','+ Text'],['table','+ Table'],['kanban','+ Kanban']].map(([type, label]) => (
+            <button key={type} onClick={() => onAddBlock(type, Math.max(0, 120 - panRef.current.x + Math.random() * 40), Math.max(0, 80 - panRef.current.y + Math.random() * 30))}
+              style={{ padding: '4px 10px', borderRadius: 5, border: `1px solid ${border}`, background: 'transparent', color: text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text2 }}>{label}</button>
+          ))}
+          <span style={{ fontSize: 11, color: text3, paddingLeft: 8, borderLeft: `1px solid ${border}` }}>Right-click drag to pan</span>
+        </div>
+      </div>
+
+      <div ref={containerRef} onClick={handleBgClick} onMouseDown={startPan} onContextMenu={e => e.preventDefault()}
+        onDragOver={e => e.preventDefault()}
+        onDrop={e => {
+          e.preventDefault()
+          if (!onDropColumn) return
+          const rect = containerRef.current.getBoundingClientRect()
+          onDropColumn(e.clientX - rect.left - panRef.current.x, e.clientY - rect.top - panRef.current.y)
+        }}
+        style={{ flex: 1, position: 'relative', overflow: 'hidden', background: dark ? '#141412' : '#EAE7DE', cursor: 'crosshair', userSelect: 'none' }}>
+        <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+          <defs>
+            <pattern id="nb-dots" x={pan.x % 32} y={pan.y % 32} width="32" height="32" patternUnits="userSpaceOnUse">
+              <circle cx="1" cy="1" r="1" fill={dark ? '#3a3835' : '#C0BCB2'} />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#nb-dots)" />
+        </svg>
+
+        <div style={{ position: 'absolute', top: 0, left: 0, transform: `translate(${pan.x}px, ${pan.y}px)` }}>
+          {blocks.map(block => (
+            <div key={block.id} style={{ position: 'absolute', left: block.x, top: block.y, zIndex: 10 }}>
+
+              {block.type === 'text' && (
+                <div style={{ width: block.w || 280, background: surface, border: `1.5px solid ${border}`, borderRadius: 10, boxShadow: `0 4px 20px ${dark ? '#00000055' : '#00000015'}`, overflow: 'hidden' }}>
+                  <BlockHandle block={block} label="text" />
+                  <div contentEditable suppressContentEditableWarning
+                    onBlur={e => onUpdateBlock(block.id, { content: e.currentTarget.innerHTML })}
+                    dangerouslySetInnerHTML={{ __html: block.content || '' }}
+                    onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+                    style={{ minHeight: 80, padding: '10px 12px', fontSize: 13, color: text, lineHeight: 1.7, outline: 'none', fontFamily: "'DM Sans',sans-serif", cursor: 'text', userSelect: 'text' }} />
+                </div>
+              )}
+
+              {block.type === 'table' && (
+                <div draggable
+                  onDragStart={e => { e.stopPropagation(); window.__nbTableDrag = block; e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', 'nb_table') }}
+                  onDragEnd={() => { window.__nbTableDrag = null }}
+                  style={{ background: surface, border: `1.5px solid ${border}`, borderRadius: 10, boxShadow: `0 4px 20px ${dark ? '#00000055' : '#00000015'}`, overflow: 'hidden', minWidth: 220 }}>
+                  <BlockHandle block={block} label="table — drag to sidebar file" />
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ borderCollapse: 'collapse', fontFamily: "'DM Mono',monospace", fontSize: 11 }}>
+                      <thead>
+                        <tr>
+                          {block.headers.map((h, ci) => (
+                            <th key={ci} style={{ padding: 0, borderRight: `1px solid ${border}`, background: accentDim, minWidth: 100 }}>
+                              <div style={{ display: 'flex', alignItems: 'center' }}>
+                                <input value={h} onChange={e => { const nh = [...block.headers]; nh[ci] = e.target.value; onUpdateBlock(block.id, { headers: nh }) }}
+                                  onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+                                  style={{ flex: 1, background: 'transparent', border: 'none', color: accent, fontWeight: 700, fontFamily: "'DM Sans',sans-serif", fontSize: 11, padding: '5px 7px', outline: 'none', minWidth: 0 }} />
+                                <button title="→ Send column to canvas" onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onSendColToCanvas(block, ci) }}
+                                  style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontSize: 12, padding: '2px 6px', flexShrink: 0, opacity: 0.55 }}
+                                  onMouseEnter={e => e.currentTarget.style.opacity = '1'} onMouseLeave={e => e.currentTarget.style.opacity = '0.55'}>→</button>
+                              </div>
+                            </th>
+                          ))}
+                          <th style={{ padding: '4px 6px', background: raised, borderLeft: `1px solid ${border}` }}>
+                            <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { headers: [...block.headers, `Col ${block.headers.length + 1}`], rows: block.rows.map(r => [...r, '']) }) }}
+                              style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: '0 2px' }}>+</button>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {block.rows.map((row, ri) => (
+                          <tr key={ri}>
+                            {row.map((cell, ci) => (
+                              <td key={ci} style={{ borderRight: `1px solid ${border}`, borderTop: `1px solid ${border}22`, padding: 0 }}>
+                                <input value={cell} data-bid={block.id} data-ri={ri} data-ci={ci}
+                                  onChange={e => { const nr = block.rows.map((r, rIdx) => rIdx !== ri ? r : r.map((c, cIdx) => cIdx !== ci ? c : e.target.value)); onUpdateBlock(block.id, { rows: nr }) }}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      const nextRi = ri + 1
+                                      if (nextRi >= block.rows.length) {
+                                        onUpdateBlock(block.id, { rows: [...block.rows, Array(block.headers.length).fill('')] })
+                                        setTimeout(() => document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${ci}"]`)?.focus(), 20)
+                                      } else { document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${ci}"]`)?.focus() }
+                                    }
+                                    if (e.key === 'Tab') {
+                                      e.preventDefault()
+                                      const isLastCol = ci + 1 >= block.headers.length
+                                      const nextCi = isLastCol ? 0 : ci + 1
+                                      const nextRi = isLastCol ? ri + 1 : ri
+                                      if (nextRi >= block.rows.length) {
+                                        onUpdateBlock(block.id, { rows: [...block.rows, Array(block.headers.length).fill('')] })
+                                        setTimeout(() => document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${nextCi}"]`)?.focus(), 20)
+                                      } else { document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${nextCi}"]`)?.focus() }
+                                    }
+                                  }}
+                                  onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+                                  style={{ width: '100%', background: 'transparent', border: 'none', color: text2, fontFamily: "'DM Mono',monospace", fontSize: 11, padding: '5px 7px', outline: 'none', minWidth: 80 }} />
+                              </td>
+                            ))}
+                            <td style={{ borderTop: `1px solid ${border}22`, borderLeft: `1px solid ${border}`, width: 26 }}>
+                              <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { rows: block.rows.filter((_, i) => i !== ri) }) }}
+                                style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, width: '100%', padding: '5px 3px' }}
+                                onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+                            </td>
+                          </tr>
+                        ))}
+                        <tr>
+                          <td colSpan={block.headers.length + 1} style={{ borderTop: `1px solid ${border}22` }}>
+                            <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { rows: [...block.rows, Array(block.headers.length).fill('')] }) }}
+                              style={{ width: '100%', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '5px', fontFamily: "'DM Sans',sans-serif" }}
+                              onMouseEnter={e => e.currentTarget.style.color = accent} onMouseLeave={e => e.currentTarget.style.color = text3}>+ row</button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {block.type === 'kanban' && (
+                <div style={{ background: surface, border: `1.5px solid ${border}`, borderRadius: 10, boxShadow: `0 4px 20px ${dark ? '#00000055' : '#00000015'}`, overflow: 'hidden' }}>
+                  <BlockHandle block={block} label="kanban" />
+                  <KanbanBlock block={block} />
+                </div>
+              )}
+
+            </div>
+          ))}
+        </div>
+
+        {blocks.length === 0 && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+            <div style={{ textAlign: 'center', color: text3, fontFamily: "'DM Sans',sans-serif" }}>
+              <div style={{ fontSize: 36, marginBottom: 14 }}>📓</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: text2, fontFamily: "'Syne',sans-serif", marginBottom: 8 }}>Click anywhere to write</div>
+              <div style={{ fontSize: 12, lineHeight: 1.9 }}>Or use + Text · + Table · + Kanban above<br />Drag block header to move · Right-click drag to pan<br />Drag a table block onto a sidebar file to export it</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 export default function AppPage() {
   const { dark, setDark } = useTheme()
   const [mode, setMode] = useState('preview')
@@ -63,7 +428,13 @@ const [canvases, setCanvases] = useState([makeCanvas('canvas_1', 'Canvas 1')])
 const [activeCanvasId, setActiveCanvasId] = useState('canvas_1')
 const [renamingCanvasId, setRenamingCanvasId] = useState(null)
 const [renamingCanvasLabel, setRenamingCanvasLabel] = useState('')
-
+const [folders, setFolders] = useState([])
+const [notebooks, setNotebooks] = useState([])
+const [activeNotebookId, setActiveNotebookId] = useState(null)
+const [renamingFolderId, setRenamingFolderId] = useState(null)
+const [renamingFolderLabel, setRenamingFolderLabel] = useState('')
+const [folderDragOver, setFolderDragOver] = useState(null)
+const [sidebarItemDrag, setSidebarItemDrag] = useState(null)
 // These keep every other function working without changes
 const activeCanvas = canvases.find(c => c.id === activeCanvasId) || canvases[0]
 const canvasColumns = activeCanvas.columns
@@ -118,6 +489,7 @@ function setCanvasZoom(fn) {
   // Debounced color picker — store draft locally, commit on pointer up
   const [colorDraft, setColorDraft] = useState(null)
 
+ useEffect(() => { window.__nbTableDrag = null }, [])
   const isPanning = useRef(false)
   const canvasScrollRef = useRef(null)
   const dragData = useRef(null)
@@ -817,6 +1189,254 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     setTimeout(() => { setEditingColId(newCol.canvasId); setEditingLabel('New Column') }, 50)
   }
 
+  // ── Folder & Notebook management ─────────────────────────────
+  function createFolder() {
+    const id = `folder_${Date.now()}`
+    setFolders(prev => [...prev, { id, name: 'New Folder', collapsed: false, itemIds: [] }])
+    setTimeout(() => { setRenamingFolderId(id); setRenamingFolderLabel('New Folder') }, 30)
+  }
+  function toggleFolder(folderId) {
+    setFolders(prev => prev.map(f => f.id === folderId ? { ...f, collapsed: !f.collapsed } : f))
+  }
+  function commitFolderRename(folderId) {
+    if (renamingFolderLabel.trim()) setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: renamingFolderLabel.trim() } : f))
+    setRenamingFolderId(null)
+  }
+  function deleteFolder(folderId) {
+    setFolders(prev => prev.filter(f => f.id !== folderId))
+  }
+  function moveToFolder(itemId, folderId) {
+    setFolders(prev => prev.map(f => {
+      if (f.id === folderId) return { ...f, itemIds: f.itemIds.includes(itemId) ? f.itemIds : [...f.itemIds, itemId] }
+      return { ...f, itemIds: f.itemIds.filter(id => id !== itemId) }
+    }))
+  }
+  function removeFromFolder(itemId, folderId) {
+    setFolders(prev => prev.map(f => f.id === folderId ? { ...f, itemIds: f.itemIds.filter(id => id !== itemId) } : f))
+  }
+ function createNotebook() {
+    const id = `notebook_${Date.now()}`
+    const sheetId = `sheet_${Date.now()}`
+    setNotebooks(prev => [...prev, { id, name: 'Untitled Notebook', sheets: [{ id: sheetId, name: 'Sheet 1', blocks: [] }], activeSheetId: sheetId }])
+    setActiveNotebookId(id)
+  }
+  function renameNotebook(nbId, name) {
+    setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, name }))
+  }
+  function _getActiveSheetId(n) { return n.activeSheetId || n.sheets?.[0]?.id }
+  function addNotebookBlock(nbId, type, x, y, customHeaders, customRows) {
+    const id = `block_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const block = type === 'text'
+      ? { id, type: 'text', x, y, w: 280, name: '', content: '' }
+      : type === 'kanban'
+      ? { id, type: 'kanban', x, y, name: '', lanes: [
+          { id: `lane_${Date.now()}_1`, name: 'Lane 1', cards: [] },
+          { id: `lane_${Date.now()}_2`, name: 'Lane 2', cards: [] },
+          { id: `lane_${Date.now()}_3`, name: 'Lane 3', cards: [] },
+        ]}
+      : { id, type: 'table', x, y, name: '',
+          headers: customHeaders || ['Column 1'],
+          rows: customRows || Array(8).fill(null).map(() => ['']) }
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = _getActiveSheetId(n)
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, blocks: [...s.blocks, block] } : s) }
+    }))
+  }
+  function updateNotebookBlock(nbId, blockId, patch) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = _getActiveSheetId(n)
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, blocks: s.blocks.map(b => b.id === blockId ? { ...b, ...patch } : b) } : s) }
+    }))
+  }
+  function deleteNotebookBlock(nbId, blockId) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = _getActiveSheetId(n)
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, blocks: s.blocks.filter(b => b.id !== blockId) } : s) }
+    }))
+  }
+  function addNotebookSheet(nbId) {
+    const id = `sheet_${Date.now()}`
+    setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, sheets: [...(n.sheets || []), { id, name: `Sheet ${(n.sheets || []).length + 1}`, blocks: [] }], activeSheetId: id }))
+  }
+  function deleteNotebookSheet(nbId, sheetId) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const newSheets = (n.sheets || []).filter(s => s.id !== sheetId)
+      return { ...n, sheets: newSheets, activeSheetId: newSheets[0]?.id || null }
+    }))
+  }
+  function renameNotebookSheet(nbId, sheetId, name) {
+    setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, sheets: (n.sheets || []).map(s => s.id === sheetId ? { ...s, name } : s) }))
+  }
+  function setNotebookActiveSheet(nbId, sheetId) {
+    setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, activeSheetId: sheetId }))
+  }
+  function deleteNotebook(nbId) {
+    setNotebooks(prev => prev.filter(n => n.id !== nbId))
+  }
+  function makeDragHandle(itemId, itemType, displayName) {
+    return (
+      <span
+        draggable
+        onDragStart={e => {
+          e.stopPropagation()
+          setSidebarItemDrag({ itemId, itemType })
+          e.dataTransfer.effectAllowed = 'move'
+          const el = document.createElement('div')
+          el.textContent = displayName
+          el.style.cssText = `position:fixed;top:-999px;padding:4px 10px;background:${accent};color:#fff;border-radius:5px;font:12px 'DM Sans',sans-serif;white-space:nowrap;`
+          document.body.appendChild(el)
+          e.dataTransfer.setDragImage(el, 0, 0)
+          setTimeout(() => document.body.removeChild(el), 0)
+        }}
+        onDragEnd={() => setSidebarItemDrag(null)}
+        onClick={e => e.stopPropagation()}
+        title="Drag into a folder"
+        style={{ fontSize: 10, color: text3, cursor: 'grab', padding: '0 2px', flexShrink: 0, userSelect: 'none', opacity: 0.45 }}>⠿</span>
+    )
+  }
+  function renderNotebookInSidebar(nb, folderId) {
+    return (
+      <div key={nb.id} className="nb-row"
+        style={{ padding: '5px 8px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', background: 'transparent' }}
+        onClick={() => setActiveNotebookId(nb.id)}>
+        {makeDragHandle(nb.id, 'notebook', nb.name)}
+        <span style={{ fontSize: 13, flexShrink: 0 }}>📓</span>
+        <span style={{ flex: 1, fontSize: 12, color: text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
+        <div className="nb-actions" style={{ opacity: 0, display: 'flex', gap: 2 }}>
+          {folderId && (
+            <button onClick={e => { e.stopPropagation(); removeFromFolder(nb.id, folderId) }}
+              title="Remove from folder"
+              style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3 }}
+              onMouseEnter={e => e.currentTarget.style.color = accent}
+              onMouseLeave={e => e.currentTarget.style.color = text3}>↑</button>
+          )}
+          <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${nb.name}"?`)) deleteNotebook(nb.id) }}
+            style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3 }}
+            onMouseEnter={e => e.currentTarget.style.color = red}
+            onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+        </div>
+      </div>
+    )
+  }
+  function renderFileInSidebar(file, folderId) {
+    return (
+      <div key={file.id} style={{ marginBottom: 6 }}>
+        <div className="file-row"
+          onClick={() => setExpandedFiles(prev => { const next = new Set(prev); next.has(file.id) ? next.delete(file.id) : next.add(file.id); return next })}
+          onDragOver={e => {
+            if (window.__nbTableDrag) { e.preventDefault(); setDragOverFileId(file.id); return }
+            const d = dragData.current
+            if (!d) return
+            if (d.type === 'canvas' || (d.type === 'sidebar' && d.sourceFileId !== file.id)) { e.preventDefault(); setDragOverFileId(file.id) }
+          }}
+          onDragLeave={() => setDragOverFileId(null)}
+          onDrop={e => {
+            e.preventDefault(); e.stopPropagation()
+            if (window.__nbTableDrag) {
+              const block = window.__nbTableDrag
+              window.__nbTableDrag = null
+              setFiles(prev => prev.map(f => {
+                if (f.id !== file.id) return f
+                return { ...f, sheets: f.sheets.map((s, si) => {
+                  if (si !== 0) return s
+                  const existingVisible = s.headers.filter(h => !h.hidden)
+                  const insertIdx = existingVisible.length
+                  const newHeaders = block.headers.map((h, hi) => ({ id: `col_${Date.now()}_nb_${hi}_${Math.random().toString(36).slice(2)}`, label: h, index: insertIdx + hi, hidden: false }))
+                  const updatedHeaders = [...existingVisible, ...newHeaders].map((h, i) => ({ ...h, index: i }))
+                  const maxLen = Math.max(s.rows.length, block.rows.length)
+                  const newRows = Array.from({ length: maxLen }, (_, ri) => {
+                    const existing = ri < s.rows.length ? [...s.rows[ri]] : Array(insertIdx).fill('')
+                    const newCells = block.headers.map((_, hi) => String(block.rows[ri]?.[hi] ?? ''))
+                    return [...existing, ...newCells]
+                  })
+                  return { ...s, headers: updatedHeaders, rows: newRows }
+                })}
+              }))
+              setDragOverFileId(null)
+              setExpandedFiles(prev => { const next = new Set(prev); next.add(file.id); return next })
+              return
+            }
+            const d = dragData.current
+            if (!d) return
+            if (d.type === 'canvas') {
+              sendCanvasColToFile(d.canvasId, file.id, null, null)
+            } else if (d.type === 'sidebar' && d.sourceFileId !== file.id) {
+              addColumnsToCanvas(d.cols.map(c => ({ ...c, targetFileId: file.id })), null)
+              d.cols.forEach(({ fileId: srcId, sheetName, col: c }) => {
+                setFiles(prev => prev.map(f => f.id !== srcId ? f : { ...f, sheets: f.sheets.map(s => s.name !== sheetName ? s : { ...s, headers: s.headers.filter(h => h.id !== c.id) }) }))
+              })
+              setDragOverFileId(null)
+              dragData.current = null
+            }
+          }}
+          style={{ padding: '6px 8px', borderRadius: 6, fontSize: 12, color: text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontWeight: 600, background: dragOverFileId === file.id ? accentDim : undefined, border: dragOverFileId === file.id ? `1px solid ${accent}` : '1px solid transparent' }}>
+          {makeDragHandle(file.id, 'file', file.name)}
+          <span style={{ fontSize: 13 }}>📄</span>
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+          {folderId && (
+            <button onClick={e => { e.stopPropagation(); removeFromFolder(file.id, folderId) }}
+              title="Remove from folder"
+              style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0 }}
+              onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+              onMouseLeave={e => e.currentTarget.style.opacity = '0'}>↑</button>
+          )}
+          <span style={{ color: text3, fontSize: 10, flexShrink: 0 }}>{expandedFiles.has(file.id) ? '▾' : '▸'}</span>
+        </div>
+        {expandedFiles.has(file.id) && file.sheets[0] && (
+          <>
+            {selectedSidebarCols.length > 1 && (
+              <div style={{ padding: '4px 8px 6px 24px' }}>
+                <button onClick={() => { const colInfos = selectedSidebarCols.map(id => { const col = file.sheets[0].headers.find(h => h.id === id); return col ? { fileId: file.id, fileName: file.name, sheetName: file.sheets[0].name, col } : null }).filter(Boolean); addColumnsToCanvas(colInfos, null) }} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accent, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: 600 }}>
+                  + Add {selectedSidebarCols.length} to canvas
+                </button>
+              </div>
+            )}
+            {visibleHeaders(file.sheets[0]).map(col => {
+              const onCanvas = canvasColumns.some(c => c.colId === col.id)
+              const isSelected = selectedSidebarCols.includes(col.id)
+              return (
+                <div key={col.id} className="col-row" draggable
+                  onDragStart={e => handleSidebarDragStart(e, file.id, file.name, file.sheets[0].name, col)}
+                  onClick={e => toggleSidebarSelect(e, col.id)}
+                  onDragOver={e => {
+                    if (dragData.current?.type !== 'canvas') return
+                    e.preventDefault(); e.stopPropagation()
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    const side = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                    setDragOverSidebarCol({ colId: col.id, side, fileId: file.id })
+                    setDragOverFileId(null)
+                  }}
+                  onDragLeave={() => setDragOverSidebarCol(null)}
+                  onDrop={e => {
+                    e.preventDefault(); e.stopPropagation()
+                    const d = dragData.current
+                    if (!d || d.type !== 'canvas') return
+                    sendCanvasColToFile(d.canvasId, file.id, col.id, dragOverSidebarCol?.side || 'after')
+                  }}
+                  style={{ padding: '4px 8px 4px 24px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 5, opacity: onCanvas ? 0.4 : 1, background: isSelected ? accentDim : 'transparent', borderLeft: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderRight: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderTop: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'before' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderBottom: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'after' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}>
+                  <div style={{ width: 6, height: 6, borderRadius: 2, background: onCanvas ? text3 : accent, flexShrink: 0 }} />
+                  <span style={{ flex: 1, fontSize: 11, color: isSelected ? accent : onCanvas ? text3 : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
+                  <span style={{ fontSize: 9, color: text3 }}>{file.sheets[0].rows.length}</span>
+                  {onCanvas && <span style={{ fontSize: 9, color: accent, fontWeight: 700 }}>✓</span>}
+                  {!onCanvas && (
+                    <div className="col-actions">
+                      <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} onClick={e => { e.stopPropagation(); hideColumn(file.id, file.sheets[0].name, col.id) }}>◌</button>
+                      <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} onClick={e => { e.stopPropagation(); deleteColumn(file.id, file.sheets[0].name, col.id) }}>✕</button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </>
+        )}
+      </div>
+    )
+  }
+
   // ── Helpers ──────────────────────────────────────────────────
   const allHiddenCols = files.flatMap(f => f.sheets.flatMap(s => s.headers.filter(h => h.hidden).map(h => ({ fileId: f.id, fileName: f.name, sheetName: s.name, col: h }))))
   const visibleHeaders = (sheet) => sheet.headers.filter(h => !h.hidden)
@@ -999,6 +1619,11 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
         .col-label-click:hover { background: ${raised}; }
         .export-item:hover { background: ${raised} !important; }
         .fmt-chip:hover { border-color: ${accent} !important; color: ${accent} !important; }
+        .folder-row:hover { background: ${raised} !important; }
+        .folder-row:hover .folder-actions { opacity: 1 !important; }
+        .nb-row:hover { background: ${raised} !important; }
+        .nb-row:hover .nb-actions { opacity: 1 !important; }
+        .kanban-card:hover .card-del { opacity: 1 !important; }
       `}</style>
 
       <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleFileChange} />
@@ -1054,100 +1679,92 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
         onDrop={e => { e.preventDefault(); if (!dragData.current) return; if (dragData.current.type === 'sidebar') addColumnsToCanvas(dragData.current.cols, null); setInsertAt(null); lastInsert.current = null }}
       >
 
-        {/* ── Sidebar ── */}
+       {/* ── Sidebar ── */}
         <div style={{ width: 220, background: surface, borderRight: `1px solid ${border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-          <div style={{ padding: '12px 12px 8px' }}>
+          <div style={{ padding: '12px 12px 6px' }}>
             <button className="import-btn" onClick={handleImportClick} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 7, fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               <span style={{ fontSize: 15 }}>+</span> Import File
             </button>
+            <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
+              <button onClick={createFolder}
+                style={{ flex: 1, padding: '5px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
+                📁 Folder
+              </button>
+              <button onClick={createNotebook}
+                style={{ flex: 1, padding: '5px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
+                📓 Notebook
+              </button>
+            </div>
           </div>
-          <div style={{ padding: '2px 14px 4px', fontSize: 10, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: text3 }}>Files</div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
-            {files.length === 0 ? (
-              <div style={{ margin: '20px 6px', padding: '16px 12px', borderRadius: 8, border: `1px dashed ${border}`, textAlign: 'center', color: text3, fontSize: 12, lineHeight: 1.7 }}>
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }}>
+
+            {/* Folders */}
+            {folders.map(folder => {
+              const folderFiles = files.filter(f => folder.itemIds.includes(f.id))
+              const folderNotebooks = notebooks.filter(n => folder.itemIds.includes(n.id))
+              const isDragOver = folderDragOver === folder.id
+              return (
+                <div key={folder.id} style={{ marginBottom: 2 }}>
+                  <div className="folder-row"
+                    onDragOver={e => { if (sidebarItemDrag) { e.preventDefault(); setFolderDragOver(folder.id) } }}
+                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFolderDragOver(null) }}
+                    onDrop={e => { e.preventDefault(); if (sidebarItemDrag) { moveToFolder(sidebarItemDrag.itemId, folder.id); setSidebarItemDrag(null); setFolderDragOver(null) } }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 6px', borderRadius: 6, border: isDragOver ? `1px solid ${accent}` : '1px solid transparent', background: isDragOver ? accentDim : 'transparent' }}>
+                    <span onClick={() => toggleFolder(folder.id)} style={{ fontSize: 9, color: text3, cursor: 'pointer', flexShrink: 0, width: 10 }}>{folder.collapsed ? '▸' : '▾'}</span>
+                    <span style={{ fontSize: 12, flexShrink: 0 }}>📁</span>
+                    {renamingFolderId === folder.id ? (
+                      <input autoFocus value={renamingFolderLabel}
+                        onChange={e => setRenamingFolderLabel(e.target.value)}
+                        onBlur={() => commitFolderRename(folder.id)}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+                        onClick={e => e.stopPropagation()}
+                        style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, outline: 'none', minWidth: 0 }} />
+                    ) : (
+                      <span onClick={() => toggleFolder(folder.id)} style={{ flex: 1, fontSize: 12, fontWeight: 600, color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}>{folder.name}</span>
+                    )}
+                    <div className="folder-actions" style={{ opacity: 0, display: 'flex', gap: 2, flexShrink: 0 }}>
+                      <button onClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); setRenamingFolderLabel(folder.name) }}
+                        style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '1px 3px', borderRadius: 3, lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = accent}
+                        onMouseLeave={e => e.currentTarget.style.color = text3}>✎</button>
+                      <button onClick={e => { e.stopPropagation(); deleteFolder(folder.id) }}
+                        style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '1px 3px', borderRadius: 3, lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = red}
+                        onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+                    </div>
+                  </div>
+                  {!folder.collapsed && (
+                    <div style={{ paddingLeft: 10 }}>
+                      {folderFiles.map(file => renderFileInSidebar(file, folder.id))}
+                      {folderNotebooks.map(nb => renderNotebookInSidebar(nb, folder.id))}
+                      {folderFiles.length === 0 && folderNotebooks.length === 0 && (
+                        <div style={{ padding: '5px 8px 6px', fontSize: 10, color: text3, fontStyle: 'italic' }}>Drag files or notebooks here</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+
+            {/* Uncategorized files */}
+            {files.filter(f => !folders.some(folder => folder.itemIds.includes(f.id))).map(file => renderFileInSidebar(file, null))}
+
+            {/* Uncategorized notebooks */}
+            {notebooks.filter(n => !folders.some(folder => folder.itemIds.includes(n.id))).map(nb => renderNotebookInSidebar(nb, null))}
+
+            {/* Empty state */}
+            {files.length === 0 && notebooks.length === 0 && folders.length === 0 && (
+              <div style={{ margin: '16px 6px', padding: '14px 12px', borderRadius: 8, border: `1px dashed ${border}`, textAlign: 'center', color: text3, fontSize: 12, lineHeight: 1.7 }}>
                 No files yet.<br /><span style={{ color: text2 }}>Supports .xlsx .xls .csv</span>
               </div>
-            ) : files.map(file => (
-              <div key={file.id} style={{ marginBottom: 6 }}>
-                <div className="file-row"
-                  onClick={() => setExpandedFiles(prev => { const next = new Set(prev); next.has(file.id) ? next.delete(file.id) : next.add(file.id); return next })}
-                  onDragOver={e => {
-                    const d = dragData.current
-                    if (!d) return
-                    if (d.type === 'canvas' || (d.type === 'sidebar' && d.sourceFileId !== file.id)) { e.preventDefault(); setDragOverFileId(file.id) }
-                  }}
-                  onDragLeave={() => setDragOverFileId(null)}
-                  onDrop={e => {
-                    e.preventDefault(); e.stopPropagation()
-                    const d = dragData.current
-                    if (!d) return
-                    if (d.type === 'canvas') {
-                      sendCanvasColToFile(d.canvasId, file.id, null, null)
-                    } else if (d.type === 'sidebar' && d.sourceFileId !== file.id) {
-                      addColumnsToCanvas(d.cols.map(c => ({ ...c, targetFileId: file.id })), null)
-                      d.cols.forEach(({ fileId: srcId, sheetName, col: c }) => {
-                        setFiles(prev => prev.map(f => f.id !== srcId ? f : { ...f, sheets: f.sheets.map(s => s.name !== sheetName ? s : { ...s, headers: s.headers.filter(h => h.id !== c.id) }) }))
-                      })
-                      setDragOverFileId(null)
-                      dragData.current = null
-                    }
-                  }}
-                  style={{ padding: '6px 8px', borderRadius: 6, fontSize: 12, color: text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, background: dragOverFileId === file.id ? accentDim : undefined, border: dragOverFileId === file.id ? `1px solid ${accent}` : '1px solid transparent' }}>
-                  <span style={{ fontSize: 13 }}>📄</span>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-                  <span style={{ color: text3, fontSize: 10 }}>{expandedFiles.has(file.id) ? '▾' : '▸'}</span>
-                </div>
-                {expandedFiles.has(file.id) && file.sheets[0] && (
-                  <>
-                    {selectedSidebarCols.length > 1 && (
-                      <div style={{ padding: '4px 8px 6px 24px' }}>
-                        <button onClick={() => { const colInfos = selectedSidebarCols.map(id => { const col = file.sheets[0].headers.find(h => h.id === id); return col ? { fileId: file.id, fileName: file.name, sheetName: file.sheets[0].name, col } : null }).filter(Boolean); addColumnsToCanvas(colInfos, null) }} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accent, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: 600 }}>
-                          + Add {selectedSidebarCols.length} to canvas
-                        </button>
-                      </div>
-                    )}
-                    {visibleHeaders(file.sheets[0]).map(col => {
-                      const onCanvas = canvasColumns.some(c => c.colId === col.id)
-                      const isSelected = selectedSidebarCols.includes(col.id)
-                      return (
-                        <div key={col.id} className="col-row" draggable
-                          onDragStart={e => handleSidebarDragStart(e, file.id, file.name, file.sheets[0].name, col)}
-                          onClick={e => toggleSidebarSelect(e, col.id)}
-                          onDragOver={e => {
-                            if (dragData.current?.type !== 'canvas') return
-                            e.preventDefault(); e.stopPropagation()
-                            const rect = e.currentTarget.getBoundingClientRect()
-                            const side = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-                            setDragOverSidebarCol({ colId: col.id, side, fileId: file.id })
-                            setDragOverFileId(null)
-                          }}
-                          onDragLeave={() => setDragOverSidebarCol(null)}
-                            onDrop={e => {
-                            e.preventDefault(); e.stopPropagation()
-                            const d = dragData.current
-                            if (!d || d.type !== 'canvas') return
-                            sendCanvasColToFile(d.canvasId, file.id, col.id, dragOverSidebarCol?.side || 'after')
-                          }}
-                          style={{ padding: '4px 8px 4px 24px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 5, opacity: onCanvas ? 0.4 : 1, background: isSelected ? accentDim : 'transparent', borderLeft: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderRight: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderTop: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'before' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderBottom: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'after' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}
-                        >
-                          <div style={{ width: 6, height: 6, borderRadius: 2, background: onCanvas ? text3 : accent, flexShrink: 0 }} />
-                          <span style={{ flex: 1, fontSize: 11, color: isSelected ? accent : onCanvas ? text3 : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
-                          <span style={{ fontSize: 9, color: text3 }}>{file.sheets[0].rows.length}</span>
-                          {onCanvas && <span style={{ fontSize: 9, color: accent, fontWeight: 700 }}>✓</span>}
-                          {!onCanvas && (
-                            <div className="col-actions">
-                              <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} onClick={e => { e.stopPropagation(); hideColumn(file.id, file.sheets[0].name, col.id) }}>◌</button>
-                              <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} onClick={e => { e.stopPropagation(); deleteColumn(file.id, file.sheets[0].name, col.id) }}>✕</button>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </>
-                )}
-              </div>
-            ))}
+            )}
           </div>
+
           {allHiddenCols.length > 0 && (
             <div style={{ borderTop: `1px solid ${border}`, padding: '8px 10px' }}>
               <button onClick={() => setShowHidden(!showHidden)} style={{ background: 'none', border: 'none', cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: text3 }}>
@@ -1168,10 +1785,46 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
             </button>
           </div>
         </div>
-
         {/* ── Main ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
+          {/* Tabs bar */}
+          {activeNotebookId && notebooks.find(n => n.id === activeNotebookId) && (
+            <NotebookCanvas
+              nb={notebooks.find(n => n.id === activeNotebookId)}
+              dark={dark}
+              colors={{ surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber }}
+              onBack={() => setActiveNotebookId(null)}
+              onAddBlock={(type, x, y) => addNotebookBlock(activeNotebookId, type, x, y)}
+              onUpdateBlock={(blockId, patch) => updateNotebookBlock(activeNotebookId, blockId, patch)}
+              onDeleteBlock={(blockId) => deleteNotebookBlock(activeNotebookId, blockId)}
+              onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
+               onSendColToCanvas={(block, colIdx) => {
+                const label = block.headers[colIdx]
+                const rows = block.rows.map(r => r[colIdx] ?? '')
+                const ts = Date.now()
+                const nb = notebooks.find(n => n.id === activeNotebookId)
+                const newCol = { canvasId: `nb_col_${ts}_${colIdx}`, colId: `nb_col_${ts}_${colIdx}`, label, fileName: nb?.name || 'Notebook', sheetName: '', rows }
+                setCanvasColumns(prev => [...prev, newCol])
+                setToolResult({ type: 'trim', message: `Column "${label}" added to canvas from notebook.` })
+              }}
+              onDropColumn={(x, y) => {
+                const d = dragData.current
+                if (!d || d.type !== 'sidebar') return
+                const cols = d.cols
+                const headers = cols.map(c => c.col.label)
+                const maxLen = Math.max(...cols.map(c => { const f = files.find(f => f.id === c.fileId); const s = f?.sheets.find(sh => sh.name === c.sheetName); return s?.rows.length || 0 }))
+                const rows = Array.from({ length: maxLen }, (_, ri) => cols.map(c => { const f = files.find(f => f.id === c.fileId); const s = f?.sheets.find(sh => sh.name === c.sheetName); return String(s?.rows[ri]?.[c.col.index] ?? '') }))
+                addNotebookBlock(activeNotebookId, 'table', Math.max(0, x - 160), Math.max(0, y - 20), headers, rows)
+                dragData.current = null
+              }}
+              onAddSheet={() => addNotebookSheet(activeNotebookId)}
+              onDeleteSheet={(sheetId) => deleteNotebookSheet(activeNotebookId, sheetId)}
+              onRenameSheet={(sheetId, name) => renameNotebookSheet(activeNotebookId, sheetId, name)}
+              onSetActiveSheet={(sheetId) => setNotebookActiveSheet(activeNotebookId, sheetId)}
+            />
+          )}
+          {!activeNotebookId && <>
           {/* Tabs bar */}
           <div style={{ background: surface, borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', padding: '0 12px', gap: 4, height: 42, flexShrink: 0 }}>
             {[{ id: 'preview', label: 'Preview' }, { id: 'canvas', label: `Canvas${canvasColumns.length > 0 ? ` (${canvasColumns.length})` : ''}` }].map(m => (
@@ -1755,8 +2408,9 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
               </div>
             </div>
           )}
-        </div>
+        </>}
       </div>
+    </div>
       {/* Floating stat cards */}
       {statCards.map(card => <StatCard key={card.id} card={card} />)}
 
