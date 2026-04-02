@@ -1609,7 +1609,17 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     setCanvasColumns(prev => [...prev, newCol])
     setTimeout(() => { setEditingColId(newCol.canvasId); setEditingLabel('New Column') }, 50)
   }
-
+  function createBlankExcel() {
+    const ts = Date.now()
+    const defaultHeaders = ['Column 1', 'Column 2', 'Column 3']
+    const newFile = {
+      id: `file_${ts}`,
+      name: `New File ${files.length + 1}.xlsx`,
+      sheets: [{ name: 'Sheet1', headers: defaultHeaders.map((h, i) => ({ id: `col_${ts}_${i}`, label: h, index: i, hidden: false })), rows: Array(10).fill(null).map(() => Array(defaultHeaders.length).fill('')) }]
+    }
+    setFiles(prev => [...prev, newFile])
+    setExpandedFiles(prev => { const next = new Set(prev); next.add(newFile.id); return next })
+  }
   // ── Folder & Notebook management ─────────────────────────────
   function createFolder() {
     const id = `folder_${Date.now()}`
@@ -2166,7 +2176,14 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
                 📁 Folder
               </button>
-              <button onClick={createNotebook}
+
+              <button onClick={createBlankExcel}
+  style={{ width: '100%', marginTop: 5, padding: '5px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+  onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
+  onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
+  📊 New Excel
+</button>
+<button onClick={createNotebook}
                 style={{ flex: 1, padding: '5px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
