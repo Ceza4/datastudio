@@ -56,7 +56,35 @@ export default function CrosscheckWizard({
       }
     }
   }, [])
-
+function exportResultsCSV() {
+    if (!results) return
+    const headers = ['Your name', 'Best match', 'Confidence', 'Decision']
+    const rows = []
+    results.matched.forEach(r => {
+      const key = String(r.original ?? '')
+      const status = confirmed.has(key) ? 'confirmed' : rejected.has(key) ? 'rejected' : r.decision
+      rows.push([String(r.original ?? ''), r.bestMatch || '', r.score, status])
+    })
+    results.unmatched.forEach(r => {
+      rows.push([String(r.original ?? ''), '', '', 'unmatched'])
+    })
+    // CSV escaping: wrap in quotes, double internal quotes
+    const escape = v => {
+      const s = String(v ?? '')
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"'
+      return s
+    }
+    const csv = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `crosscheck-${results.colALabel.replace(/[^a-z0-9]/gi, '_')}-${Date.now()}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
   if (!open) return null
 
   function runCrosscheck() {
@@ -375,7 +403,7 @@ export default function CrosscheckWizard({
               <button onClick={() => { setStep(1); setResults(null); setLiveRows([]); setConfig({ colAId: '', colBId: '', threshold: 85 }) }}
                 style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 7, padding: '9px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: text2, cursor: 'pointer' }}>← Start over</button>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 7, padding: '9px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: text2, cursor: 'pointer' }}>Export CSV</button>
+                <button onClick={exportResultsCSV} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 7, padding: '9px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: text2, cursor: 'pointer' }}>Export CSV</button>
                 <button onClick={handleAddToCanvas}
                   style={{ background: accent, color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                   Add to canvas ✓

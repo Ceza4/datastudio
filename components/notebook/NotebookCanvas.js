@@ -6,7 +6,14 @@ import BlockHandle from './BlockHandle'
 import KanbanBlock from './KanbanBlock'
 
 /* The freeform infinite-canvas notebook view. Hosts text/table/kanban blocks
-   that the user drags around on a dot-grid background. Right-click drag pans. */
+   that the user drags around on a dot-grid background. Right-click drag pans.
+
+   POLISH UPDATES:
+   - Active sheet name is now editable inline (double-click to rename)
+   - Tables and kanban blocks now have resize handles in their bottom-right
+   - Deleting a block with content asks for confirmation first
+   - colors prop is forwarded to TextBlockContent for the right-click toolbar
+*/
 export default function NotebookCanvas({
   nb,
   dark,
@@ -16,6 +23,7 @@ export default function NotebookCanvas({
   onUpdateBlock,
   onDeleteBlock,
   onRenameNotebook,
+  onRenameSheet,
   onSendColToCanvas,
   onDropColumn,
   onRemoveTableColumn,
@@ -26,8 +34,8 @@ export default function NotebookCanvas({
   const panRef = useRef({ x: 60, y: 60 })
   const [renamingNb, setRenamingNb] = useState(false)
   const [nbLabel, setNbLabel] = useState(nb.name)
-  const [cardDrag, setCardDrag] = useState(null)
-  const [cardDragOver, setCardDragOver] = useState(null)
+  const [renamingSheet, setRenamingSheet] = useState(false)
+  const [sheetLabel, setSheetLabel] = useState('')
   const editingRef = useRef(false)
   const [renamingBlockId, setRenamingBlockId] = useState(null)
   const suppressNextBgClickRef = useRef(false)
@@ -36,6 +44,27 @@ export default function NotebookCanvas({
 
   const activeSheet = nb.sheets?.find(s => s.id === nb.activeSheetId) || nb.sheets?.[0]
   const blocks = activeSheet?.blocks || []
+
+  /* Wrap delete with content-aware confirmation. We don't ask if the
+     block is empty (no point making the user confirm "delete nothing"),
+     but we do ask if there's actual data they could lose. */
+  function confirmDelete(block) {
+    let hasContent = false
+    if (block.type === 'text') {
+      // strip HTML tags to check actual visible text
+      const stripped = (block.content || '').replace(/<[^>]*>/g, '').trim()
+      hasContent = stripped.length > 0
+    } else if (block.type === 'table') {
+      hasContent = block.rows?.some(row => row.some(c => c && String(c).trim()))
+    } else if (block.type === 'kanban') {
+      hasContent = block.lanes?.some(l => l.cards?.length > 0)
+    }
+    if (hasContent) {
+      const ok = window.confirm(`Delete this ${block.type} block? This cannot be undone.`)
+      if (!ok) return
+    }
+    onDeleteBlock(block.id)
+  }
 
   /* Only create a text block when nothing is being edited */
   function handleBgClick(e) {
@@ -77,18 +106,15 @@ export default function NotebookCanvas({
         if (Math.abs(ev.clientX - startMX) < 5 && Math.abs(ev.clientY - startMY) < 5) return
         dragging = true
       }
-
       onUpdateBlock(block.id, {
         x: origX + ev.clientX - startMX,
         y: origY + ev.clientY - startMY,
       })
     }
-
     function onUp() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }
@@ -112,7 +138,6 @@ export default function NotebookCanvas({
     window.addEventListener('mouseup', onUp)
   }
 
-  /* Resize handler for blocks */
   function startResize(e, block) {
     e.stopPropagation()
     e.preventDefault()
@@ -128,14 +153,24 @@ export default function NotebookCanvas({
         h: Math.max(120, baseH + ev.clientY - startY),
       })
     }
-
     function onUp() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+  }
+
+  function startSheetRename() {
+    if (!activeSheet) return
+    setSheetLabel(activeSheet.name)
+    setRenamingSheet(true)
+  }
+  function commitSheetRename() {
+    if (activeSheet && onRenameSheet) {
+      onRenameSheet(activeSheet.id, sheetLabel || activeSheet.name)
+    }
+    setRenamingSheet(false)
   }
 
   return (
@@ -149,12 +184,34 @@ export default function NotebookCanvas({
         ) : (
           <span onDoubleClick={() => setRenamingNb(true)} style={{ fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 700, color: text, cursor: 'text' }}>{nb.name}</span>
         )}
-        <span style={{ fontSize: 11, color: text3 }}>{activeSheet?.name || 'Sheet 1'} · {blocks.length} block{blocks.length !== 1 ? 's' : ''}</span>
+
+        {/* POLISH: editable active sheet name */}
+        {activeSheet && (
+          renamingSheet ? (
+            <input
+              autoFocus
+              value={sheetLabel}
+              onChange={e => setSheetLabel(e.target.value)}
+              onBlur={commitSheetRename}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+              style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text2, fontFamily: "'DM Sans',sans-serif", fontSize: 11, outline: 'none', minWidth: 80 }}
+            />
+          ) : (
+            <span
+              onDoubleClick={startSheetRename}
+              title="Double-click to rename sheet"
+              style={{ fontSize: 11, color: text3, cursor: 'text' }}
+            >
+              {activeSheet.name || 'Sheet 1'} · {blocks.length} block{blocks.length !== 1 ? 's' : ''}
+            </span>
+          )
+        )}
+
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
           {[['text', '+ Text'], ['table', '+ Table'], ['kanban', '+ Kanban']].map(([type, label]) => (
             <button key={type} onClick={() => onAddBlock(type, Math.max(0, 120 - panRef.current.x + Math.random() * 40), Math.max(0, 80 - panRef.current.y + Math.random() * 30))} style={{ padding: '4px 10px', borderRadius: 5, border: `1px solid ${border}`, background: 'transparent', color: text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }} onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text2 }}>{label}</button>
           ))}
-          <span style={{ fontSize: 11, color: text3, paddingLeft: 8, borderLeft: `1px solid ${border}` }}>Right-click drag to pan</span>
+          <span style={{ fontSize: 11, color: text3, paddingLeft: 8, borderLeft: `1px solid ${border}` }}>Right-click drag to pan · Right-click text to format</span>
         </div>
       </div>
 
@@ -181,7 +238,7 @@ export default function NotebookCanvas({
                     onStartRename={() => setRenamingBlockId(block.id)}
                     onStopRename={() => setRenamingBlockId(null)}
                     onRename={value => onUpdateBlock(block.id, { name: value })}
-                    onDelete={() => onDeleteBlock(block.id)}
+                    onDelete={() => confirmDelete(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
                   />
                   <TextBlockContent
@@ -189,6 +246,7 @@ export default function NotebookCanvas({
                     initialContent={block.content}
                     onSave={html => onUpdateBlock(block.id, { content: html })}
                     text={text}
+                    colors={colors}
                     minHeight={Math.max(80, (block.h || 150) - 30)}
                     onEditStart={() => { editingRef.current = true }}
                     onEditEnd={() => {
@@ -199,7 +257,7 @@ export default function NotebookCanvas({
                   <ResizeHandle border={border} onResizeStart={e => startResize(e, block)} />
                 </div>
               )}
-              {/* TABLE BLOCK — only the grip handle is draggable */}
+              {/* TABLE BLOCK — now resizable */}
               {block.type === 'table' && (
                 <div style={{ width: block.w || 520, minHeight: block.h || 260, background: surface, border: `1.5px solid ${border}`, borderRadius: 10, boxShadow: `0 4px 20px ${dark ? '#00000055' : '#00000015'}`, overflow: 'hidden', position: 'relative' }}>
                   <BlockHandle
@@ -212,7 +270,7 @@ export default function NotebookCanvas({
                     onStartRename={() => setRenamingBlockId(block.id)}
                     onStopRename={() => setRenamingBlockId(null)}
                     onRename={value => onUpdateBlock(block.id, { name: value })}
-                    onDelete={() => onDeleteBlock(block.id)}
+                    onDelete={() => confirmDelete(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
                   />
                   <div style={{ overflow: 'auto', maxHeight: Math.max(120, (block.h || 260) - 30) }}>
@@ -222,7 +280,6 @@ export default function NotebookCanvas({
                           <th key={ci} style={{ padding: 0, borderRight: `1px solid ${border}`, background: accentDim, minWidth: 100 }}>
                             <div style={{ display: 'flex', alignItems: 'center' }}>
                               <input value={h} onChange={e => { const nh = [...block.headers]; nh[ci] = e.target.value; onUpdateBlock(block.id, { headers: nh }) }} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onFocus={() => { editingRef.current = true }} onBlur={() => { editingRef.current = false }} style={{ flex: 1, background: 'transparent', border: 'none', color: accent, fontWeight: 700, fontFamily: "'DM Sans',sans-serif", fontSize: 11, padding: '5px 7px', outline: 'none', minWidth: 0 }} />
-                              {/* → sends to canvas AND removes column from notebook table */}
                               <button title="Send to canvas" onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onSendColToCanvas(block, ci); if (onRemoveTableColumn) onRemoveTableColumn(block.id, ci) }} style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontSize: 12, padding: '2px 6px', flexShrink: 0, opacity: 0.55 }} onMouseEnter={e => e.currentTarget.style.opacity = '1'} onMouseLeave={e => e.currentTarget.style.opacity = '0.55'}>→</button>
                             </div>
                           </th>
@@ -258,6 +315,7 @@ export default function NotebookCanvas({
                       </tbody>
                     </table>
                   </div>
+                  <ResizeHandle border={border} onResizeStart={e => startResize(e, block)} />
                 </div>
               )}
               {block.type === 'kanban' && (
@@ -271,7 +329,7 @@ export default function NotebookCanvas({
                     onStartRename={() => setRenamingBlockId(block.id)}
                     onStopRename={() => setRenamingBlockId(null)}
                     onRename={value => onUpdateBlock(block.id, { name: value })}
-                    onDelete={() => onDeleteBlock(block.id)}
+                    onDelete={() => confirmDelete(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
                   />
                   <div style={{ overflow: 'auto', maxHeight: Math.max(140, (block.h || 280) - 30) }}>
@@ -283,6 +341,7 @@ export default function NotebookCanvas({
                       editingRef={editingRef}
                     />
                   </div>
+                  <ResizeHandle border={border} onResizeStart={e => startResize(e, block)} />
                 </div>
               )}
             </div>

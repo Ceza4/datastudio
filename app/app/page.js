@@ -13,6 +13,7 @@ import EmptyPanel from '../../components/tools/EmptyPanel'
 import DuplicatesPanel from '../../components/tools/DuplicatesPanel'
 import StatsPanel from '../../components/tools/StatsPanel'
 import FormatBar from '../../components/tools/FormatBar'
+import { saveState, loadState, debounce } from '../../lib/persistence'
 const defaultColFormat = () => ({
   fontSize: 12,
   bold: false,
@@ -71,6 +72,8 @@ const [renamingFolderId, setRenamingFolderId] = useState(null)
 const [renamingFolderLabel, setRenamingFolderLabel] = useState('')
 const [folderDragOver, setFolderDragOver] = useState(null)
 const [sidebarItemDrag, setSidebarItemDrag] = useState(null)
+const [renamingSheetId, setRenamingSheetId] = useState(null)
+const [renamingSheetLabel, setRenamingSheetLabel] = useState('')
 // These keep every other function working without changes
 const activeCanvas = canvases.find(c => c.id === activeCanvasId) || canvases[0]
 const canvasColumns = activeCanvas.columns
@@ -121,6 +124,49 @@ function setCanvasZoom(fn) {
   const [previewSortMap, setPreviewSortMap] = useState({}) // key -> 'asc'|'desc'
   const [previewFilterMap, setPreviewFilterMap] = useState({}) // key -> Set of hidden values
   const [previewGroupMap, setPreviewGroupMap] = useState({}) // key -> bool
+
+// Load persisted state on mount, exactly once.
+  useEffect(() => {
+    const saved = loadState()
+    if (!saved) return
+    if (saved.canvases?.length) setCanvases(saved.canvases)
+    if (saved.notebooks?.length) setNotebooks(saved.notebooks)
+    if (saved.folders?.length) setFolders(saved.folders)
+    if (saved.colFormats) setColFormats(saved.colFormats)
+    if (saved.globalFormat) setGlobalFormat(saved.globalFormat)
+    if (saved.statCards?.length) setStatCards(saved.statCards)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Debounced auto-save. Fires 600ms after the last change to any
+  // persistable state. Wraps saveState in useRef so the debounced
+  // function isn't recreated on every render.
+  const debouncedSaveRef = useRef(null)
+  if (!debouncedSaveRef.current) {
+    debouncedSaveRef.current = debounce((state) => saveState(state), 600)
+  }
+  useEffect(() => {
+    debouncedSaveRef.current({
+      canvases,
+      notebooks,
+      folders,
+      colFormats,
+      globalFormat,
+      statCards,
+    })
+  }, [canvases, notebooks, folders, colFormats, globalFormat, statCards])
+  }, [])
+  // Warn before closing tab if there's any work in progress.
+  useEffect(() => {
+    function handleBeforeUnload(e) {
+      const hasWork = canvases.some(c => c.columns?.length > 0) || notebooks.some(n => n.sheets?.some(s => s.blocks?.length > 0))
+      if (hasWork) {
+        e.preventDefault()
+        e.returnValue = '' // Required for Chrome
+        return ''
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [canvases, notebooks])
 
   // Debounced color picker — store draft locally, commit on pointer up
 
@@ -809,6 +855,27 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
   function removeFromFolder(itemId, folderId) {
     setFolders(prev => prev.map(f => f.id === folderId ? { ...f, itemIds: f.itemIds.filter(id => id !== itemId) } : f))
   }
+  function createBlankSheet() {
+    const id = `file_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+    const defaultHeaders = [
+      { id: `col_${id}_a`, label: 'Column A', index: 0, hidden: false },
+      { id: `col_${id}_b`, label: 'Column B', index: 1, hidden: false },
+      { id: `col_${id}_c`, label: 'Column C', index: 2, hidden: false },
+      { id: `col_${id}_d`, label: 'Column D', index: 3, hidden: false },
+      { id: `col_${id}_e`, label: 'Column E', index: 4, hidden: false },
+    ]
+    const newFile = {
+      id,
+      name: 'Untitled.xlsx',
+      sheets: [{
+        name: 'Sheet 1',
+        headers: defaultHeaders,
+        rows: [], // empty — user fills via canvas
+      }]
+    }
+    setFiles(prev => [...prev, newFile])
+    setExpandedFiles(prev => new Set([...prev, id]))
+  }
  function createNotebook() {
     const id = `notebook_${Date.now()}`
     const sheetId = `sheet_${Date.now()}`
@@ -930,15 +997,30 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
           <div style={{ paddingLeft: 20 }}>
             {nb.sheets?.map(sheet => {
               const isActive = activeNotebookId === nb.id && nb.activeSheetId === sheet.id
+              const isRenaming = renamingSheetId === sheet.id
               return (
                 <div key={sheet.id}
-                  onClick={() => { setActiveNotebookId(nb.id); setNotebookActiveSheet(nb.id, sheet.id) }}
+                  onClick={() => { if (!isRenaming) { setActiveNotebookId(nb.id); setNotebookActiveSheet(nb.id, sheet.id) } }}
+                  onDoubleClick={e => { e.stopPropagation(); setRenamingSheetId(sheet.id); setRenamingSheetLabel(sheet.name) }}
+                  title="Double-click to rename"
                   style={{ padding: '4px 8px', borderRadius: 5, fontSize: 11, color: isActive ? accent : text3, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontWeight: isActive ? 600 : 400, background: isActive ? accentDim : 'transparent' }}
                   onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = raised }}
                   onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}>
                   <span style={{ fontSize: 9 }}>📄</span>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
-                  {isActive && <span style={{ fontSize: 9, color: accent }}>✓</span>}
+                  {isRenaming ? (
+                    <input
+                      autoFocus
+                      value={renamingSheetLabel}
+                      onChange={e => setRenamingSheetLabel(e.target.value)}
+                      onBlur={() => { renameNotebookSheet(nb.id, sheet.id, renamingSheetLabel || sheet.name); setRenamingSheetId(null) }}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+                      onClick={e => e.stopPropagation()}
+                      style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 11, outline: 'none', minWidth: 0 }}
+                    />
+                  ) : (
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
+                  )}
+                  {isActive && !isRenaming && <span style={{ fontSize: 9, color: accent }}>✓</span>}
                 </div>
               )
             })}
@@ -1067,7 +1149,7 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
                   }}
                   style={{ padding: '4px 8px 4px 24px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 5, opacity: onCanvas ? 0.4 : 1, background: isSelected ? accentDim : 'transparent', borderLeft: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderRight: isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderTop: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'before' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent', borderBottom: dragOverSidebarCol?.colId === col.id && dragOverSidebarCol?.side === 'after' ? `2px solid ${accent}` : isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}>
                   <div style={{ width: 6, height: 6, borderRadius: 2, background: onCanvas ? text3 : accent, flexShrink: 0 }} />
-                  <span style={{ flex: 1, fontSize: 11, color: isSelected ? accent : onCanvas ? text3 : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
+                  <span title={col.label} style={{ flex: 1, fontSize: 11, color: isSelected ? accent : onCanvas ? text3 : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
                   <span style={{ fontSize: 9, color: text3 }}>{file.sheets[0].rows.length}</span>
                   {onCanvas && <span style={{ fontSize: 9, color: accent, fontWeight: 700 }}>✓</span>}
                   {!onCanvas && (
@@ -1347,6 +1429,12 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
                 📓 Notebook
               </button>
+              <button onClick={createBlankSheet}
+                style={{ flex: 1, padding: '5px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
+                ▦ Sheet
+              </button>
             </div>
           </div>
 
@@ -1422,7 +1510,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
               {showHidden && allHiddenCols.map(({ fileId, sheetName, col }) => (
                 <div key={col.id} style={{ padding: '4px 4px 4px 16px', display: 'flex', alignItems: 'center', gap: 5 }}>
                   <div style={{ width: 6, height: 6, borderRadius: 2, background: border, flexShrink: 0 }} />
-                  <span style={{ flex: 1, fontSize: 11, color: text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through' }}>{col.label}</span>
+                  <span title={col.label} style={{ flex: 1, fontSize: 11, color: text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through' }}>{col.label}</span>
                   <button onClick={() => restoreColumn(fileId, sheetName, col.id)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', color: accent, fontSize: 11, padding: '2px 6px', fontFamily: "'DM Sans',sans-serif" }}>↩</button>
                 </div>
               ))}
@@ -1448,6 +1536,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
               onUpdateBlock={(blockId, patch) => updateNotebookBlock(activeNotebookId, blockId, patch)}
               onDeleteBlock={(blockId) => deleteNotebookBlock(activeNotebookId, blockId)}
               onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
+              onRenameSheet={(sheetId, name) => renameNotebookSheet(activeNotebookId, sheetId, name)}
                onSendColToCanvas={(block, colIdx) => {
   const label = block.headers[colIdx]
   const rows = block.rows.map(r => r[colIdx] ?? '')
@@ -1757,7 +1846,10 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                   {tools.map(tool => (
                     <button key={tool.id}
                       className={`tool-btn${activeTool === tool.id ? ' active' : ''}`}
-                      onClick={() => setActiveTool(activeTool === tool.id ? null : tool.id)}
+                      onClick={() => {
+                        if (tool.id === 'crosscheck') { setActiveTool(null); setShowCCWizard(true) }
+                        else setActiveTool(activeTool === tool.id ? null : tool.id)
+                      }}
                       title={tool.desc}
                       style={{ padding: '5px 11px', borderRadius: 6, border: `1px solid ${tool.id === 'format' && hasAnyFormat ? accent + '77' : border}`, background: tool.id === 'format' && hasAnyFormat ? accentDim : 'transparent', color: text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}
                     >
@@ -1809,14 +1901,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                   onClose={() => setActiveTool(null)}
                 />
               )}
-             {activeTool === 'crosscheck' && (
-                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-                  <span style={{ fontWeight: 600, color: accent }}>⚡ Crosscheck</span>
-                  <span style={{ fontSize: 12, color: text2 }}>Fuzzy match company names across two lists</span>
-                  <button onClick={() => { setActiveTool(null); setShowCCWizard(true) }} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 16px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Open Crosscheck →</button>
-                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
-                </div>
-              )}
+             
               {activeTool && !['trim','empty','duplicates','stats','format','crosscheck'].includes(activeTool) && (
                 <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '9px 16px', fontSize: 13, color: accent, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <span style={{ fontWeight: 600 }}>{tools.find(t => t.id === activeTool)?.label}</span>
