@@ -136,6 +136,8 @@ function setCanvasZoom(fn) {
     if (saved.globalFormat) setGlobalFormat(saved.globalFormat)
     if (saved.statCards?.length) setStatCards(saved.statCards)
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Debounced auto-save. Fires 600ms after the last change to any
   // persistable state. Wraps saveState in useRef so the debounced
   // function isn't recreated on every render.
@@ -153,7 +155,6 @@ function setCanvasZoom(fn) {
       statCards,
     })
   }, [canvases, notebooks, folders, colFormats, globalFormat, statCards])
-  }, [])
   // Warn before closing tab if there's any work in progress.
   useEffect(() => {
     function handleBeforeUnload(e) {
