@@ -1219,6 +1219,7 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     </div>
   )
 }
+const colors = { surface, raised, border, text, text2, text3, accent, accentDim, red, green, amber }
   function FmtBtn({ active, onClick, title, children }) {
     return (
       <button onClick={onClick} title={title} style={{ padding: '3px 9px', borderRadius: 5, border: `1px solid ${active ? accent : border}`, background: active ? accentDim : 'transparent', color: active ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -2085,7 +2086,7 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
         onClose={() => setShowCCWizard(false)}
         canvasColumns={canvasColumns}
         onAddToCanvas={handleCCAddToCanvas}
-        colors={{ surface, raised, border, text, text2, text3, accent, accentDim, red, green, amber }}
+        colors={colors}
         dark={dark}
       />
     </>
