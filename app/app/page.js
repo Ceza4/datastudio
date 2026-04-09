@@ -12,6 +12,7 @@ import TrimPanel from '../../components/tools/TrimPanel'
 import EmptyPanel from '../../components/tools/EmptyPanel'
 import DuplicatesPanel from '../../components/tools/DuplicatesPanel'
 import StatsPanel from '../../components/tools/StatsPanel'
+import FormatBar from '../../components/tools/FormatBar'
 const defaultColFormat = () => ({
   fontSize: 12,
   bold: false,
@@ -122,7 +123,7 @@ function setCanvasZoom(fn) {
   const [previewGroupMap, setPreviewGroupMap] = useState({}) // key -> bool
 
   // Debounced color picker — store draft locally, commit on pointer up
-  const [colorDraft, setColorDraft] = useState(null)
+
 
  useEffect(() => { window.__nbTableDrag = null }, [])
   const isPanning = useRef(false)
@@ -184,10 +185,8 @@ function setCanvasZoom(fn) {
     const vals = formatSelectedCols.map(id => getColFormat(id)[key])
     return vals.every(v => v === vals[0]) ? vals[0] : '—'
   }
-  const allSelected = formatSelectedCols.length === canvasColumns.length && canvasColumns.length > 0
-  function toggleFormatColSelect(canvasId) {
-    setFormatSelectedCols(prev => prev.includes(canvasId) ? prev.filter(id => id !== canvasId) : [...prev, canvasId])
-  }
+  
+  
   const hasAnyFormat = Object.keys(colFormats).length > 0 || globalFormat.banding || globalFormat.boldHeader || globalFormat.freezeHeader || globalFormat.borderStyle !== 'thin'
 
   // ── Close export dropdown ────────────────────────────────────
@@ -1233,13 +1232,6 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
   )
 }
 const colors = { surface, raised, border, text, text2, text3, accent, accentDim, red, green, amber }
-  function FmtBtn({ active, onClick, title, children }) {
-    return (
-      <button onClick={onClick} title={title} style={{ padding: '3px 9px', borderRadius: 5, border: `1px solid ${active ? accent : border}`, background: active ? accentDim : 'transparent', color: active ? accent : text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
-        {children}
-      </button>
-    )
-  }
 
   return (
     <>
@@ -1746,94 +1738,20 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
 
               {/* ══ TOOLBAR or FORMAT BAR ══ */}
               {activeTool === 'format' ? (
-                <div style={{ background: dark ? '#15152a' : '#f4f0ff', borderBottom: `1px solid ${accent}44`, padding: '8px 14px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {/* Row 1: title + column chips */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: accent, display: 'flex', alignItems: 'center', gap: 6, marginRight: 4 }}>◈ Format</span>
-                    <span style={{ fontSize: 11, color: text3 }}>Apply to:</span>
-                    {/* All chip */}
-                    <button className="fmt-chip" onClick={() => setFormatSelectedCols(allSelected ? [] : canvasColumns.map(c => c.canvasId))}
-                      style={{ padding: '2px 12px', borderRadius: 20, border: `1px solid ${allSelected ? accent : border}`, background: allSelected ? accentDim : 'transparent', color: allSelected ? accent : text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: allSelected ? 700 : 400, transition: 'all 0.12s' }}>
-                      All
-                    </button>
-                    {canvasColumns.map(col => {
-                      const sel = formatSelectedCols.includes(col.canvasId)
-                      const hasFmt = !!colFormats[col.canvasId]
-                      return (
-                        <button key={col.canvasId} className="fmt-chip" onClick={() => toggleFormatColSelect(col.canvasId)}
-                          style={{ padding: '2px 12px', borderRadius: 20, border: `1px solid ${sel ? accent : hasFmt ? accent + '55' : border}`, background: sel ? accentDim : 'transparent', color: sel ? accent : text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", transition: 'all 0.12s', display: 'flex', alignItems: 'center', gap: 4 }}>
-                          {col.label}{hasFmt && !sel && <span style={{ width: 5, height: 5, borderRadius: '50%', background: accent, display: 'inline-block' }} />}
-                        </button>
-                      )
-                    })}
-                    <button onClick={() => { setColFormats({}); setGlobalFormat(defaultGlobalFormat()) }} style={{ marginLeft: 4, background: 'none', border: `1px solid ${border}`, borderRadius: 5, padding: '2px 9px', fontSize: 11, color: text3, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>↺ Reset all</button>
-                    <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 16 }}>✕</button>
-                  </div>
-
-                  {/* Row 2: controls */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-
-                    {/* Font size */}
-                    <span style={{ fontSize: 11, color: text3 }}>Size</span>
-                    <div style={{ display: 'flex', alignItems: 'center' }}>
-                      <button onClick={() => updateColFormat(formatSelectedCols, { fontSize: Math.max(8, ((getFormatValue('fontSize') === '—' ? 12 : getFormatValue('fontSize')) - 1)) })}
-                        style={{ padding: '3px 8px', background: raised, border: `1px solid ${border}`, borderRadius: '5px 0 0 5px', color: text2, cursor: 'pointer', fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}>−</button>
-                      <div style={{ padding: '3px 10px', background: raised, border: `1px solid ${border}`, borderLeft: 'none', borderRight: 'none', fontSize: 12, color: text, minWidth: 30, textAlign: 'center', fontFamily: "'DM Mono',monospace" }}>
-                        {getFormatValue('fontSize') === '—' ? '—' : getFormatValue('fontSize')}
-                      </div>
-                      <button onClick={() => updateColFormat(formatSelectedCols, { fontSize: Math.min(24, ((getFormatValue('fontSize') === '—' ? 12 : getFormatValue('fontSize')) + 1)) })}
-                        style={{ padding: '3px 8px', background: raised, border: `1px solid ${border}`, borderRadius: '0 5px 5px 0', borderLeft: 'none', color: text2, cursor: 'pointer', fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}>+</button>
-                    </div>
-
-                    <div style={{ width: 1, height: 18, background: border, margin: '0 3px' }} />
-
-                    {/* Alignment */}
-                    <span style={{ fontSize: 11, color: text3 }}>Align</span>
-                    {[['left','L'],['center','C'],['right','R']].map(([val, lbl]) => (
-                      <FmtBtn key={val} active={getFormatValue('align') === val} onClick={() => updateColFormat(formatSelectedCols, { align: val })}>{lbl}</FmtBtn>
-                    ))}
-
-                    <div style={{ width: 1, height: 18, background: border, margin: '0 3px' }} />
-
-                    {/* Text options */}
-                    <FmtBtn active={getFormatValue('bold') === true} onClick={() => updateColFormat(formatSelectedCols, { bold: getFormatValue('bold') !== true })} title="Bold cells"><b style={{ fontSize: 13 }}>B</b></FmtBtn>
-                    <FmtBtn active={getFormatValue('wrap') === true} onClick={() => updateColFormat(formatSelectedCols, { wrap: getFormatValue('wrap') !== true })} title="Wrap text">↵ Wrap</FmtBtn>
-
-                    <div style={{ width: 1, height: 18, background: border, margin: '0 3px' }} />
-
-                    {/* Global toggles */}
-                    <FmtBtn active={globalFormat.boldHeader} onClick={() => updateGlobalFormat({ boldHeader: !globalFormat.boldHeader })} title="Make header row bold">Bold header</FmtBtn>
-                    <FmtBtn active={globalFormat.banding} onClick={() => updateGlobalFormat({ banding: !globalFormat.banding })} title="Alternate row shading (every 2nd row)">▤ Banding</FmtBtn>
-                    <FmtBtn active={globalFormat.exportAsTable} onClick={() => updateGlobalFormat({ exportAsTable: !globalFormat.exportAsTable })} title="Export with Excel auto-filter / table structure">⊞ As Table</FmtBtn>
-                    <FmtBtn active={globalFormat.freezeHeader} onClick={() => updateGlobalFormat({ freezeHeader: !globalFormat.freezeHeader })} title="In Excel: header row stays visible when scrolling">❄ Freeze header (XLSX)</FmtBtn>
-
-                    <div style={{ width: 1, height: 18, background: border, margin: '0 3px' }} />
-
-                    {/* Border — export only */}
-                    <span style={{ fontSize: 11, color: text3 }}>Cell borders (XLSX)</span>
-                    {[['none','None'],['thin','Thin'],['medium','Medium']].map(([val, lbl]) => (
-                      <FmtBtn key={val} active={globalFormat.borderStyle === val} onClick={() => updateGlobalFormat({ borderStyle: val })}>{lbl}</FmtBtn>
-                    ))}
-
-                    <div style={{ width: 1, height: 18, background: border, margin: '0 3px' }} />
-
-                    {/* Header row color */}
-                    <span style={{ fontSize: 11, color: text3 }}>Header row color</span>
-                    {['#5B5FE8','#1D9E75','#E8B85B','#f87171','#6b7280','#0f172a'].map(c => (
-                      <button key={c} onClick={() => updateGlobalFormat({ headerColor: c })}
-                        style={{ width: 18, height: 18, borderRadius: 4, background: c, border: globalFormat.headerColor === c ? `2px solid ${text}` : `1px solid transparent`, cursor: 'pointer', padding: 0, flexShrink: 0, transition: 'border 0.1s' }} />
-                    ))}
-                    {/* Debounced custom color — only commits on pointer up to avoid lag */}
-                    <input
-                      type="color"
-                      value={colorDraft !== null ? colorDraft : globalFormat.headerColor}
-                      onChange={e => setColorDraft(e.target.value)}
-                      onPointerUp={e => { if (colorDraft !== null) { updateGlobalFormat({ headerColor: colorDraft }); setColorDraft(null) } }}
-                      style={{ width: 22, height: 22, border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', padding: 1, background: 'none' }}
-                      title="Custom header color — drag to pick, release to apply"
-                    />
-                  </div>
-                </div>
+                <FormatBar
+                  colors={colors}
+                  dark={dark}
+                  canvasColumns={canvasColumns}
+                  colFormats={colFormats}
+                  formatSelectedCols={formatSelectedCols}
+                  setFormatSelectedCols={setFormatSelectedCols}
+                  globalFormat={globalFormat}
+                  getFormatValue={getFormatValue}
+                  updateColFormat={updateColFormat}
+                  updateGlobalFormat={updateGlobalFormat}
+                  onResetAll={() => { setColFormats({}); setGlobalFormat(defaultGlobalFormat()) }}
+                  onClose={() => setActiveTool(null)}
+                />
               ) : (
                 <div style={{ background: surface, borderBottom: `1px solid ${border}`, padding: '6px 12px', display: 'flex', gap: 3, flexWrap: 'wrap', flexShrink: 0 }}>
                   {tools.map(tool => (
