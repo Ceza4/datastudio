@@ -8,6 +8,10 @@ import BlockHandle from '../../components/notebook/BlockHandle'
 import KanbanBlock from '../../components/notebook/KanbanBlock'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckWizard from '../../components/tools/CrosscheckWizard'
+import TrimPanel from '../../components/tools/TrimPanel'
+import EmptyPanel from '../../components/tools/EmptyPanel'
+import DuplicatesPanel from '../../components/tools/DuplicatesPanel'
+import StatsPanel from '../../components/tools/StatsPanel'
 const defaultColFormat = () => ({
   fontSize: 12,
   bold: false,
@@ -35,7 +39,6 @@ const [statCards, setStatCards] = useState([])
   const [selectedCell, setSelectedCell] = useState(null)
   const [highlightEmpty, setHighlightEmpty] = useState(false)
   const [duplicateMap, setDuplicateMap] = useState({})
-  const [trimOptions, setTrimOptions] = useState({ spaces: true, casing: 'none' })
   const [files, setFiles] = useState([])
   const [expandedFiles, setExpandedFiles] = useState(new Set())
   const [showHidden, setShowHidden] = useState(false)
@@ -477,8 +480,8 @@ function handleCCAddToCanvas({ afterColumnId, newColumn }) {
       return next
     })
   }
-  function runTrim() {
-    const { spaces, casing } = trimOptions
+  function runTrim(options) {
+    const { spaces, casing } = options
     setCanvasColumns(prev => prev.map(col => ({ ...col, rows: col.rows.map(val => {
       if (val === undefined || val === null) return val
       let s = String(val)
@@ -1859,42 +1862,34 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
 
               {/* Tool panels */}
               {activeTool === 'trim' && (
-                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-                  <span style={{ fontWeight: 600, color: accent }}>Trim & Clean</span>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: text2, cursor: 'pointer' }}><input type="checkbox" checked={trimOptions.spaces} onChange={e => setTrimOptions(p => ({ ...p, spaces: e.target.checked }))} /> Strip extra spaces</label>
-                  <label style={{ fontSize: 12, color: text2, display: 'flex', alignItems: 'center', gap: 5 }}>Casing:
-                    <select value={trimOptions.casing} onChange={e => setTrimOptions(p => ({ ...p, casing: e.target.value }))} style={{ background: raised, border: `1px solid ${border}`, borderRadius: 4, padding: '2px 6px', color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer' }}>
-                      <option value="none">Keep as-is</option><option value="lower">lowercase</option><option value="upper">UPPERCASE</option><option value="title">Title Case</option>
-                    </select>
-                  </label>
-                  <button onClick={runTrim} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Run</button>
-                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
-                </div>
+                <TrimPanel
+                  colors={colors}
+                  onRun={runTrim}
+                  onClose={() => setActiveTool(null)}
+                />
               )}
-              {activeTool === 'empty' && (
-                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-                  <span style={{ fontWeight: 600, color: accent }}>Highlight Empty</span>
-                  <span style={{ fontSize: 12, color: text2 }}>Empty cells will be highlighted in red. Click any red cell to fill it in.</span>
-                  <button onClick={runHighlightEmpty} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>{highlightEmpty ? 'Turn Off' : 'Turn On'}</button>
-                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
-                </div>
+             {activeTool === 'empty' && (
+                <EmptyPanel
+                  colors={colors}
+                  isOn={highlightEmpty}
+                  onToggle={runHighlightEmpty}
+                  onClose={() => setActiveTool(null)}
+                />
               )}
               {activeTool === 'duplicates' && (
-                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-                  <span style={{ fontWeight: 600, color: accent }}>Duplicates</span>
-                  <span style={{ fontSize: 12, color: text2 }}>Scans all canvas columns and highlights duplicate values in amber.</span>
-                  <button onClick={runDuplicates} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Run</button>
-                  <button onClick={() => { setDuplicateMap({}); setActiveTool(null) }} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 6, padding: '5px 10px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: text2, cursor: 'pointer' }}>Clear</button>
-                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
-                </div>
+                <DuplicatesPanel
+                  colors={colors}
+                  onRun={runDuplicates}
+                  onClear={() => { setDuplicateMap({}); setActiveTool(null) }}
+                  onClose={() => setActiveTool(null)}
+                />
               )}
               {activeTool === 'stats' && (
-                <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-                  <span style={{ fontWeight: 600, color: accent }}>Col Stats</span>
-                  <span style={{ fontSize: 12, color: text2 }}>Shows count, unique, empty, min, max for each column.</span>
-                  <button onClick={runStats} style={{ background: accent, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Run</button>
-                  <button onClick={() => setActiveTool(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15 }}>✕</button>
-                </div>
+                <StatsPanel
+                  colors={colors}
+                  onRun={runStats}
+                  onClose={() => setActiveTool(null)}
+                />
               )}
              {activeTool === 'crosscheck' && (
                 <div style={{ background: accentDim, borderBottom: `1px solid ${accent}44`, padding: '10px 16px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
