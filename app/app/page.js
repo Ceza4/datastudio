@@ -8,6 +8,7 @@ import BlockHandle from '../../components/notebook/BlockHandle'
 import KanbanBlock from '../../components/notebook/KanbanBlock'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckWizard from '../../components/tools/CrosscheckWizard'
+import SciencePlotWizard from '../../components/tools/science'
 import TrimPanel from '../../components/tools/TrimPanel'
 import EmptyPanel from '../../components/tools/EmptyPanel'
 import DuplicatesPanel from '../../components/tools/DuplicatesPanel'
@@ -35,7 +36,8 @@ export default function AppPage() {
   const [mode, setMode] = useState('preview')
   const [activeTool, setActiveTool] = useState(null)
  const [toolResult, setToolResult] = useState(null)
-const [statCards, setStatCards] = useState([])
+ const [statCards, setStatCards] = useState([])
+ const [canvasGraphs, setCanvasGraphs] = useState([])
   const [editingCell, setEditingCell] = useState(null)
   const [editingCellVal, setEditingCellVal] = useState('')
   const [selectedCell, setSelectedCell] = useState(null)
@@ -45,6 +47,7 @@ const [statCards, setStatCards] = useState([])
   const [expandedFiles, setExpandedFiles] = useState(new Set())
   const [showHidden, setShowHidden] = useState(false)
   const [showCCWizard, setShowCCWizard] = useState(false)
+  const [showPlotWizard, setShowPlotWizard] = useState(false)
   const [dragOverFileId, setDragOverFileId] = useState(null)
   const [dragOverSidebarCol, setDragOverSidebarCol] = useState(null)
   const [insertAt, setInsertAt] = useState(null)
@@ -134,7 +137,8 @@ function setCanvasZoom(fn) {
     if (saved.folders?.length) setFolders(saved.folders)
     if (saved.colFormats) setColFormats(saved.colFormats)
     if (saved.globalFormat) setGlobalFormat(saved.globalFormat)
-    if (saved.statCards?.length) setStatCards(saved.statCards)
+      if (saved.statCards?.length) setStatCards(saved.statCards)
+        if (saved.canvasGraphs?.length) setCanvasGraphs(saved.canvasGraphs)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -153,6 +157,7 @@ function setCanvasZoom(fn) {
       colFormats,
       globalFormat,
       statCards,
+      canvasGraphs,
     })
   }, [canvases, notebooks, folders, colFormats, globalFormat, statCards])
   // Warn before closing tab if there's any work in progress.
@@ -198,6 +203,7 @@ function setCanvasZoom(fn) {
 
   const tools = [
     { id: 'crosscheck', label: 'Crosscheck',      icon: '⚡', desc: 'Fuzzy match names across files' },
+    { id: 'plot',       label: 'Plot',            icon: '◉', desc: 'Scientific graphing & curve fitting' },
     { id: 'duplicates', label: 'Duplicates',      icon: '⊕', desc: 'Find repeated values'           },
     { id: 'gaps',       label: 'Gap Finder',      icon: '◎', desc: 'What is in A but missing from B' },
     { id: 'mapper',     label: 'Col Mapper',      icon: '⇄', desc: 'Visual JOIN by shared key'       },
@@ -572,6 +578,10 @@ function handleCCAddToCanvas({ afterColumnId, newColumn }) {
   })
   setStatCards(cards)
   setActiveTool(null)
+}
+
+function handlePlotAddToCanvas({ plotObj }) {
+  setCanvasGraphs(prev => [...prev, { ...plotObj, x: 200, y: 200 }])
 }
 
 function moveStatCard(id, x, y) {
@@ -1263,6 +1273,44 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
   }
 
   // ── Small reusable toggle button for Format bar ──────────────
+  function PlotBlock({ graph }) {
+    const divRef = useRef(null)
+    useEffect(() => {
+      if (!divRef.current) return
+      import('plotly.js-dist-min').then(Plotly => {
+        Plotly.newPlot(divRef.current, graph.plotlyData, graph.plotlyLayout, { responsive: true, displaylogo: false })
+      })
+    }, [graph])
+    function handleMouseDown(e) {
+      if (e.target.closest('button')) return
+      e.preventDefault()
+      const startX = e.clientX - graph.x
+      const startY = e.clientY - graph.y
+      function onMove(ev) { setCanvasGraphs(prev => prev.map(g => g.id === graph.id ? { ...g, x: ev.clientX - startX, y: ev.clientY - startY } : g)) }
+      function onUp() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    }
+    return (
+      <div onMouseDown={handleMouseDown} style={{ position: 'fixed', top: graph.y, left: graph.x, zIndex: 8000, width: graph.width || 600, background: surface, border: `1px solid ${border}`, borderRadius: 10, boxShadow: '0 8px 24px #00000044', cursor: 'grab', userSelect: 'none' }}>
+        <div style={{ padding: '9px 12px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', gap: 8, background: accentDim, borderRadius: '10px 10px 0 0' }}>
+          <span style={{ fontSize: 12, color: accent }}>◉</span>
+          <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: accent }}>{graph.title}</span>
+          <button
+  onClick={() => import('plotly.js-dist-min').then(Plotly => Plotly.downloadImage(divRef.current, { format: 'png', filename: graph.title || 'plot', width: graph.width || 600, height: graph.height || 380 }))}
+  style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}
+>↓ PNG</button>
+<button
+  onClick={() => import('plotly.js-dist-min').then(Plotly => Plotly.downloadImage(divRef.current, { format: 'png', filename: graph.title || 'plot', width: graph.width || 600, height: graph.height || 380 }))}
+  style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}
+>↓ PNG</button>
+<button onClick={() => setCanvasGraphs(prev => prev.filter(g => g.id !== graph.id))} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 14 }}>✕</button>
+        </div>
+        <div ref={divRef} style={{ width: graph.width || 600, height: graph.height || 380 }} />
+      </div>
+    )
+  }
+  
   function StatCard({ card }) {
   function handleMouseDown(e) {
     if (e.target.closest('button')) return
@@ -1849,6 +1897,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                       className={`tool-btn${activeTool === tool.id ? ' active' : ''}`}
                       onClick={() => {
                         if (tool.id === 'crosscheck') { setActiveTool(null); setShowCCWizard(true) }
+else if (tool.id === 'plot') { setActiveTool(null); setShowPlotWizard(true) }
                         else setActiveTool(activeTool === tool.id ? null : tool.id)
                       }}
                       title={tool.desc}
@@ -1975,7 +2024,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                         </thead>
                         <tbody>
                           {Array.from({ length: Math.min(visibleRowCount, maxRows) }).map((_, ri) => {
-                            if (hiddenRows.has(ri)) return null
+                            if (hiddenRows instanceof Set && hiddenRows.has(ri)) return null
                             const isBandedRow = globalFormat.banding && ri % 2 === 0
                             return (
                               <tr key={ri}>
@@ -2096,7 +2145,16 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
     </div>
       {/* Floating stat cards */}
       {statCards.map(card => <StatCard key={card.id} card={card} />)}
+{canvasGraphs.map(graph => <PlotBlock key={graph.id} graph={graph} />)}
 
+      <SciencePlotWizard
+        open={showPlotWizard}
+        onClose={() => setShowPlotWizard(false)}
+        canvasColumns={canvasColumns}
+        onAddToCanvas={handlePlotAddToCanvas}
+        colors={colors}
+        dark={dark}
+      />
       <CrosscheckWizard
         open={showCCWizard}
         onClose={() => setShowCCWizard(false)}
