@@ -87,7 +87,7 @@ export default function NotebookCanvas({
     const rect = containerRef.current.getBoundingClientRect()
     const x = e.clientX - rect.left - panRef.current.x
     const y = e.clientY - rect.top - panRef.current.y
-    onAddBlock('text', Math.max(0, x - 140), Math.max(0, y - 20))
+  onAddBlock('text', x - 140, y - 20)
   }
 
   function startBlockDrag(e, block) {
@@ -209,7 +209,7 @@ export default function NotebookCanvas({
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
           {[['text', '+ Text'], ['table', '+ Table'], ['kanban', '+ Kanban']].map(([type, label]) => (
-            <button key={type} onClick={() => onAddBlock(type, Math.max(0, 120 - panRef.current.x + Math.random() * 40), Math.max(0, 80 - panRef.current.y + Math.random() * 30))} style={{ padding: '4px 10px', borderRadius: 5, border: `1px solid ${border}`, background: 'transparent', color: text2, fontFamily: "'DM Sans',sans-serif", fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }} onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text2 }}>{label}</button>
+            <button key={type} onClick={() => onAddBlock(type, 120 - panRef.current.x + Math.random() * 40, 80 - panRef.current.y + Math.random() * 30)}></button>
           ))}
           <span style={{ fontSize: 11, color: text3, paddingLeft: 8, borderLeft: `1px solid ${border}` }}>Right-click drag to pan · Right-click text to format</span>
         </div>
