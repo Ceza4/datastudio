@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo, Fragment } from 'react'
 import { useTheme } from '../providers'
 import * as XLSX from 'xlsx'
 import TextBlockContent from '../../components/notebook/TextBlockContent'
@@ -129,7 +129,12 @@ function setCanvasZoom(fn) {
   useEffect(() => {
     const saved = loadState()
     if (!saved) return
-    if (saved.canvases?.length) setCanvases(saved.canvases)
+    if (saved.canvases?.length) setCanvases(saved.canvases.map(c => ({
+      ...c,
+      hiddenRows: c.hiddenRows instanceof Set
+        ? c.hiddenRows
+        : new Set(Array.isArray(c.hiddenRows) ? c.hiddenRows : [])
+    })))
     if (saved.notebooks?.length) setNotebooks(saved.notebooks)
     if (saved.folders?.length) setFolders(saved.folders)
     if (saved.colFormats) setColFormats(saved.colFormats)
@@ -147,7 +152,10 @@ function setCanvasZoom(fn) {
   }
   useEffect(() => {
     debouncedSaveRef.current({
-      canvases,
+      canvases: canvases.map(c => ({
+        ...c,
+        hiddenRows: Array.from(c.hiddenRows instanceof Set ? c.hiddenRows : [])
+      })),
       notebooks,
       folders,
       colFormats,
@@ -175,6 +183,34 @@ function setCanvasZoom(fn) {
  useEffect(() => { window.__nbTableDrag = null }, [])
   const isPanning = useRef(false)
   const canvasScrollRef = useRef(null)
+
+  // Callback ref for the canvas scroll area.
+  // Why callback instead of plain ref: the canvas div is conditionally rendered
+  // (only when mode === 'canvas'), so a useEffect with [] deps would attach the
+  // wheel listener before the element exists. Callback refs fire exactly when
+  // React attaches/detaches the DOM node, so we always attach at the right time.
+  const wheelHandlerRef = useRef(null)
+  const setCanvasScrollEl = useCallback((el) => {
+    // Detach from previous element if any
+    if (canvasScrollRef.current && wheelHandlerRef.current) {
+      canvasScrollRef.current.removeEventListener('wheel', wheelHandlerRef.current)
+      wheelHandlerRef.current = null
+    }
+    canvasScrollRef.current = el
+    if (!el) return
+    const handler = (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault()
+        setCanvasZoomRef.current(prev => Math.min(2, Math.max(0.4, Math.round((prev + (e.deltaY > 0 ? -0.1 : 0.1)) * 10) / 10)))
+        return
+      }
+      if (e.shiftKey) { e.preventDefault(); el.scrollLeft += e.deltaY * 0.8; return }
+      el.scrollLeft += e.deltaX; el.scrollTop += e.deltaY * 0.8; e.preventDefault()
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    wheelHandlerRef.current = handler
+    console.log('[DataStudio] wheel handler attached to canvas scroll area')
+  }, [])
   const dragData = useRef(null)
   const lastInsert = useRef(null)
   const fileInputRef = useRef(null)
@@ -506,17 +542,10 @@ function setCanvasZoom(fn) {
   }
   function closeContextMenu() { setContextMenu(null) }
 
-  useEffect(() => {
-    const el = canvasScrollRef.current
-    if (!el) return
-    const handler = (e) => {
-      if (e.ctrlKey) { e.preventDefault(); setCanvasZoom(prev => Math.min(2, Math.max(0.4, Math.round((prev + (e.deltaY > 0 ? -0.1 : 0.1)) * 10) / 10))); return }
-      if (e.shiftKey) { e.preventDefault(); el.scrollLeft += e.deltaY * 0.8; return }
-      el.scrollLeft += e.deltaX; el.scrollTop += e.deltaY * 0.8; e.preventDefault()
-    }
-  el.addEventListener('wheel', handler, { passive: false })
-    return () => el.removeEventListener('wheel', handler)
-  }, [canvasScrollRef.current])
+  // Keep an always-fresh reference to setCanvasZoom so the wheel handler
+  // (which is attached via callback ref) can always call the LATEST version.
+  const setCanvasZoomRef = useRef(setCanvasZoom)
+  useEffect(() => { setCanvasZoomRef.current = setCanvasZoom })
   // ── Tool functions ───────────────────────────────────────────
 function handleCCAddToCanvas({ afterColumnId, newColumn }) {
     setCanvasColumns(prev => {
@@ -820,17 +849,7 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     setCanvasColumns(prev => [...prev, newCol])
     setTimeout(() => { setEditingColId(newCol.canvasId); setEditingLabel('New Column') }, 50)
   }
-  function createBlankExcel() {
-    const ts = Date.now()
-    const defaultHeaders = ['Column 1', 'Column 2', 'Column 3']
-    const newFile = {
-      id: `file_${ts}`,
-      name: `New File ${files.length + 1}.xlsx`,
-      sheets: [{ name: 'Sheet1', headers: defaultHeaders.map((h, i) => ({ id: `col_${ts}_${i}`, label: h, index: i, hidden: false })), rows: Array(10).fill(null).map(() => Array(defaultHeaders.length).fill('')) }]
-    }
-    setFiles(prev => [...prev, newFile])
-    setExpandedFiles(prev => { const next = new Set(prev); next.add(newFile.id); return next })
-  }
+
   // ── Folder & Notebook management ─────────────────────────────
   function createFolder() {
     const id = `folder_${Date.now()}`
@@ -1417,14 +1436,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
                 📁 Folder
               </button>
-
-              <button onClick={createBlankExcel}
-  style={{ width: '100%', marginTop: 5, padding: '5px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
-  onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
-  onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
-  📊 New Excel
-</button>
-<button onClick={createNotebook}
+              <button onClick={createNotebook}
                 style={{ flex: 1, padding: '5px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
@@ -1571,7 +1583,6 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
               }}
               onAddSheet={() => addNotebookSheet(activeNotebookId)}
               onDeleteSheet={(sheetId) => deleteNotebookSheet(activeNotebookId, sheetId)}
-              onRenameSheet={(sheetId, name) => renameNotebookSheet(activeNotebookId, sheetId, name)}
               onSetActiveSheet={(sheetId) => setNotebookActiveSheet(activeNotebookId, sheetId)}
 
               onRemoveTableColumn={(blockId, colIdx) => {
@@ -1912,7 +1923,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
               )}
 
               {/* Canvas scroll area */}
-              <div ref={canvasScrollRef} onDragOver={handleCanvasZoneDragOver} onDrop={handleCanvasZoneDrop} onDragLeave={handleCanvasDragLeave} onMouseDown={handleCanvasMouseDown} onContextMenu={e => { e.preventDefault() }}
+              <div ref={setCanvasScrollEl} onDragOver={handleCanvasZoneDragOver} onDrop={handleCanvasZoneDrop} onDragLeave={handleCanvasDragLeave} onMouseDown={handleCanvasMouseDown} onContextMenu={e => { e.preventDefault() }}
                 style={{ flex: 1, overflow: 'auto', background: base, position: 'relative', cursor: 'default', userSelect: 'none' }}>
                 {canvasColumns.length === 0 ? (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 40 }}>
@@ -1932,97 +1943,125 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                 ) : (
                   <div style={{ display: 'inline-block', minWidth: '100%' }}>
                     <div style={{ zoom: canvasZoom, willChange: 'zoom' }}>
-                      <table style={{ borderCollapse: 'collapse', fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
-                        <thead>
-                          <tr style={{ background: globalFormat.boldHeader ? globalFormat.headerColor + '22' : surface }}>
-                            <th style={{ width: 42, padding: '8px 10px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, color: text3, fontSize: 10, textAlign: 'center', fontWeight: 500, background: globalFormat.boldHeader ? globalFormat.headerColor + '22' : surface, position: 'sticky', top: 0, zIndex: 5 }}>#</th>
-                            {sortedCanvasCols.map((col, idx) => {
-                              const isPinned = pinnedColIds.includes(col.canvasId)
-                              const isDraggingThis = draggingCanvasId === col.canvasId
-                              const isInsertBefore = insertAt?.index === idx && insertAt?.side === 'left'
-                              const isInsertAfter  = insertAt?.index === idx && insertAt?.side === 'right'
-                              const fmt = getColFormat(col.canvasId)
-                              return (
-                                <th key={col.canvasId} className="canvas-th" draggable
-                                  onDragStart={e => handleCanvasDragStart(e, col.canvasId)}
-                                  onDragEnd={handleCanvasDragEnd}
-                                  onDragOver={e => handleThDragOver(e, idx)}
-                                  onDrop={e => handleThDrop(e, idx)}
-                                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setColContextMenu({ x: e.clientX, y: e.clientY, canvasId: col.canvasId, label: col.label }) }}
-                                  style={{ padding: '8px 12px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, textAlign: fmt.align || 'left', whiteSpace: 'nowrap', fontFamily: "'DM Sans',sans-serif", fontSize: fmt.fontSize || 12, fontWeight: globalFormat.boldHeader ? 700 : 600, background: isPinned ? (dark ? '#1a1f4a' : '#e8f5ee') : globalFormat.boldHeader ? globalFormat.headerColor + '22' : surface, color: globalFormat.boldHeader ? globalFormat.headerColor : text, opacity: isDraggingThis ? 0.3 : 1, position: 'sticky', top: 0, zIndex: 4, overflow: 'visible' }}
-                                >
-                                  {isInsertBefore && <div style={{ position: 'absolute', left: -1, top: 0, bottom: 0, width: 3, background: accent, borderRadius: 2, zIndex: 10, pointerEvents: 'none' }}><div style={{ position: 'absolute', top: -3, left: -2, width: 7, height: 7, borderRadius: '50%', background: accent }} /></div>}
-                                  {isInsertAfter  && <div style={{ position: 'absolute', right: -2, top: 0, bottom: 0, width: 3, background: accent, borderRadius: 2, zIndex: 10, pointerEvents: 'none' }}><div style={{ position: 'absolute', top: -3, left: -2, width: 7, height: 7, borderRadius: '50%', background: accent }} /></div>}
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                    {editingColId === col.canvasId ? (
-                                      <input ref={editInputRef} value={editingLabel} onChange={e => setEditingLabel(e.target.value)} onBlur={() => commitEdit(col.canvasId)} onKeyDown={e => { if (e.key === 'Enter') commitEdit(col.canvasId); if (e.key === 'Escape') setEditingColId(null) }} style={{ background: raised, border: `1px solid ${accent}`, borderRadius: 4, padding: '2px 6px', color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, width: 120, outline: 'none' }} autoFocus onClick={e => e.stopPropagation()} />
-                                    ) : (
-                                      <div>
-                                        <div className="col-label-click" onClick={() => startEdit(col.canvasId, col.label)} title="Click to rename" style={{ display: 'inline-block' }}>{col.label}</div>
-                                        <div style={{ color: text3, fontSize: 10, fontWeight: 400, marginTop: 1 }}>{col.fileName}</div>
-                                      </div>
-                                    )}
-                                    <button className="th-pin" title={isPinned ? 'Unpin' : 'Pin'} onClick={() => togglePin(col.canvasId)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '0 2px', color: isPinned ? accent : text3, opacity: isPinned ? 1 : 0, marginLeft: 'auto', flexShrink: 0 }}>📌</button>
-                                    <button onClick={() => removeCanvasColumn(col.canvasId)} title="Remove" style={{ background: 'none', border: 'none', cursor: 'pointer', color: text3, fontSize: 11, padding: '0 2px', lineHeight: 1, flexShrink: 0, opacity: 0.5, marginLeft: 2 }} onMouseEnter={e => e.currentTarget.style.opacity = 1} onMouseLeave={e => e.currentTarget.style.opacity = 0.5}>✕</button>
+                      <div
+                        className="canvas-grid"
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: `42px ${sortedCanvasCols.map(() => 'minmax(80px, 240px)').join(' ')} 1fr`,
+                          gridAutoRows: 'auto',
+                          fontSize: 12,
+                          fontFamily: "'DM Mono',monospace",
+                          width: 'max-content',
+                          minWidth: '100%',
+                        }}
+                      >
+                        {/* ── HEADER ROW ─────────────────────────────────── */}
+                        {/* Row-number column header (top-left) */}
+                        <div style={{
+                          padding: '8px 10px',
+                          borderBottom: `1px solid ${border}`,
+                          borderRight: `1px solid ${border}`,
+                          color: text3, fontSize: 10, textAlign: 'center', fontWeight: 500,
+                          background: globalFormat.boldHeader ? globalFormat.headerColor + '22' : surface,
+                          position: 'sticky', top: 0, zIndex: 5,
+                          boxSizing: 'border-box',
+                        }}>#</div>
+
+                        {/* Data column headers */}
+                        {sortedCanvasCols.map((col, idx) => {
+                          const isPinned = pinnedColIds.includes(col.canvasId)
+                          const isDraggingThis = draggingCanvasId === col.canvasId
+                          const isInsertBefore = insertAt?.index === idx && insertAt?.side === 'left'
+                          const isInsertAfter  = insertAt?.index === idx && insertAt?.side === 'right'
+                          const fmt = getColFormat(col.canvasId)
+                          return (
+                            <div key={col.canvasId} className="canvas-th" draggable
+                              onDragStart={e => handleCanvasDragStart(e, col.canvasId)}
+                              onDragEnd={handleCanvasDragEnd}
+                              onDragOver={e => handleThDragOver(e, idx)}
+                              onDrop={e => handleThDrop(e, idx)}
+                              onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setColContextMenu({ x: e.clientX, y: e.clientY, canvasId: col.canvasId, label: col.label }) }}
+                              style={{ position: 'sticky', top: 0, zIndex: 4, padding: '8px 12px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, textAlign: fmt.align || 'left', whiteSpace: 'nowrap', fontFamily: "'DM Sans',sans-serif", fontSize: fmt.fontSize || 12, fontWeight: globalFormat.boldHeader ? 700 : 600, background: isPinned ? (dark ? '#1a1f4a' : '#e8f5ee') : globalFormat.boldHeader ? globalFormat.headerColor + '22' : surface, color: globalFormat.boldHeader ? globalFormat.headerColor : text, opacity: isDraggingThis ? 0.3 : 1, overflow: 'visible', boxSizing: 'border-box', cursor: 'grab' }}
+                            >
+                              {isInsertBefore && <div style={{ position: 'absolute', left: -1, top: 0, bottom: 0, width: 3, background: accent, borderRadius: 2, zIndex: 10, pointerEvents: 'none' }}><div style={{ position: 'absolute', top: -3, left: -2, width: 7, height: 7, borderRadius: '50%', background: accent }} /></div>}
+                              {isInsertAfter  && <div style={{ position: 'absolute', right: -2, top: 0, bottom: 0, width: 3, background: accent, borderRadius: 2, zIndex: 10, pointerEvents: 'none' }}><div style={{ position: 'absolute', top: -3, left: -2, width: 7, height: 7, borderRadius: '50%', background: accent }} /></div>}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {editingColId === col.canvasId ? (
+                                  <input ref={editInputRef} value={editingLabel} onChange={e => setEditingLabel(e.target.value)} onBlur={() => commitEdit(col.canvasId)} onKeyDown={e => { if (e.key === 'Enter') commitEdit(col.canvasId); if (e.key === 'Escape') setEditingColId(null) }} style={{ background: raised, border: `1px solid ${accent}`, borderRadius: 4, padding: '2px 6px', color: text, fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, width: 120, outline: 'none' }} autoFocus onClick={e => e.stopPropagation()} />
+                                ) : (
+                                  <div>
+                                    <div className="col-label-click" onClick={() => startEdit(col.canvasId, col.label)} title="Click to rename" style={{ display: 'inline-block' }}>{col.label}</div>
+                                    <div style={{ color: text3, fontSize: 10, fontWeight: 400, marginTop: 1 }}>{col.fileName}</div>
                                   </div>
-                                </th>
-                              )
-                            })}
-                            <th onClick={addBlankColumn} style={{ padding: '8px 14px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, background: surface, position: 'sticky', top: 0, zIndex: 4, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: text3 }}
-                              onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = accent }}
-                              onMouseLeave={e => { e.currentTarget.style.background = surface; e.currentTarget.style.color = text3 }}>+ col</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {Array.from({ length: Math.min(visibleRowCount, maxRows) }).map((_, ri) => {
-                            if (hiddenRows.has(ri)) return null
-                            const isBandedRow = globalFormat.banding && ri % 2 === 0
-                            return (
-                              <tr key={ri}>
-                                <td onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, rowIndex: ri }) }}
-                                  style={{ padding: '5px 10px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text3, textAlign: 'center', fontSize: 10, cursor: 'context-menu', userSelect: 'none' }}
-                                  onMouseEnter={e => { e.currentTarget.style.background = raised }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>{ri + 1}</td>
-                                {sortedCanvasCols.map((col, idx) => {
-                                  const val = col.rows[ri]
-                                  const isEmpty = val === undefined || val === null || val === ''
-                                  const isPinned = pinnedColIds.includes(col.canvasId)
-                                  const isEditing = editingCell?.canvasId === col.canvasId && editingCell?.rowIndex === ri
-                                  const isDup = duplicateMap[col.canvasId]?.has(String(val ?? '').trim().toLowerCase())
-                                  const isEmptyHighlight = highlightEmpty && isEmpty
-                                  const fmt = getColFormat(col.canvasId)
-                                 const ccDec = col.label === 'CC Decision' ? String(val || '').toLowerCase() : null
-                                  const isSelected = selectedCell?.canvasId === col.canvasId && selectedCell?.rowIndex === ri && !isEditing
-                                  let bg = ri % 2 === 1 ? `${surface}55` : 'transparent'
-                                  if (isPinned) bg = dark ? '#1a1f4a33' : '#e8f5ee88'
-                                  if (isBandedRow) bg = dark ? globalFormat.headerColor + '22' : globalFormat.headerColor + '11'
-                                  if (isDup) bg = dark ? '#2a1f0d' : '#fef3c7'
-                                  if (isEmptyHighlight) bg = dark ? '#2a0d0d' : '#fee2e2'
-                                  if (ccDec === 'matched')   bg = dark ? '#0d2a1a' : '#dcfce7'
-                                  if (ccDec === 'maybe')     bg = dark ? '#2a1f0d' : '#fef3c7'
-                                  if (ccDec === 'unmatched') bg = dark ? '#2a0d0d' : '#fee2e2'
-                                  return (
-                                    <td key={col.canvasId}
-                                      onDragOver={e => handleThDragOver(e, idx)}
-                                      onDrop={e => handleThDrop(e, idx)}
-                                      onClick={() => !isEditing && startCellEdit(col.canvasId, ri, val)}
-                                     style={{ padding: isEditing ? '0' : '5px 14px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, outline: isSelected ? `2px solid ${accent}` : 'none', outlineOffset: '-2px', color: ccDec === 'matched' ? green : ccDec === 'maybe' ? amber : ccDec === 'unmatched' ? red : isEmptyHighlight ? '#f87171' : isDup ? '#E8B85B' : isEmpty ? text3 : text2, whiteSpace: fmt.wrap ? 'normal' : 'nowrap', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', background: bg, cursor: isEditing ? 'text' : 'default', fontSize: fmt.fontSize || 12, fontWeight: fmt.bold ? 700 : 400, textAlign: fmt.align || 'left' }}
-                                    >
-                                      {isEditing ? (
-                                        <input autoFocus value={editingCellVal} onChange={e => setEditingCellVal(e.target.value)} onBlur={commitCellEdit} onKeyDown={handleCellKeyDown} style={{ width: '100%', padding: '5px 14px', border: 'none', borderBottom: `2px solid ${accent}`, background: raised, color: text, fontFamily: "'DM Mono',monospace", fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
-                                      ) : isEmptyHighlight ? (
-                                        <span style={{ fontSize: 11, color: '#f87171', fontStyle: 'italic' }}>empty — click to fill</span>
-                                      ) : isEmpty ? (
-                                        <span style={{ fontSize: 10 }}>—</span>
-                                      ) : String(val)}
-                                    </td>
-                                  )
-                                })}
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
-                  <div ref={bottomSentinelRef} style={{ height: 1 }} />
+                                )}
+                                <button className="th-pin" title={isPinned ? 'Unpin' : 'Pin'} onClick={() => togglePin(col.canvasId)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '0 2px', color: isPinned ? accent : text3, opacity: isPinned ? 1 : 0, marginLeft: 'auto', flexShrink: 0 }}>📌</button>
+                                <button onClick={() => removeCanvasColumn(col.canvasId)} title="Remove" style={{ background: 'none', border: 'none', cursor: 'pointer', color: text3, fontSize: 11, padding: '0 2px', lineHeight: 1, flexShrink: 0, opacity: 0.5, marginLeft: 2 }} onMouseEnter={e => e.currentTarget.style.opacity = 1} onMouseLeave={e => e.currentTarget.style.opacity = 0.5}>✕</button>
+                              </div>
+                            </div>
+                          )
+                        })}
+
+                        {/* + col button (trailing header cell) */}
+                        <div onClick={addBlankColumn} style={{ padding: '8px 14px', borderBottom: `1px solid ${border}`, borderRight: `1px solid ${border}`, background: surface, position: 'sticky', top: 0, zIndex: 4, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: text3, display: 'flex', alignItems: 'center', boxSizing: 'border-box' }}
+                          onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = accent }}
+                          onMouseLeave={e => { e.currentTarget.style.background = surface; e.currentTarget.style.color = text3 }}>+ col</div>
+
+                        {/* ── DATA ROWS ───────────────────────────────────── */}
+                        {Array.from({ length: Math.min(visibleRowCount, maxRows) }).map((_, ri) => {
+                          if (hiddenRows.has(ri)) return null
+                          const isBandedRow = globalFormat.banding && ri % 2 === 0
+                          return (
+                            <Fragment key={`row_${ri}`}>
+                              {/* Row number cell */}
+                              <div onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, rowIndex: ri }) }}
+                                style={{ padding: '5px 10px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, color: text3, textAlign: 'center', fontSize: 10, cursor: 'context-menu', userSelect: 'none', boxSizing: 'border-box' }}
+                                onMouseEnter={e => { e.currentTarget.style.background = raised }}
+                                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>{ri + 1}</div>
+
+                              {/* Data cells */}
+                              {sortedCanvasCols.map((col, idx) => {
+                                const val = col.rows[ri]
+                                const isEmpty = val === undefined || val === null || val === ''
+                                const isPinned = pinnedColIds.includes(col.canvasId)
+                                const isEditing = editingCell?.canvasId === col.canvasId && editingCell?.rowIndex === ri
+                                const isDup = duplicateMap[col.canvasId]?.has(String(val ?? '').trim().toLowerCase())
+                                const isEmptyHighlight = highlightEmpty && isEmpty
+                                const fmt = getColFormat(col.canvasId)
+                                const ccDec = col.label === 'CC Decision' ? String(val || '').toLowerCase() : null
+                                const isSelected = selectedCell?.canvasId === col.canvasId && selectedCell?.rowIndex === ri && !isEditing
+                                let bg = ri % 2 === 1 ? `${surface}55` : 'transparent'
+                                if (isPinned) bg = dark ? '#1a1f4a33' : '#e8f5ee88'
+                                if (isBandedRow) bg = dark ? globalFormat.headerColor + '22' : globalFormat.headerColor + '11'
+                                if (isDup) bg = dark ? '#2a1f0d' : '#fef3c7'
+                                if (isEmptyHighlight) bg = dark ? '#2a0d0d' : '#fee2e2'
+                                if (ccDec === 'matched')   bg = dark ? '#0d2a1a' : '#dcfce7'
+                                if (ccDec === 'maybe')     bg = dark ? '#2a1f0d' : '#fef3c7'
+                                if (ccDec === 'unmatched') bg = dark ? '#2a0d0d' : '#fee2e2'
+                                return (
+                                  <div key={col.canvasId}
+                                    onDragOver={e => handleThDragOver(e, idx)}
+                                    onDrop={e => handleThDrop(e, idx)}
+                                    onClick={() => !isEditing && startCellEdit(col.canvasId, ri, val)}
+                                    style={{ position: 'relative', padding: isEditing ? '0' : '5px 14px', borderBottom: `1px solid ${border}22`, borderRight: `1px solid ${border}`, outline: isSelected ? `2px solid ${accent}` : 'none', outlineOffset: '-2px', color: ccDec === 'matched' ? green : ccDec === 'maybe' ? amber : ccDec === 'unmatched' ? red : isEmptyHighlight ? '#f87171' : isDup ? '#E8B85B' : isEmpty ? text3 : text2, whiteSpace: fmt.wrap ? 'normal' : 'nowrap', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', background: bg, cursor: isEditing ? 'text' : 'default', fontSize: fmt.fontSize || 12, fontWeight: fmt.bold ? 700 : 400, textAlign: fmt.align || 'left', boxSizing: 'border-box' }}
+                                  >
+                                    {isEditing ? (
+                                      <input autoFocus value={editingCellVal} onChange={e => setEditingCellVal(e.target.value)} onBlur={commitCellEdit} onKeyDown={handleCellKeyDown} style={{ width: '100%', padding: '5px 14px', border: 'none', borderBottom: `2px solid ${accent}`, background: raised, color: text, fontFamily: "'DM Mono',monospace", fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                                    ) : isEmptyHighlight ? (
+                                      <span style={{ fontSize: 11, color: '#f87171', fontStyle: 'italic' }}>empty — click to fill</span>
+                                    ) : isEmpty ? (
+                                      <span style={{ fontSize: 10 }}>—</span>
+                                    ) : String(val)}
+                                  </div>
+                                )
+                              })}
+
+                              {/* Trailing empty cell to match + col header */}
+                              <div style={{ borderBottom: `1px solid ${border}22`, background: 'transparent', boxSizing: 'border-box' }} />
+                            </Fragment>
+                          )
+                        })}
+                      </div>
+                      <div ref={bottomSentinelRef} style={{ height: 1 }} />
                     </div>
                   </div>
                 )}
