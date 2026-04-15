@@ -44,14 +44,14 @@ export default function NotebookCanvas({
   const [snapLines, setSnapLines] = useState([])
   const [isPresentation, setIsPresentation] = useState(false)
   const outerRef = useRef(null)
-  const [selectedBlockId, setSelectedBlockId] = useState(null)
-  const [selectedIds, setSelectedIds] = useState(new Set())
+const [selectedIds, setSelectedIds] = useState(new Set())
   const [ctxMenu, setCtxMenu] = useState(null)
   const [hoveredBlockId, setHoveredBlockId] = useState(null)
   const [animatingBlockId, setAnimatingBlockId] = useState(null)
   const [deletingBlockId, setDeletingBlockId] = useState(null)
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addMenuRef = useRef(null)
+  const ctxMenuRef = useRef(null)
 
   useEffect(() => { setNbLabel(nb.name) }, [nb.name])
   useEffect(() => {
@@ -80,7 +80,17 @@ export default function NotebookCanvas({
   function duplicateSelected() {
     selectedIds.forEach(id => {
       const b = blocks.find(bl => bl.id === id)
-      if (b) onAddBlock(b.type, b.x + 30, b.y + 30, b.type === 'table' ? [...b.headers] : null, b.type === 'table' ? b.rows.map(r => [...r]) : null)
+      if (!b) return
+      const patch = {}
+      if (b.w) patch.w = b.w
+      if (b.h) patch.h = b.h
+      if (b.name) patch.name = b.name + ' (copy)'
+      if (b.type === 'text' && b.content) patch.content = b.content
+      if (b.type === 'kanban' && b.lanes) patch.lanes = JSON.parse(JSON.stringify(b.lanes))
+      onAddBlock(b.type, b.x + 30, b.y + 30,
+        b.type === 'table' ? [...b.headers] : null,
+        b.type === 'table' ? b.rows.map(r => [...r]) : null,
+        b.w || null, b.h || null, patch)
     })
     setCtxMenu(null)
   }
@@ -128,7 +138,7 @@ function addBlockAnimated(type, x, y) {
   }, [addMenuOpen])
   useEffect(() => {
     if (!ctxMenu) return
-    function h() { setCtxMenu(null) }
+    function h(e) { if (ctxMenuRef.current && ctxMenuRef.current.contains(e.target)) return; setCtxMenu(null) }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [ctxMenu])
@@ -152,8 +162,9 @@ function addBlockAnimated(type, x, y) {
 
     const rect = containerRef.current.getBoundingClientRect()
     const bzoom = window.visualViewport?.scale || 1
-    const x = (e.clientX - rect.left) / bzoom - panRef.current.x
-    const y = (e.clientY - rect.top) / bzoom - panRef.current.y
+    const z = nbZoomRef.current
+    const x = ((e.clientX - rect.left) / bzoom - panRef.current.x) / z
+    const y = ((e.clientY - rect.top) / bzoom - panRef.current.y) / z
     setSelectedIds(new Set())
     addBlockAnimated('text', x - 140, y - 20)
   }
@@ -306,16 +317,16 @@ function addBlockAnimated(type, x, y) {
   return (
     <div ref={outerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: "'DM Sans',sans-serif", background: dark ? '#141412' : '#EAE7DE' }}>
     {/* ── Floating Island ── */}
-      <div style={{ position: 'absolute', top: 60, left: '22%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', gap: 0, padding: '4px 6px', background: `${surface}dd`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 10, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: "'DM Sans',sans-serif", alignItems: 'center' }}>
+      <div style={{ position: 'absolute', top: 16, left: '25%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', gap: 0, padding: '4px 6px', background: `${surface}dd`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 10, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: "'DM Sans',sans-serif", alignItems: 'center' }}>
         {/* Left: Back + Name */}
         <button onClick={onBack} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 12, padding: '4px 6px', borderRadius: 4, fontFamily: "'DM Sans',sans-serif" }}
           onMouseEnter={e => e.currentTarget.style.color = text}
           onMouseLeave={e => e.currentTarget.style.color = text3}>←</button>
         <span style={{ fontSize: 12, marginRight: 4 }}>📓</span>
         {renamingNb ? (
-          <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100 }} />
+          <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
         ) : (
-          <span onDoubleClick={() => setRenamingNb(true)} style={{ fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, color: text, cursor: 'text', marginRight: 4 }}>{nb.name}</span>
+          <span onDoubleClick={() => setRenamingNb(true)} style={{ fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, color: text, cursor: 'text', marginRight: 4, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle' }}>{nb.name}</span>
         )}
         {activeSheet && !renamingSheet && (
           <span onDoubleClick={() => { setSheetLabel(activeSheet.name); setRenamingSheet(true) }} style={{ fontSize: 10, color: text3, cursor: 'text', marginRight: 4 }}>
@@ -339,7 +350,7 @@ function addBlockAnimated(type, x, y) {
       </div>
 
       {/* ── Floating Island Toolbar ── */}
-      <div style={{ position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', gap: 4, padding: '5px 6px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 10, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`, fontFamily: "'DM Sans',sans-serif", alignItems: 'center' }}>
+      <div style={{ position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', gap: 4, padding: '5px 6px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 10, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`, fontFamily: "'DM Sans',sans-serif", alignItems: 'center' }}>
         {/* Add block dropdown */}
         <div ref={addMenuRef} style={{ position: 'relative' }}>
           <button onClick={() => setAddMenuOpen(!addMenuOpen)}
@@ -351,7 +362,7 @@ function addBlockAnimated(type, x, y) {
           {addMenuOpen && (
             <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 140, zIndex: 200 }}>
               {[['text', '', 'Text Block'], ['table', '', 'Table Block'], ['kanban', '', 'Kanban Board']].map(([type, icon, label]) => (
-                <button key={type} onClick={() => { addBlockAnimated(type, 120 - panRef.current.x + Math.random() * 40, 80 - panRef.current.y + Math.random() * 30); setAddMenuOpen(false) }}
+                <button key={type} onClick={() => { const z = nbZoomRef.current; addBlockAnimated(type, (200 - panRef.current.x) / z + Math.random() * 40, (120 - panRef.current.y) / z + Math.random() * 30); setAddMenuOpen(false) }}
                   style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, fontFamily: "'DM Sans',sans-serif", cursor: 'pointer', textAlign: 'left' }}
                   onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = text }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = text2 }}>
@@ -365,14 +376,14 @@ function addBlockAnimated(type, x, y) {
 
         <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
 
-        <span style={{ fontSize: 10, color: text3, fontFamily: "'DM Mono',monospace", padding: '0 6px' }}>100%</span>
+        <span style={{ fontSize: 10, color: text3, fontFamily: "'DM Mono',monospace", padding: '0 6px', cursor: 'pointer' }} onClick={() => { nbZoomRef.current = 1; setNbZoom(1); panRef.current = { x: 60, y: 60 }; setPan({ x: 60, y: 60 }) }} title="Click to reset">{Math.round(nbZoom * 100)}%</span>
 
         <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
 
         <span style={{ fontSize: 10, color: text3, padding: '4px 6px' }}>Scroll to pan · Right-click text to format</span>
       </div>
       {ctxMenu && (
-        <div style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 300, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 150, fontFamily: "'DM Sans',sans-serif" }}>
+        <div ref={ctxMenuRef} style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 300, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 150, fontFamily: "'DM Sans',sans-serif" }}>
           {[
             { label: `Duplicate (${selectedIds.size})`, icon: '⊕', color: text2, action: duplicateSelected },
             { label: `Delete (${selectedIds.size})`, icon: '✕', color: red, action: deleteSelected },
@@ -422,7 +433,7 @@ function addBlockAnimated(type, x, y) {
             <div key={block.id}
               onMouseEnter={() => setHoveredBlockId(block.id)}
               onMouseLeave={() => setHoveredBlockId(null)}
-              onPointerDownCapture={e => selectBlock(block.id, e.ctrlKey || e.metaKey)}
+              onPointerDownCapture={e => { if (e.button === 2 && selectedIds.has(block.id)) return; selectBlock(block.id, e.ctrlKey || e.metaKey) }}
 onContextMenu={e => handleBlockContextMenu(e, block.id)}
               style={{
                 position: 'absolute', left: block.x, top: block.y,

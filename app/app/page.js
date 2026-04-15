@@ -912,10 +912,10 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, name }))
   }
   function _getActiveSheetId(n) { return n.activeSheetId || n.sheets?.[0]?.id }
-  function addNotebookBlock(nbId, type, x, y, customHeaders, customRows, customW, customH) {
+  function addNotebookBlock(nbId, type, x, y, customHeaders, customRows, customW, customH, patch) {
     const id = `block_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    const block = type === 'text'
-      ? { id, type: 'text', x, y, w: 280, name: '', content: '' }
+    let block = type === 'text'
+      ? { id, type: 'text', x, y, w: customW || 280, name: '', content: '' }
       : type === 'kanban'
       ? { id, type: 'kanban', x, y, name: '', lanes: [
           { id: `lane_${Date.now()}_1`, name: 'Lane 1', cards: [] },
@@ -924,9 +924,10 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
         ]}
       : type === 'section'
       ? { id, type: 'section', x, y, w: customW || 500, h: customH || 350, name: 'Section', sectionColor: '#5B5FE8' }
-      : { id, type: 'table', x, y, name: '',
+      : { id, type: 'table', x, y, w: customW || undefined, name: '',
           headers: customHeaders || ['Column 1'],
           rows: customRows || Array(8).fill(null).map(() => ['']) }
+    if (patch) block = { ...block, ...patch, id }
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       const sid = _getActiveSheetId(n)
@@ -1437,15 +1438,21 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
   </div>
 )}
       <div
-        style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: "'DM Sans',sans-serif" }}
+        style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: "'DM Sans',sans-serif", position: 'relative' }}
        onMouseDown={e => { if (contextMenu) setContextMenu(null); if (colContextMenu) setColContextMenu(null); if (editingCell && !e.target.closest('td input')) commitCellEdit(); if (!e.target.closest('td')) setSelectedCell(null) }}
         onDragOver={e => { if (dragData.current) e.preventDefault() }}
         onDrop={e => { e.preventDefault(); if (!dragData.current) return; if (dragData.current.type === 'sidebar') addColumnsToCanvas(dragData.current.cols, null); setInsertAt(null); lastInsert.current = null }}
       >
 
        {/* ── Sidebar ── */}
-        <div style={{ width: 220, background: surface, borderRight: `1px solid ${border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+        <div style={activeNotebookId ? { width: 230, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: 100, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 14, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: "'DM Sans',sans-serif" } : { width: 220, background: surface, borderRight: `1px solid ${border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
           <div style={{ padding: '12px 12px 6px' }}>
+            {activeNotebookId && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontFamily: "'Syne',sans-serif", fontSize: 14, fontWeight: 700, color: text, flex: 1 }}>DataStudio</span>
+                <span style={{ fontSize: 8, color: accent, fontFamily: "'DM Mono',monospace", fontWeight: 500, padding: '2px 7px', background: accentDim, borderRadius: 4, letterSpacing: 0.8, textTransform: 'uppercase' }}>Beta</span>
+              </div>
+            )}
             <button className="import-btn" onClick={handleImportClick} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 7, fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               <span style={{ fontSize: 15 }}>+</span> Import File
             </button>
@@ -1555,6 +1562,18 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
             </button>
           </div>
         </div>
+        {/* ── Profile Island (notebook mode) ── */}
+        {activeNotebookId && (
+          <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 100 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: text2 }}>
+              <span style={{ fontSize: 10, color: text3, fontFamily: "'DM Mono',monospace" }}>Free plan</span>
+              <div style={{ width: 1, height: 14, background: border }} />
+              <div style={{ width: 24, height: 24, borderRadius: '50%', background: accentDim, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, color: accent, fontFamily: "'DM Sans',sans-serif" }}>
+                {String.fromCodePoint(128100)}
+              </div>
+            </div>
+          </div>
+        )}
         {/* ── Main ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
@@ -1565,7 +1584,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
               dark={dark}
               colors={{ surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber }}
               onBack={() => setActiveNotebookId(null)}
-              onAddBlock={(type, x, y, h1, r1, w, h) => addNotebookBlock(activeNotebookId, type, x, y, h1, r1, w, h)}
+              onAddBlock={(type, x, y, h1, r1, w, h, patch) => addNotebookBlock(activeNotebookId, type, x, y, h1, r1, w, h, patch)}
               onUpdateBlock={(blockId, patch) => updateNotebookBlock(activeNotebookId, blockId, patch)}
               onDeleteBlock={(blockId) => deleteNotebookBlock(activeNotebookId, blockId)}
               onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
