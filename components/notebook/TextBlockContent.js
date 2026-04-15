@@ -129,8 +129,8 @@ export default function TextBlockContent({
   function insertChecklist() {
     document.execCommand('insertHTML', false,
       '<div data-type="checklist" style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;">' +
-      '<input type="checkbox" style="margin-top:5px;cursor:pointer;accent-color:#5B5FE8;width:15px;height:15px;flex-shrink:0;">' +
-      '<span></span></div><div><br></div>'
+      '<input type="checkbox" style="margin-top:5px;cursor:pointer;accent-color:#5B5FE8;width:15px;height:15px;flex-shrink:0;" contenteditable="false">' +
+      '<span style="flex:1;min-height:1em;outline:none;"></span></div><div><br></div>'
     )
   }
 
@@ -210,7 +210,7 @@ export default function TextBlockContent({
           const newItem = document.createElement('div')
           newItem.setAttribute('data-type', 'checklist')
           newItem.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:3px 0;'
-          newItem.innerHTML = '<input type="checkbox" style="margin-top:5px;cursor:pointer;accent-color:#5B5FE8;width:15px;height:15px;flex-shrink:0;"><span></span>'
+          newItem.innerHTML = '<input type="checkbox" style="margin-top:5px;cursor:pointer;accent-color:#5B5FE8;width:15px;height:15px;flex-shrink:0;" contenteditable="false"><span style="flex:1;min-height:1em;outline:none;"></span>'
           checklistItem.after(newItem)
           const span = newItem.querySelector('span')
           if (span) {
@@ -345,6 +345,9 @@ export default function TextBlockContent({
       margin-top: 5px; cursor: pointer; accent-color: #5B5FE8;
       width: 16px; height: 16px; flex-shrink: 0;
     }
+      [data-ds-text] [data-type="checklist"] span {
+      flex: 1; min-height: 1em; outline: none;
+    }
     [data-ds-text] [data-type="checklist"] input[type="checkbox"]:checked + span {
       text-decoration: line-through; opacity: 0.45;
     }
@@ -401,6 +404,9 @@ export default function TextBlockContent({
             fontFamily: "'DM Sans',sans-serif",
             cursor: 'text',
             userSelect: 'text',
+            wordBreak: 'break-word',
+            overflowWrap: 'break-word',
+            overflowY: 'auto',
           }}
         />
       </div>

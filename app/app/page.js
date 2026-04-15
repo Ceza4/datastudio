@@ -875,6 +875,12 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
   function removeFromFolder(itemId, folderId) {
     setFolders(prev => prev.map(f => f.id === folderId ? { ...f, itemIds: f.itemIds.filter(id => id !== itemId) } : f))
   }
+  function deleteFile(fileId) {
+    if (!window.confirm('Delete this file? Canvas columns from this file will remain.')) return
+    setFiles(prev => prev.filter(f => f.id !== fileId))
+    setExpandedFiles(prev => { const next = new Set(prev); next.delete(fileId); return next })
+    setFolders(prev => prev.map(f => ({ ...f, itemIds: f.itemIds.filter(id => id !== fileId) })))
+  }
   function createBlankSheet() {
     const id = `file_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
     const defaultHeaders = [
@@ -906,7 +912,7 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, name }))
   }
   function _getActiveSheetId(n) { return n.activeSheetId || n.sheets?.[0]?.id }
-  function addNotebookBlock(nbId, type, x, y, customHeaders, customRows) {
+  function addNotebookBlock(nbId, type, x, y, customHeaders, customRows, customW, customH) {
     const id = `block_${Date.now()}_${Math.random().toString(36).slice(2)}`
     const block = type === 'text'
       ? { id, type: 'text', x, y, w: 280, name: '', content: '' }
@@ -916,6 +922,8 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
           { id: `lane_${Date.now()}_2`, name: 'Lane 2', cards: [] },
           { id: `lane_${Date.now()}_3`, name: 'Lane 3', cards: [] },
         ]}
+      : type === 'section'
+      ? { id, type: 'section', x, y, w: customW || 500, h: customH || 350, name: 'Section', sectionColor: '#5B5FE8' }
       : { id, type: 'table', x, y, name: '',
           headers: customHeaders || ['Column 1'],
           rows: customRows || Array(8).fill(null).map(() => ['']) }
@@ -1041,6 +1049,12 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
                   )}
                   {isActive && !isRenaming && <span style={{ fontSize: 9, color: accent }}>✓</span>}
+                  {!isRenaming && nb.sheets.length > 1 && (
+                    <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete sheet "${sheet.name}"?`)) deleteNotebookSheet(nb.id, sheet.id) }}
+                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0.35, flexShrink: 0 }}
+                      onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
+                      onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0.35' }}>✕</button>
+                  )}
                 </div>
               )
             })}
@@ -1127,6 +1141,12 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
           {makeDragHandle(file.id, 'file', file.name)}
           <span style={{ fontSize: 13 }}>📄</span>
           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+          <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${file.name}"?`)) deleteFile(file.id) }}
+            style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3, opacity: 0, flexShrink: 0 }}
+            className="col-actions"
+            onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
+            onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0' }}>✕</button>
+          
           {folderId && (
             <button onClick={e => { e.stopPropagation(); removeFromFolder(file.id, folderId) }}
               title="Remove from folder"
@@ -1545,7 +1565,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
               dark={dark}
               colors={{ surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber }}
               onBack={() => setActiveNotebookId(null)}
-              onAddBlock={(type, x, y) => addNotebookBlock(activeNotebookId, type, x, y)}
+              onAddBlock={(type, x, y, h1, r1, w, h) => addNotebookBlock(activeNotebookId, type, x, y, h1, r1, w, h)}
               onUpdateBlock={(blockId, patch) => updateNotebookBlock(activeNotebookId, blockId, patch)}
               onDeleteBlock={(blockId) => deleteNotebookBlock(activeNotebookId, blockId)}
               onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
