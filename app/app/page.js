@@ -1358,6 +1358,29 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
 
   return (
     <>
+      {!activeNotebookId && (
+        <div style={{
+          height: 48,
+          background: surface,
+          borderBottom: `1px solid ${border}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 16px',
+          flexShrink: 0,
+          zIndex: 10,
+          fontFamily: "'DM Sans', sans-serif",
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 17, color: accent, letterSpacing: '-0.3px' }}>DataStudio</span>
+            <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', color: text3, background: raised, border: `1px solid ${border}`, borderRadius: 4, padding: '2px 6px' }}>Beta</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 12, color: text2 }}>Free plan</span>
+            <div style={{ width: 30, height: 30, borderRadius: '50%', background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer', letterSpacing: 0.5 }}>M</div>
+          </div>
+        </div>
+      )}
       <style>{`
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
