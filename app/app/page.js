@@ -946,7 +946,42 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       const sid = _getActiveSheetId(n)
-      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, blocks: s.blocks.filter(b => b.id !== blockId) } : s) }
+      return { ...n, sheets: (n.sheets || []).map(s => {
+        if (s.id !== sid) return s
+        const doomed = s.blocks.find(b => b.id === blockId)
+        let blocks = s.blocks.filter(b => b.id !== blockId)
+        // If deleting a section, show confirm and optionally remove children
+        if (doomed?.type === 'section') {
+          const childIds = blocks.filter(b => b.parentSectionId === blockId).map(b => b.id)
+          if (childIds.length > 0) {
+            const msg = `Delete section "${doomed.name || 'Section'}" and its ${childIds.length} block${childIds.length > 1 ? 's' : ''}?`
+            if (window.confirm(`${msg}\n\nOK = Delete all · Cancel = Keep blocks`)) {
+              blocks = blocks.filter(b => b.parentSectionId !== blockId)
+            } else {
+              blocks = blocks.map(b => b.parentSectionId === blockId ? { ...b, parentSectionId: null } : b)
+            }
+          }
+        }
+        // Auto-remove connections involving this block
+        const connections = (s.connections || []).filter(c => c.fromBlockId !== blockId && c.toBlockId !== blockId)
+        return { ...s, blocks, connections }
+      }) }
+    }))
+  }
+
+  function addNotebookConnection(nbId, conn) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = _getActiveSheetId(n)
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, connections: [...(s.connections || []), conn] } : s) }
+    }))
+  }
+
+  function deleteNotebookConnection(nbId, connId) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = _getActiveSheetId(n)
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, connections: (s.connections || []).filter(c => c.id !== connId) } : s) }
     }))
   }
   function addNotebookSheet(nbId) {
@@ -1357,7 +1392,7 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
 const colors = { surface, raised, border, text, text2, text3, accent, accentDim, red, green, amber }
 
   return (
-    <>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       {!activeNotebookId && (
         <div style={{
           height: 48,
@@ -1381,7 +1416,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
           </div>
         </div>
       )}
-      <style>{`
+      <style>{`git a
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -1608,6 +1643,8 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
               colors={{ surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber }}
               onBack={() => setActiveNotebookId(null)}
               onAddBlock={(type, x, y, h1, r1, w, h, patch) => addNotebookBlock(activeNotebookId, type, x, y, h1, r1, w, h, patch)}
+              onAddConnection={(conn) => addNotebookConnection(activeNotebookId, conn)}
+              onDeleteConnection={(connId) => deleteNotebookConnection(activeNotebookId, connId)}
               onUpdateBlock={(blockId, patch) => updateNotebookBlock(activeNotebookId, blockId, patch)}
               onDeleteBlock={(blockId) => deleteNotebookBlock(activeNotebookId, blockId)}
               onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
@@ -2206,6 +2243,6 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
         colors={colors}
         dark={dark}
       />
-    </>
+    </div>
   )
 }

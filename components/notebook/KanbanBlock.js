@@ -145,7 +145,9 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                 borderRadius: 7,
                 padding: '8px 10px',
                 marginBottom: 6,
-                border: `1px solid ${border}`,
+                borderTop: `1px solid ${border}`,
+                borderRight: `1px solid ${border}`,
+                borderBottom: `1px solid ${border}`,
                 borderLeft: `3px solid ${card.color}`,
                 cursor: 'grab',
                 position: 'relative'
