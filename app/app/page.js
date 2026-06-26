@@ -1407,7 +1407,7 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
           fontFamily: "'DM Sans', sans-serif",
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 17, color: accent, letterSpacing: '-0.3px' }}>DataStudio</span>
+          <span onClick={() => window.scrollTo({ top: 0 })} style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 17, color: accent, letterSpacing: '-0.3px', cursor: 'pointer' }}>DataStudio</span>
             <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', color: text3, background: raised, border: `1px solid ${border}`, borderRadius: 4, padding: '2px 6px' }}>Beta</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

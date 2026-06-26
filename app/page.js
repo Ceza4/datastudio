@@ -85,7 +85,7 @@ export default function Home() {
               <rect x="7.5" y="7.5" width="5.5" height="5.5" rx="1" fill="white" opacity=".3" />
             </svg>
           </div>
-          <span style={{ fontFamily: 'var(--font-syne)', fontWeight: 700, fontSize: '17px', color: t.text }}>DataStudio</span>
+          <span onClick={() => window.scrollTo({ top: 0 })} style={{ fontFamily: 'var(--font-syne)', fontWeight: 700, fontSize: '17px', color: t.text, cursor: 'pointer' }}>DataStudio</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
           <a href="#problem" style={{ fontSize: '14px', color: t.text2, textDecoration: 'none' }}>The problem</a>
