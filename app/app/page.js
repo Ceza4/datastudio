@@ -969,6 +969,30 @@ function sendCanvasColToFile(canvasId, fileId, insertAtColId, side) {
     }))
   }
 
+  function addNotebookDrawing(nbId, drawing) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = n.activeSheetId || n.sheets?.[0]?.id
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, drawings: [...(s.drawings || []), drawing] } : s) }
+    }))
+  }
+
+  function deleteNotebookDrawing(nbId, drawingId) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = n.activeSheetId || n.sheets?.[0]?.id
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, drawings: (s.drawings || []).filter(d => d.id !== drawingId) } : s) }
+    }))
+  }
+
+  function clearNotebookDrawings(nbId) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = n.activeSheetId || n.sheets?.[0]?.id
+      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, drawings: [] } : s) }
+    }))
+  }
+
   function addNotebookConnection(nbId, conn) {
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
@@ -1680,6 +1704,9 @@ const colors = { surface, raised, border, text, text2, text3, accent, accentDim,
                 addNotebookBlock(activeNotebookId, 'table', Math.max(0, x - 160), Math.max(0, y - 20), headers, rows)
                 dragData.current = null
               }}
+              onAddDrawing={(drawing) => addNotebookDrawing(activeNotebookId, drawing)}
+              onDeleteDrawing={(drawingId) => deleteNotebookDrawing(activeNotebookId, drawingId)}
+              onClearDrawings={() => clearNotebookDrawings(activeNotebookId)}
               onAddSheet={() => addNotebookSheet(activeNotebookId)}
               onDeleteSheet={(sheetId) => deleteNotebookSheet(activeNotebookId, sheetId)}
               onSetActiveSheet={(sheetId) => setNotebookActiveSheet(activeNotebookId, sheetId)}

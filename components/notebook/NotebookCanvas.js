@@ -29,6 +29,9 @@ export default function NotebookCanvas({
   onRemoveTableColumn,
   onAddConnection,
   onDeleteConnection,
+  onAddDrawing,
+  onDeleteDrawing,
+  onClearDrawings,
 }) {
   const { surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber } = colors
   const containerRef = useRef(null)
@@ -55,6 +58,13 @@ const [selectedIds, setSelectedIds] = useState(new Set())
   const [draggingBlockId, setDraggingBlockId] = useState(null)
   const [hoverSectionId, setHoverSectionId] = useState(null)
   const [hoveredConnId, setHoveredConnId] = useState(null)
+const [drawMode, setDrawMode] = useState(false)
+const [drawColor, setDrawColor] = useState('#5B5FE8')
+const [drawSize, setDrawSize] = useState(3)
+const [showDrawPanel, setShowDrawPanel] = useState(false)
+const [currentPath, setCurrentPath] = useState(null)
+const isDrawing = useRef(false)
+const drawPanelRef = useRef(null)
   const [hoveredBlockId, setHoveredBlockId] = useState(null)
   const [animatingBlockId, setAnimatingBlockId] = useState(null)
   const [deletingBlockId, setDeletingBlockId] = useState(null)
@@ -71,6 +81,7 @@ const [selectedIds, setSelectedIds] = useState(new Set())
 
   const activeSheet = nb.sheets?.find(s => s.id === nb.activeSheetId) || nb.sheets?.[0]
   const blocks = activeSheet?.blocks || []
+const drawings = activeSheet?.drawings || []
   function selectBlock(id, ctrl) {
     if (ctrl) { setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n }) }
     else { setSelectedIds(new Set([id])) }
@@ -187,6 +198,15 @@ function addBlockAnimated(type, x, y) {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [addMenuOpen])
   useEffect(() => {
+    if (!showDrawPanel) return
+    function handleClick(e) {
+      if (drawPanelRef.current && !drawPanelRef.current.contains(e.target)) setShowDrawPanel(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showDrawPanel])
+
+  useEffect(() => {
     if (!ctxMenu) return
     function h(e) { if (ctxMenuRef.current && ctxMenuRef.current.contains(e.target)) return; setCtxMenu(null) }
     document.addEventListener('mousedown', h)
@@ -202,6 +222,7 @@ function addBlockAnimated(type, x, y) {
   /* Only create a text block when nothing is being edited */
   function handleBgClick(e) {
     if (e.target !== e.currentTarget) return
+    if (drawMode) return
 
     if (suppressNextBgClickRef.current) {
       suppressNextBgClickRef.current = false
@@ -416,6 +437,70 @@ function addBlockAnimated(type, x, y) {
     el.addEventListener('wheel', handleWheel, { passive: false })
     return () => { el.removeEventListener('wheel', handleWheel); if (rafId) cancelAnimationFrame(rafId) }
   }, [])
+  function getCanvasPoint(e) {
+    const rect = containerRef.current.getBoundingClientRect()
+    const bzoom = window.visualViewport?.scale || 1
+    const z = nbZoomRef.current
+    return {
+      x: ((e.clientX - rect.left) / bzoom - panRef.current.x) / z,
+      y: ((e.clientY - rect.top) / bzoom - panRef.current.y) / z,
+    }
+  }
+
+  function handleDrawMouseDown(e) {
+    if (!drawMode || e.button !== 0) return
+    if (e.target.closest('button,input,textarea')) return
+    e.stopPropagation()
+    isDrawing.current = true
+    const pt = getCanvasPoint(e)
+    const newPath = {
+      id: `draw_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      color: drawColor,
+      size: drawSize,
+      points: [pt],
+    }
+    setCurrentPath(newPath)
+  }
+
+  function handleDrawMouseMove(e) {
+    if (!drawMode || !isDrawing.current || !currentPath) return
+    const pt = getCanvasPoint(e)
+    setCurrentPath(prev => prev ? { ...prev, points: [...prev.points, pt] } : null)
+  }
+
+  function handleDrawMouseUp() {
+    if (!isDrawing.current) return
+    isDrawing.current = false
+    if (currentPath && currentPath.points.length > 1) {
+      onAddDrawing(currentPath)
+    }
+    setCurrentPath(null)
+  }
+
+  function undoLastDrawing() {
+    if (drawings.length === 0) return
+    onDeleteDrawing(drawings[drawings.length - 1].id)
+  }
+
+  function clearAllDrawings() {
+    if (drawings.length === 0) return
+    if (window.confirm('Clear all drawings?')) onClearDrawings()
+  }
+
+  function pointsToPath(points) {
+    if (!points || points.length < 2) return ''
+    let d = `M ${points[0].x} ${points[0].y}`
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1]
+      const curr = points[i]
+      const mx = (prev.x + curr.x) / 2
+      const my = (prev.y + curr.y) / 2
+      d += ` Q ${prev.x} ${prev.y} ${mx} ${my}`
+    }
+    d += ` L ${points[points.length - 1].x} ${points[points.length - 1].y}`
+    return d
+  }
+
   return (
     <div ref={outerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: "'DM Sans',sans-serif", background: dark ? '#141412' : '#EAE7DE' }}>
     {/* ── Floating Island ── */}
@@ -492,10 +577,60 @@ function addBlockAnimated(type, x, y) {
           ⟋ Mind map
         </button>
 
+       <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
+
+        <div ref={drawPanelRef} style={{ position: 'relative' }}>
+          <button onClick={() => { setShowDrawPanel(v => !v); if (!drawMode) setDrawMode(true) }}
+            style={{ padding: '4px 8px', background: drawMode ? accentDim : 'transparent', border: `1px solid ${drawMode ? accent : 'transparent'}`, borderRadius: 6, color: drawMode ? accent : text3, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: drawMode ? 600 : 400, display: 'flex', alignItems: 'center', gap: 4, transition: 'all 0.15s' }}
+            onMouseEnter={e => { if (!drawMode) { e.currentTarget.style.color = text2; e.currentTarget.style.background = raised } }}
+            onMouseLeave={e => { if (!drawMode) { e.currentTarget.style.color = text3; e.currentTarget.style.background = 'transparent' } }}>
+            ✏️ Draw
+          </button>
+          {showDrawPanel && (
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px', boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, zIndex: 200, minWidth: 180, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 10, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Color</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {['#5B5FE8', '#1D9E75', '#f87171', '#E8B85B', '#E8E6E1'].map(c => (
+                    <div key={c} onClick={() => setDrawColor(c)}
+                      style={{ width: 20, height: 20, borderRadius: '50%', background: c, cursor: 'pointer', border: drawColor === c ? `2px solid ${text}` : `2px solid transparent`, transition: 'border 0.1s', flexShrink: 0 }} />
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Size</div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {[2, 4, 8].map(s => (
+                    <div key={s} onClick={() => setDrawSize(s)}
+                      style={{ width: 28, height: 28, borderRadius: 6, background: drawSize === s ? accentDim : raised, border: `1px solid ${drawSize === s ? accent : border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <div style={{ width: Math.min(s * 2.5, 20), height: s === 2 ? 1.5 : s === 4 ? 3 : 5, background: drawColor, borderRadius: 4 }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6, borderTop: `1px solid ${border}`, paddingTop: 8 }}>
+                <button onClick={undoLastDrawing}
+                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>
+                  ↩ Undo
+                </button>
+                <button onClick={clearAllDrawings}
+                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}
+                  onMouseEnter={e => { e.currentTarget.style.color = '#f87171'; e.currentTarget.style.borderColor = '#f87171' }}
+                  onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
+                  🗑 Clear
+                </button>
+                <button onClick={() => { setDrawMode(false); setShowDrawPanel(false) }}
+                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>
+                  ✕ Exit
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
 
         <span style={{ fontSize: 10, color: text3, fontFamily: "'DM Mono',monospace", padding: '0 6px', cursor: 'pointer' }} onClick={() => { nbZoomRef.current = 1; setNbZoom(1); panRef.current = { x: 60, y: 60 }; setPan({ x: 60, y: 60 }) }} title="Click to reset">{Math.round(nbZoom * 100)}%</span>
-
         <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
 
         <span style={{ fontSize: 10, color: text3, padding: '4px 6px' }}>Scroll to pan · Right-click text to format</span>
@@ -554,7 +689,12 @@ function addBlockAnimated(type, x, y) {
           100% { opacity: 0; transform: scale(0.92); }
         }
       `}</style>
-      <div ref={containerRef} onClick={handleBgClick} onMouseDown={startPan} onContextMenu={e => e.preventDefault()}
+      <div ref={containerRef} onClick={handleBgClick}
+        onMouseDown={e => { handleDrawMouseDown(e); startPan(e) }}
+        onMouseMove={handleDrawMouseMove}
+        onMouseUp={handleDrawMouseUp}
+        onMouseLeave={handleDrawMouseUp}
+        onContextMenu={e => e.preventDefault()}
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); if (!onDropColumn) return; const rect = containerRef.current.getBoundingClientRect(); onDropColumn(e.clientX - rect.left - panRef.current.x, e.clientY - rect.top - panRef.current.y) }}
         style={{ flex: 1, position: 'relative', overflow: 'hidden', background: dark ? '#141412' : '#EAE7DE', cursor: 'crosshair', userSelect: 'none' }}>
@@ -625,6 +765,33 @@ function addBlockAnimated(type, x, y) {
                 </g>
               )
             })}
+          </svg>
+
+          <svg style={{ position: 'absolute', top: -3000, left: -3000, width: 9000, height: 9000, pointerEvents: 'none', zIndex: 6, overflow: 'visible' }}>
+            {drawings.map(drawing => (
+              <path key={drawing.id}
+                d={pointsToPath(drawing.points)}
+                fill="none"
+                stroke={drawing.color}
+                strokeWidth={drawing.size}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={0.9}
+                style={{ transform: 'translate(3000px, 3000px)' }}
+              />
+            ))}
+            {currentPath && (
+              <path
+                d={pointsToPath(currentPath.points)}
+                fill="none"
+                stroke={currentPath.color}
+                strokeWidth={currentPath.size}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={0.9}
+                style={{ transform: 'translate(3000px, 3000px)' }}
+              />
+            )}
           </svg>
 
           {blocks.map((block, bi) => {
