@@ -1,12 +1,11 @@
 'use client'
 
 /* The grey title bar at the top of every notebook block (text, table, kanban).
-   Holds the block name, a drag-to-canvas grip (for tables), and a delete button. */
+   Holds the block name and a delete button. */
 export default function BlockHandle({
   notebookId,
   block,
   label,
-  draggableAsTable,
   colors,
   renaming,
   onStartRename,
@@ -15,7 +14,7 @@ export default function BlockHandle({
   onDelete,
   onHeaderDragStart,
 }) {
-  const { raised, border, text2, text3, accent, red } = colors
+  const { raised, border, text2, text3, red } = colors
 
   return (
     <div
@@ -64,7 +63,7 @@ export default function BlockHandle({
             background: 'transparent',
             border: 'none',
             color: text2,
-            fontFamily: "'DM Sans',sans-serif",
+            fontFamily: 'var(--ds-font-body)',
             fontSize: 11,
             outline: 'none',
             minWidth: 0,
@@ -79,7 +78,7 @@ export default function BlockHandle({
           style={{
             flex: 1,
             color: block.name ? text2 : text3,
-            fontFamily: "'DM Sans',sans-serif",
+            fontFamily: 'var(--ds-font-body)',
             fontSize: 11,
             minWidth: 0,
             overflow: 'hidden',
@@ -90,32 +89,6 @@ export default function BlockHandle({
           }}
         >
           {block.name || 'Untitled'}
-        </span>
-      )}
-
-      {draggableAsTable && (
-        <span
-          draggable
-          title="Drag table to files"
-          onMouseDown={e => e.stopPropagation()}
-          onDragStart={e => {
-            e.stopPropagation()
-            window.__nbTableDrag = { notebookId, block }
-            e.dataTransfer.effectAllowed = 'copy'
-            e.dataTransfer.setData('text/plain', 'nb_table')
-          }}
-          onDragEnd={() => {
-            window.__nbTableDrag = null
-          }}
-          style={{
-            fontSize: 12,
-            color: accent,
-            cursor: 'grab',
-            padding: '0 2px',
-            flexShrink: 0,
-          }}
-        >
-          ⇢
         </span>
       )}
 

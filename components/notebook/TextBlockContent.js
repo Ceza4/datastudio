@@ -321,23 +321,23 @@ export default function TextBlockContent({
   /* ── Scoped styles ──────────────────────────────────────── */
 
   const scopedStyles = `
-    [data-ds-text] h1 { font-size: 26px; font-weight: 700; font-family: 'Syne',sans-serif; margin: 14px 0 6px; line-height: 1.3; }
-    [data-ds-text] h2 { font-size: 20px; font-weight: 700; font-family: 'Syne',sans-serif; margin: 12px 0 4px; line-height: 1.3; }
-    [data-ds-text] h3 { font-size: 16px; font-weight: 600; font-family: 'Syne',sans-serif; margin: 10px 0 3px; line-height: 1.4; }
+    [data-ds-text] h1 { font-size: 26px; font-weight: 700; font-family: var(--ds-font-head); margin: 14px 0 6px; line-height: 1.3; }
+    [data-ds-text] h2 { font-size: 20px; font-weight: 700; font-family: var(--ds-font-head); margin: 12px 0 4px; line-height: 1.3; }
+    [data-ds-text] h3 { font-size: 16px; font-weight: 600; font-family: var(--ds-font-head); margin: 10px 0 3px; line-height: 1.4; }
     [data-ds-text] ul, [data-ds-text] ol { padding-left: 24px; margin: 6px 0; }
     [data-ds-text] li { margin: 3px 0; line-height: 1.7; }
     [data-ds-text] hr { border: none; border-top: 2px solid rgba(128,128,128,0.2); margin: 18px 0; }
     [data-ds-text] pre {
       background: rgba(0,0,0,0.06); border-left: 3px solid #5B5FE8;
       padding: 14px 16px; border-radius: 0 8px 8px 0;
-      font-family: 'DM Mono',monospace; font-size: 13px; line-height: 1.7;
+      font-family: var(--ds-font-mono); font-size: 13px; line-height: 1.7;
       overflow-x: auto; margin: 10px 0; white-space: pre-wrap;
       position: relative;
     }
     @media (prefers-color-scheme: dark) {
       [data-ds-text] pre { background: rgba(255,255,255,0.06); }
     }
-    [data-ds-text] code { font-family: 'DM Mono',monospace; }
+    [data-ds-text] code { font-family: var(--ds-font-mono); }
     [data-ds-text] [data-type="checklist"] {
       display: flex; align-items: flex-start; gap: 8px; padding: 4px 0;
     }
@@ -367,11 +367,11 @@ export default function TextBlockContent({
           <div style={{
             position: 'absolute', top: 10, left: 12,
             color: text3Color, fontSize: 13,
-            fontFamily: "'DM Sans',sans-serif",
+            fontFamily: 'var(--ds-font-body)',
             pointerEvents: 'none', userSelect: 'none', lineHeight: 1.7,
           }}>
             Type <span style={{
-              fontFamily: "'DM Mono',monospace", fontSize: 12,
+              fontFamily: 'var(--ds-font-mono)', fontSize: 12,
               background: 'rgba(128,128,128,0.12)', padding: '2px 6px', borderRadius: 4,
             }}>/</span> for commands or just start writing
           </div>
@@ -401,7 +401,7 @@ export default function TextBlockContent({
             color: text,
             lineHeight: 1.7,
             outline: 'none',
-            fontFamily: "'DM Sans',sans-serif",
+            fontFamily: 'var(--ds-font-body)',
             cursor: 'text',
             userSelect: 'text',
             wordBreak: 'break-word',

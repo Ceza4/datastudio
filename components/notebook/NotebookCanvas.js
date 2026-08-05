@@ -4,6 +4,7 @@ import TextBlockContent from './TextBlockContent'
 import ResizeHandle from './ResizeHandle'
 import BlockHandle from './BlockHandle'
 import KanbanBlock from './KanbanBlock'
+import SheetGrid from './SheetGrid'
 
 /* The freeform infinite-canvas notebook view. Hosts text/table/kanban blocks
    that the user drags around on a dot-grid background. Right-click drag pans.
@@ -18,14 +19,13 @@ export default function NotebookCanvas({
   nb,
   dark,
   colors,
-  onBack,
   onAddBlock,
   onUpdateBlock,
   onDeleteBlock,
   onRenameNotebook,
   onRenameSheet,
-  onSendColToCanvas,
   onDropColumn,
+  onOpenCrosscheck,
   onRemoveTableColumn,
   onAddConnection,
   onDeleteConnection,
@@ -260,6 +260,36 @@ function addBlockAnimated(type, x, y) {
     let dragging = false
     let currentHoverSection = null
 
+    // Eased follow: the pointer moves `target`, a rAF loop walks the block
+    // toward it. EASE is high enough to feel connected, low enough to smooth.
+    const EASE = 0.42
+    const target = { x: origX, y: origY }
+    const cur = { x: origX, y: origY }
+    let raf = null
+    let releasing = false
+
+    function tick() {
+      const dx = target.x - cur.x
+      const dy = target.y - cur.y
+      if (Math.abs(dx) < 0.15 && Math.abs(dy) < 0.15) {
+        cur.x = target.x; cur.y = target.y
+        applyPos()
+        raf = null
+        return
+      }
+      cur.x += dx * EASE
+      cur.y += dy * EASE
+      applyPos()
+      raf = requestAnimationFrame(tick)
+    }
+    function applyPos() {
+      onUpdateBlock(block.id, { x: cur.x, y: cur.y })
+      if (block.type === 'section') {
+        childOffsets.forEach(c => onUpdateBlock(c.id, { x: cur.x + c.dx, y: cur.y + c.dy }))
+      }
+    }
+    function startEase() { if (raf == null) raf = requestAnimationFrame(tick) }
+
     // If dragging a section, capture all child absolute positions up-front
     const childOffsets = block.type === 'section'
       ? blocks.filter(b => b.parentSectionId === block.id).map(c => ({ id: c.id, dx: c.x - origX, dy: c.y - origY }))
@@ -276,27 +306,67 @@ function addBlockAnimated(type, x, y) {
       let ny = origY + (ev.clientY - startMY) / z
 
       if (snapRef.current) {
-        const ST = 6, lines = []
+        // Threshold is in canvas units, so divide by zoom to keep the magnet
+        // feeling the same ~9px on screen at every zoom level.
+        const ST = 9 / z
+        let bestX = null, bestY = null
+
         blocks.forEach(b => {
           if (b.id === block.id) return
           const { w: ow, h: oh } = blockDims(b)
-          if (Math.abs((nx + bw/2) - (b.x + ow/2)) < ST) { nx = b.x + ow/2 - bw/2; lines.push({ t:'v', p: b.x + ow/2 }) }
-          else if (Math.abs(nx - b.x) < ST) { nx = b.x; lines.push({ t:'v', p: b.x }) }
-          else if (Math.abs((nx+bw) - (b.x+ow)) < ST) { nx = b.x+ow-bw; lines.push({ t:'v', p: b.x+ow }) }
-          if (Math.abs((ny + bh/2) - (b.y + oh/2)) < ST) { ny = b.y + oh/2 - bh/2; lines.push({ t:'h', p: b.y + oh/2 }) }
-          else if (Math.abs(ny - b.y) < ST) { ny = b.y; lines.push({ t:'h', p: b.y }) }
-          else if (Math.abs((ny+bh) - (b.y+oh)) < ST) { ny = b.y+oh-bh; lines.push({ t:'h', p: b.y+oh }) }
+
+          // left/centre/right of the dragged block against the same on b
+          const xPairs = [
+            [nx,           b.x,            b.x],
+            [nx,           b.x + ow,       b.x + ow],
+            [nx + bw / 2,  b.x + ow / 2,   b.x + ow / 2],
+            [nx + bw,      b.x,            b.x],
+            [nx + bw,      b.x + ow,       b.x + ow],
+          ]
+          xPairs.forEach(([mine, theirs, guide], i) => {
+            const d = Math.abs(mine - theirs)
+            if (d < ST && (!bestX || d < bestX.d)) {
+              const shift = i === 2 ? theirs - bw / 2 : (i >= 3 ? theirs - bw : theirs)
+              bestX = { d, x: shift, guide, a: b.y, b: b.y + oh }
+            }
+          })
+
+          const yPairs = [
+            [ny,           b.y,            b.y],
+            [ny,           b.y + oh,       b.y + oh],
+            [ny + bh / 2,  b.y + oh / 2,   b.y + oh / 2],
+            [ny + bh,      b.y,            b.y],
+            [ny + bh,      b.y + oh,       b.y + oh],
+          ]
+          yPairs.forEach(([mine, theirs, guide], i) => {
+            const d = Math.abs(mine - theirs)
+            if (d < ST && (!bestY || d < bestY.d)) {
+              const shift = i === 2 ? theirs - bh / 2 : (i >= 3 ? theirs - bh : theirs)
+              bestY = { d, y: shift, guide, a: b.x, b: b.x + ow }
+            }
+          })
         })
+
+        const lines = []
+        if (bestX) {
+          nx = bestX.x
+          lines.push({ t: 'v', p: bestX.guide, from: Math.min(bestX.a, ny), to: Math.max(bestX.b, ny + bh) })
+        }
+        if (bestY) {
+          ny = bestY.y
+          lines.push({ t: 'h', p: bestY.guide, from: Math.min(bestY.a, nx), to: Math.max(bestY.b, nx + bw) })
+        }
         setSnapLines(lines)
       } else if (snapLines.length > 0) {
         setSnapLines([])
       }
 
-      onUpdateBlock(block.id, { x: nx, y: ny })
+      target.x = nx; target.y = ny
+      startEase()
 
       // Drag section's children with it
       if (block.type === 'section') {
-        childOffsets.forEach(c => onUpdateBlock(c.id, { x: nx + c.dx, y: ny + c.dy }))
+        // children follow the eased parent, applied inside the ease loop
       } else {
         // Live containment detection based on CURSOR position (not block center)
         const rect = containerRef.current.getBoundingClientRect()
@@ -317,10 +387,18 @@ function addBlockAnimated(type, x, y) {
     }
     function onUp(ev) {
       setSnapLines([])
-      setDraggingBlockId(null)
       setHoverSectionId(null)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+
+      // Let the block settle onto its final position rather than stopping
+      // dead, then drop the "lifted" styling once it's home.
+      releasing = true
+      startEase()
+      const settle = setInterval(() => {
+        if (raf == null) { clearInterval(settle); setDraggingBlockId(null) }
+      }, 40)
+      setTimeout(() => { clearInterval(settle); setDraggingBlockId(null) }, 600)
 
       if (dragging && block.type !== 'section') {
         if (currentHoverSection !== (block.parentSectionId || null)) {
@@ -379,9 +457,12 @@ function addBlockAnimated(type, x, y) {
     setSheetLabel(activeSheet.name)
     setRenamingSheet(true)
   }
+  /* Fullscreen the DOCUMENT, not just the canvas element. Fullscreening
+     outerRef put the sidebar outside the fullscreen subtree, so it vanished
+     and file-import clicks landed on a non-rendered element. */
   function togglePresentation() {
     if (!document.fullscreenElement) {
-      outerRef.current?.requestFullscreen?.().then(() => setIsPresentation(true)).catch(() => {})
+      document.documentElement.requestFullscreen?.().then(() => setIsPresentation(true)).catch(() => {})
     } else {
       document.exitFullscreen?.().then(() => setIsPresentation(false)).catch(() => {})
     }
@@ -407,6 +488,33 @@ function addBlockAnimated(type, x, y) {
       <div style={p({ top: '50%', right: -4, marginTop: -4 })} onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.4)'; e.currentTarget.style.background = accent }} onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.background = surface }} />
     </>)
   }
+  /* Walks up from the wheel event target looking for an element that can
+     actually scroll in the requested direction. Returns true if one exists,
+     in which case the canvas must NOT preventDefault or pan. */
+  function canScrollNatively(target, deltaY, deltaX) {
+    let el = target
+    while (el && el !== containerRef.current) {
+      if (el.nodeType === 1) {
+        const style = window.getComputedStyle(el)
+        const oy = style.overflowY, ox = style.overflowX
+        const scrollableY = (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1
+        const scrollableX = (ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth + 1
+        if (scrollableY && deltaY !== 0) {
+          const atTop = el.scrollTop <= 0
+          const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1
+          if (!(deltaY < 0 && atTop) && !(deltaY > 0 && atBottom)) return true
+        }
+        if (scrollableX && deltaX !== 0) {
+          const atLeft = el.scrollLeft <= 0
+          const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1
+          if (!(deltaX < 0 && atLeft) && !(deltaX > 0 && atRight)) return true
+        }
+      }
+      el = el.parentNode
+    }
+    return false
+  }
+
 // Scroll-wheel pans the notebook canvas
   // Scroll-wheel: pan + Ctrl+scroll: zoom (rAF-throttled)
   useEffect(() => {
@@ -420,6 +528,10 @@ function addBlockAnimated(type, x, y) {
     }
     function schedule() { if (rafId == null) rafId = requestAnimationFrame(flush) }
     function handleWheel(e) {
+      // Let a scrollable region inside a block (e.g. a table's overflow:auto
+      // wrapper) consume the scroll before the canvas pans. Without this the
+      // canvas swallowed every wheel event and tables could never scroll.
+      if (!e.ctrlKey && !e.metaKey && canScrollNatively(e.target, e.deltaY, e.deltaX)) return
       e.preventDefault()
       if (e.ctrlKey || e.metaKey) {
         const rect = el.getBoundingClientRect()
@@ -502,21 +614,16 @@ function addBlockAnimated(type, x, y) {
   }
 
   return (
-    <div ref={outerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: "'DM Sans',sans-serif", background: dark ? '#141412' : '#EAE7DE' }}>
+    <div ref={outerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', background: dark ? '#131311' : '#E4E1D9' }}>
     {/* ── Floating Island ── */}
-      <div style={{ position: 'absolute', top: 16, left: '25%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', gap: 0, padding: '4px 6px', background: `${surface}dd`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 10, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: "'DM Sans',sans-serif", alignItems: 'center' }}>
-        {/* Left: Back + Name */}
-        <button onClick={onBack} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 12, padding: '4px 6px', borderRadius: 4, fontFamily: "'DM Sans',sans-serif" }}
-          onMouseEnter={e => e.currentTarget.style.color = text}
-          onMouseLeave={e => e.currentTarget.style.color = text3}>←</button>
-        <span style={{ fontSize: 12, marginRight: 4 }}>📓</span>
+      <div style={{ position: 'absolute', top: 16, left: 292, maxWidth: 'calc(50vw - 320px)', zIndex: 100, display: 'flex', gap: 2, height: 46, padding: '0 12px', overflow: 'hidden', background: `${surface}dd`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
         {renamingNb ? (
-          <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
+          <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
         ) : (
-          <span onDoubleClick={() => setRenamingNb(true)} style={{ fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, color: text, cursor: 'text', marginRight: 4, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle' }}>{nb.name}</span>
+          <span onDoubleClick={() => setRenamingNb(true)} style={{ fontFamily: 'var(--ds-font-head)', fontSize: 15, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle' }}>{nb.name}</span>
         )}
         {activeSheet && !renamingSheet && (
-          <span onDoubleClick={() => { setSheetLabel(activeSheet.name); setRenamingSheet(true) }} style={{ fontSize: 10, color: text3, cursor: 'text', marginRight: 4 }}>
+          <span onDoubleClick={() => { setSheetLabel(activeSheet.name); setRenamingSheet(true) }} style={{ fontSize: 11, color: text3, cursor: 'text', marginRight: 6, flexShrink: 0, whiteSpace: 'nowrap' }}>
             · {activeSheet.name || 'Sheet 1'} · {blocks.length} block{blocks.length !== 1 ? 's' : ''}
           </span>
         )}
@@ -525,32 +632,29 @@ function addBlockAnimated(type, x, y) {
         )}
 
         
-        <div style={{ width: 1, height: 18, background: border, margin: '0 6px' }} />
-        <span style={{ fontSize: 10, color: text3, fontFamily: "'DM Mono',monospace", padding: '0 4px' }}onClick={() => { nbZoomRef.current = 1; setNbZoom(1); panRef.current = { x: 60, y: 60 }; setPan({ x: 60, y: 60 }) }} title="Click to reset">{Math.round(nbZoom * 100)}%</span>
-        <div style={{ width: 1, height: 18, background: border, margin: '0 6px' }} />
-        <button onClick={togglePresentation} title={isPresentation ? 'Exit fullscreen' : 'Presentation mode'}
-          style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '2px 4px', fontFamily: "'DM Sans',sans-serif" }}
-          onMouseEnter={e => e.currentTarget.style.color = accent} onMouseLeave={e => e.currentTarget.style.color = text3}>
-          {isPresentation ? 'End Presentation' : 'Present'}
+        <div style={{ width: 1, height: 22, background: border, margin: '0 8px', flexShrink: 0 }} />
+        <span style={{ fontSize: 11, color: text3, fontFamily: 'var(--ds-font-body)', fontVariantNumeric: 'tabular-nums', padding: '0 6px', cursor: 'pointer', flexShrink: 0 }}onClick={() => { nbZoomRef.current = 1; setNbZoom(1); panRef.current = { x: 60, y: 60 }; setPan({ x: 60, y: 60 }) }} title="Click to reset">{Math.round(nbZoom * 100)}%</span>
+        <div style={{ width: 1, height: 22, background: border, margin: '0 8px', flexShrink: 0 }} />
+        <button onClick={togglePresentation} className="ds-tbtn" style={{ flexShrink: 0 }}
+          title={isPresentation ? 'Leave full screen' : 'Full screen'}>
+          {isPresentation ? 'Exit Full Screen' : 'Full Screen'}
         </button>
         
       </div>
 
       {/* ── Floating Island Toolbar ── */}
-      <div style={{ position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', gap: 4, padding: '5px 6px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 10, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`, fontFamily: "'DM Sans',sans-serif", alignItems: 'center' }}>
+      <div style={{ position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', gap: 5, height: 46, padding: '0 10px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
         {/* Add block dropdown */}
         <div ref={addMenuRef} style={{ position: 'relative' }}>
           <button onClick={() => setAddMenuOpen(!addMenuOpen)}
-            style={{ padding: '4px 10px', background: addMenuOpen ? accentDim : 'none', border: `1px solid ${addMenuOpen ? accent : border}`, borderRadius: 6, color: addMenuOpen ? accent : text3, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: addMenuOpen ? 600 : 400, display: 'flex', alignItems: 'center', gap: 4 }}
-            onMouseEnter={e => { if (!addMenuOpen) { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent } }}
-            onMouseLeave={e => { if (!addMenuOpen) { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 } }}>
-            + Add
+            className={`ds-tbtn${addMenuOpen ? ' is-on' : ''}`}>
+            Add
           </button>
           {addMenuOpen && (
             <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 140, zIndex: 200 }}>
               {[['text', '', 'Text Block'], ['table', '', 'Table Block'], ['kanban', '', 'Kanban Board'], ['section', '', 'Section']].map(([type, icon, label]) => (
                 <button key={type} onClick={() => { const z = nbZoomRef.current; addBlockAnimated(type, (200 - panRef.current.x) / z + Math.random() * 40, (120 - panRef.current.y) / z + Math.random() * 30); setAddMenuOpen(false) }}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, fontFamily: "'DM Sans',sans-serif", cursor: 'pointer', textAlign: 'left' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, fontFamily: 'var(--ds-font-body)', cursor: 'pointer', textAlign: 'left' }}
                   onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = text }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = text2 }}>
                   <span style={{ fontSize: 14, width: 20, textAlign: 'center' }}>{icon}</span>{label}
@@ -561,30 +665,36 @@ function addBlockAnimated(type, x, y) {
           )}
         </div>
 
-        <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
+        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
         <button onClick={toggleSnap} title={snapEnabled ? 'Snap to grid: on' : 'Snap to grid: off'}
-          style={{ padding: '4px 8px', background: snapEnabled ? accentDim : 'transparent', border: `1px solid ${snapEnabled ? accent : 'transparent'}`, borderRadius: 6, color: snapEnabled ? accent : text3, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: snapEnabled ? 600 : 400, display: 'flex', alignItems: 'center', gap: 4, transition: 'all 0.15s' }}
-          onMouseEnter={e => { if (!snapEnabled) { e.currentTarget.style.color = text2; e.currentTarget.style.background = raised } }}
-          onMouseLeave={e => { if (!snapEnabled) { e.currentTarget.style.color = text3; e.currentTarget.style.background = 'transparent' } }}>
-          ⊞ Snap
+          className={`ds-tbtn${snapEnabled ? ' is-on' : ''}`}>
+          Snap
         </button>
 
-        <button onClick={toggleMindMap} title={mindMapMode ? 'Exit mind map mode' : 'Click master then slave to connect'}
-          style={{ padding: '4px 8px', background: mindMapMode ? accentDim : 'transparent', border: `1px solid ${mindMapMode ? accent : 'transparent'}`, borderRadius: 6, color: mindMapMode ? accent : text3, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: mindMapMode ? 600 : 400, display: 'flex', alignItems: 'center', gap: 4, transition: 'all 0.15s' }}
-          onMouseEnter={e => { if (!mindMapMode) { e.currentTarget.style.color = text2; e.currentTarget.style.background = raised } }}
-          onMouseLeave={e => { if (!mindMapMode) { e.currentTarget.style.color = text3; e.currentTarget.style.background = 'transparent' } }}>
-          ⟋ Mind map
+        {onOpenCrosscheck && (
+          <button onClick={onOpenCrosscheck} className="ds-tbtn is-accent"
+            title="Crosscheck: fuzzy-match two table columns">
+            Crosscheck
+          </button>
+        )}
+
+        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
+
+        <button onClick={toggleMindMap} className={`ds-tbtn${mindMapMode ? ' is-on' : ''}`}
+          title={mindMapMode ? 'Exit mind map mode' : 'Click master then slave to connect'}>
+          Mind map
         </button>
 
-       <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
+       <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
-        <div ref={drawPanelRef} style={{ position: 'relative' }}>
-          <button onClick={() => { setShowDrawPanel(v => !v); if (!drawMode) setDrawMode(true) }}
-            style={{ padding: '4px 8px', background: drawMode ? accentDim : 'transparent', border: `1px solid ${drawMode ? accent : 'transparent'}`, borderRadius: 6, color: drawMode ? accent : text3, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontWeight: drawMode ? 600 : 400, display: 'flex', alignItems: 'center', gap: 4, transition: 'all 0.15s' }}
-            onMouseEnter={e => { if (!drawMode) { e.currentTarget.style.color = text2; e.currentTarget.style.background = raised } }}
-            onMouseLeave={e => { if (!drawMode) { e.currentTarget.style.color = text3; e.currentTarget.style.background = 'transparent' } }}>
-            ✏️ Draw
+        <div ref={drawPanelRef} style={{ position: 'relative' }}
+          onMouseEnter={() => setShowDrawPanel(true)}
+          onMouseLeave={() => setShowDrawPanel(false)}>
+          <button onClick={() => setDrawMode(v => !v)}
+            className={`ds-tbtn${drawMode ? ' is-on' : ''}`}
+            title={drawMode ? 'Turn drawing off' : 'Draw on the canvas · hover for options'}>
+            Draw
           </button>
           {showDrawPanel && (
             <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px', boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, zIndex: 200, minWidth: 180, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -610,17 +720,17 @@ function addBlockAnimated(type, x, y) {
               </div>
               <div style={{ display: 'flex', gap: 6, borderTop: `1px solid ${border}`, paddingTop: 8 }}>
                 <button onClick={undoLastDrawing}
-                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>
+                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
                   ↩ Undo
                 </button>
                 <button onClick={clearAllDrawings}
-                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}
+                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}
                   onMouseEnter={e => { e.currentTarget.style.color = '#f87171'; e.currentTarget.style.borderColor = '#f87171' }}
                   onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
                   🗑 Clear
                 </button>
                 <button onClick={() => { setDrawMode(false); setShowDrawPanel(false) }}
-                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',sans-serif" }}>
+                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
                   ✕ Exit
                 </button>
               </div>
@@ -628,16 +738,14 @@ function addBlockAnimated(type, x, y) {
           )}
         </div>
 
-        <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
+        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
-        <span style={{ fontSize: 10, color: text3, fontFamily: "'DM Mono',monospace", padding: '0 6px', cursor: 'pointer' }} onClick={() => { nbZoomRef.current = 1; setNbZoom(1); panRef.current = { x: 60, y: 60 }; setPan({ x: 60, y: 60 }) }} title="Click to reset">{Math.round(nbZoom * 100)}%</span>
-        <div style={{ width: 1, height: 18, background: border, margin: '0 2px' }} />
+        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
-        <span style={{ fontSize: 10, color: text3, padding: '4px 6px' }}>Scroll to pan · Right-click text to format</span>
       </div>
 
       {mindMapMode && (
-        <div style={{ position: 'absolute', top: 120, left: '50%', transform: 'translateX(-50%)', zIndex: 150, padding: '8px 16px', background: accentDim, border: `1px solid ${accent}`, borderRadius: 8, boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`, fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: accent, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ position: 'absolute', top: 120, left: '50%', transform: 'translateX(-50%)', zIndex: 150, padding: '8px 16px', background: accentDim, border: `1px solid ${accent}`, borderRadius: 8, boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: accent, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span>⟋</span>
           <span>{mindMapMaster ? 'Click slave block (Esc to finish)' : 'Click master block'}</span>
           <button onClick={() => { setMindMapMode(false); setMindMapMaster(null) }} style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1, opacity: 0.7 }}>✕</button>
@@ -647,20 +755,20 @@ function addBlockAnimated(type, x, y) {
         const singleBlockId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
         const singleConns = singleBlockId ? getBlockConnections(singleBlockId) : []
         return (
-        <div ref={ctxMenuRef} style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 300, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 170, fontFamily: "'DM Sans',sans-serif" }}>
+        <div ref={ctxMenuRef} style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 300, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 170, fontFamily: 'var(--ds-font-body)' }}>
           {[
             { label: `Duplicate (${selectedIds.size})`, icon: '⊕', color: text2, action: duplicateSelected },
             { label: `Delete (${selectedIds.size})`, icon: '✕', color: red, action: deleteSelected },
           ].map((item, i) => (
             <button key={i} onClick={item.action}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: item.color, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: "'DM Sans',sans-serif" }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: item.color, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
               onMouseEnter={e => e.currentTarget.style.background = raised} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
               <span style={{ width: 16, textAlign: 'center' }}>{item.icon}</span>{item.label}
             </button>
           ))}
           {singleConns.length > 0 && (<>
             <div style={{ borderTop: `1px solid ${border}`, margin: '2px 0' }} />
-            <div style={{ padding: '6px 12px 2px', fontSize: 10, color: text3, fontFamily: "'DM Mono',monospace", textTransform: 'uppercase', letterSpacing: 1 }}>Delete mind map</div>
+            <div style={{ padding: '6px 12px 2px', fontSize: 10, color: text3, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase', letterSpacing: 1 }}>Delete mind map</div>
             {singleConns.map(conn => {
               const otherId = conn.fromBlockId === singleBlockId ? conn.toBlockId : conn.fromBlockId
               const other = blocks.find(b => b.id === otherId)
@@ -668,7 +776,7 @@ function addBlockAnimated(type, x, y) {
               const arrow = conn.fromBlockId === singleBlockId ? '→' : '←'
               return (
                 <button key={conn.id} onClick={() => { deleteConnection(conn.id); setCtxMenu(null) }}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: "'DM Sans',sans-serif" }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
                   onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = red }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = text2 }}>
                   <span style={{ width: 16, textAlign: 'center', color: accent }}>{arrow}</span>{label}
@@ -696,19 +804,48 @@ function addBlockAnimated(type, x, y) {
         onMouseLeave={handleDrawMouseUp}
         onContextMenu={e => e.preventDefault()}
         onDragOver={e => e.preventDefault()}
-        onDrop={e => { e.preventDefault(); if (!onDropColumn) return; const rect = containerRef.current.getBoundingClientRect(); onDropColumn(e.clientX - rect.left - panRef.current.x, e.clientY - rect.top - panRef.current.y) }}
-        style={{ flex: 1, position: 'relative', overflow: 'hidden', background: dark ? '#141412' : '#EAE7DE', cursor: 'crosshair', userSelect: 'none' }}>
+        onDrop={e => {
+          e.preventDefault()
+          if (!onDropColumn) return
+          // Must use the same screen->canvas transform as getCanvasPoint().
+          // Previously this skipped the zoom divisor, so at any zoom other
+          // than 100% the new block landed nowhere near the cursor.
+          const pt = getCanvasPoint(e)
+          onDropColumn(pt.x, pt.y)
+        }}
+        style={{ flex: 1, position: 'relative', overflow: 'hidden', background: dark ? '#131311' : '#E4E1D9', cursor: 'crosshair', userSelect: 'none' }}>
         <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
-          <defs><pattern id="nb-dots" x={pan.x % (32 * nbZoom)} y={pan.y % (32 * nbZoom)} width={32 * nbZoom} height={32 * nbZoom} patternUnits="userSpaceOnUse"><circle cx={nbZoom} cy={nbZoom} r={nbZoom} fill={dark ? '#3a3835' : '#C0BCB2'} /></pattern></defs>
+          <defs>
+            <filter id="nb-dot-soft" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation={0.55 * nbZoom} />
+            </filter>
+            <pattern id="nb-dots" x={pan.x % (32 * nbZoom)} y={pan.y % (32 * nbZoom)} width={32 * nbZoom} height={32 * nbZoom} patternUnits="userSpaceOnUse">
+              <circle cx={nbZoom} cy={nbZoom} r={nbZoom} fill={dark ? '#3a3835' : '#C0BCB2'} filter="url(#nb-dot-soft)" opacity={dark ? 0.45 : 0.4} />
+            </pattern>
+          </defs>
           <rect width="100%" height="100%" fill="url(#nb-dots)" />
         </svg>
         <div style={{ position: 'absolute', top: 0, left: 0, transform: `translate(${pan.x}px, ${pan.y}px) scale(${nbZoom})`, transformOrigin: '0 0' }}>
           {snapLines.length > 0 && (
             <svg style={{ position:'absolute', top:-3000, left:-3000, width:9000, height:9000, pointerEvents:'none', zIndex:50 }}>
-              {snapLines.map((l,i) => l.t==='v'
-                ? <line key={i} x1={l.p+3000} y1={0} x2={l.p+3000} y2={9000} stroke={accent} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} />
-                : <line key={i} x1={0} y1={l.p+3000} x2={9000} y2={l.p+3000} stroke={accent} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} />
-              )}
+              {snapLines.map((l,i) => {
+                const pad = 14
+                const a = (l.from ?? 0) - pad + 3000
+                const b = (l.to ?? 0) + pad + 3000
+                const p = l.p + 3000
+                const cap = 5
+                return l.t === 'v'
+                  ? <g key={i}>
+                      <line x1={p} y1={a} x2={p} y2={b} stroke={accent} strokeWidth={1.5 / nbZoom} opacity={0.95} />
+                      <line x1={p - cap / nbZoom} y1={a} x2={p + cap / nbZoom} y2={a} stroke={accent} strokeWidth={1.5 / nbZoom} opacity={0.95} />
+                      <line x1={p - cap / nbZoom} y1={b} x2={p + cap / nbZoom} y2={b} stroke={accent} strokeWidth={1.5 / nbZoom} opacity={0.95} />
+                    </g>
+                  : <g key={i}>
+                      <line x1={a} y1={p} x2={b} y2={p} stroke={accent} strokeWidth={1.5 / nbZoom} opacity={0.95} />
+                      <line x1={a} y1={p - cap / nbZoom} x2={a} y2={p + cap / nbZoom} stroke={accent} strokeWidth={1.5 / nbZoom} opacity={0.95} />
+                      <line x1={b} y1={p - cap / nbZoom} x2={b} y2={p + cap / nbZoom} stroke={accent} strokeWidth={1.5 / nbZoom} opacity={0.95} />
+                    </g>
+              })}
             </svg>
           )}
           {/* Connection lines layer — sits between sections (z=1) and blocks (z=10) */}
@@ -816,19 +953,34 @@ function addBlockAnimated(type, x, y) {
               }}
 onContextMenu={e => handleBlockContextMenu(e, block.id)}
               style={(() => {
+                // A block being dragged lifts off the canvas: it scales up a
+                // touch and casts a deeper shadow, then settles back on drop.
+                // The transform transition handles both directions, so the
+                // lift and the landing are animated for free.
+                const isDragging = draggingBlockId === block.id
                 const base = {
                   position: 'absolute', left: block.x, top: block.y,
-                  zIndex: block.type === 'section' ? (isSelected ? 3 : 1) : (isSelected ? 20 : isHovered ? 15 : 10),
-                  transition: isDeleting ? 'none' : 'transform 0.2s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.2s ease, clip-path 0.15s ease, z-index 0s',
-                  transformOrigin: 'top left',
+                  zIndex: block.type === 'section'
+                    ? (isSelected ? 3 : 1)
+                    : (isDragging ? 40 : isSelected ? 20 : isHovered ? 15 : 10),
+                  transition: isDeleting
+                    ? 'none'
+                    : 'transform 0.22s cubic-bezier(0.22,1,0.36,1), box-shadow 0.22s ease, filter 0.22s ease, clip-path 0.15s ease, z-index 0s',
+                  transformOrigin: 'center center',
                   transform:
-                    draggingBlockId === block.id && hoverSectionId
+                    isDragging && hoverSectionId
                       ? 'scale(0.6)'
+                      : isDragging
+                      ? 'scale(1.022)'
                       : 'scale(1)',
+                  filter: isDragging
+                    ? `drop-shadow(0 18px 34px ${dark ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.20)'})`
+                    : 'none',
+                  cursor: isDragging ? 'grabbing' : undefined,
                   animation: isDeleting ? 'dsBlockDelete 0.2s ease forwards' : isNew ? 'dsBlockAppear 0.3s cubic-bezier(0.34,1.56,0.64,1)' : 'none',
                 }
                 // Clip child blocks to their parent section's bounds
-                if (block.parentSectionId && draggingBlockId !== block.id) {
+                if (block.parentSectionId && !isDragging) {
                   const parent = blocks.find(b => b.id === block.parentSectionId)
                   if (parent) {
                     const pw = parent.w || 500, ph = parent.h || 350
@@ -906,7 +1058,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     notebookId={nb.id}
                     block={block}
                     label="table"
-                    draggableAsTable={true}
                     colors={colors}
                     renaming={renamingBlockId === block.id}
                     onStartRename={() => setRenamingBlockId(block.id)}
@@ -915,62 +1066,13 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onDelete={() => confirmDelete(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
                   />
-                  <div style={{ overflow: 'auto', maxHeight: Math.max(120, (block.h || 260) - 30) }}>
-                    <table style={{ borderCollapse: 'collapse', fontFamily: "'DM Mono',monospace", fontSize: 11 }}>
-                      <thead><tr>
-                        {block.headers.map((h, ci) => (
-                          <th key={ci} style={{ padding: 0, borderRight: `1px solid ${border}`, background: accentDim, minWidth: 100 }}>
-                            <div style={{ display: 'flex', alignItems: 'center' }}>
-                              <input value={h} onChange={e => { const nh = [...block.headers]; nh[ci] = e.target.value; onUpdateBlock(block.id, { headers: nh }) }} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onFocus={() => { editingRef.current = true }} onBlur={() => { editingRef.current = false }} style={{ flex: 1, background: 'transparent', border: 'none', color: accent, fontWeight: 700, fontFamily: "'DM Sans',sans-serif", fontSize: 11, padding: '5px 7px', outline: 'none', minWidth: 0 }} />
-                              <button title="Send to canvas" onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onSendColToCanvas(block, ci); if (onRemoveTableColumn) onRemoveTableColumn(block.id, ci) }} style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontSize: 12, padding: '2px 6px', flexShrink: 0, opacity: 0.55 }} onMouseEnter={e => e.currentTarget.style.opacity = '1'} onMouseLeave={e => e.currentTarget.style.opacity = '0.55'}>→</button>
-                              <button title="Delete column" onMouseDown={e => e.stopPropagation()} onClick={e => {
-                                e.stopPropagation()
-                                if (block.headers.length <= 1) { confirmDelete(block); return }
-                                onUpdateBlock(block.id, { headers: block.headers.filter((_, i) => i !== ci), rows: block.rows.map(r => r.filter((_, i) => i !== ci)) })
-                              }} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '2px 3px', flexShrink: 0, opacity: 0.3 }}
-                                onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = red }}
-                                onMouseLeave={e => { e.currentTarget.style.opacity = '0.3'; e.currentTarget.style.color = text3 }}>✕</button>
-                            </div>
-                          </th>
-                        ))}
-                        <th style={{ padding: '4px 6px', background: raised, borderLeft: `1px solid ${border}` }}>
-                          <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { headers: [...block.headers, `Col ${block.headers.length + 1}`], rows: block.rows.map(r => [...r, '']) }) }} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: '0 2px' }}>+</button>
-                        </th>
-                      </tr></thead>
-                      <tbody>
-                        {block.rows.map((row, ri) => (
-                          <tr key={ri}>
-                            {row.map((cell, ci) => (
-                              <td key={ci} style={{ borderRight: `1px solid ${border}`, borderTop: `1px solid ${border}22`, padding: 0 }}>
-                                <textarea value={cell} data-bid={block.id} data-ri={ri} data-ci={ci} rows={1}
-                                  onChange={e => {
-                                    const nr = block.rows.map((r, rIdx) => rIdx !== ri ? r : r.map((c, cIdx) => cIdx !== ci ? c : e.target.value))
-                                    onUpdateBlock(block.id, { rows: nr })
-                                    e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'
-                                  }}
-                                  onFocus={e => { editingRef.current = true; e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
-                                  onBlur={() => { editingRef.current = false }}
-                                  onKeyDown={e => {
-                                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const nextRi = ri + 1; if (nextRi >= block.rows.length) { onUpdateBlock(block.id, { rows: [...block.rows, Array(block.headers.length).fill('')] }); setTimeout(() => document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${ci}"]`)?.focus(), 20) } else { document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${ci}"]`)?.focus() } }
-                                    if (e.key === 'Tab') { e.preventDefault(); const isLastCol = ci + 1 >= block.headers.length; const nextCi = isLastCol ? 0 : ci + 1; const nextRi = isLastCol ? ri + 1 : ri; if (nextRi >= block.rows.length) { onUpdateBlock(block.id, { rows: [...block.rows, Array(block.headers.length).fill('')] }); setTimeout(() => document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${nextCi}"]`)?.focus(), 20) } else { document.querySelector(`[data-bid="${block.id}"][data-ri="${nextRi}"][data-ci="${nextCi}"]`)?.focus() } }
-                                    if (e.key === 'ArrowDown') { e.preventDefault(); const tgt = document.querySelector(`[data-bid="${block.id}"][data-ri="${ri + 1}"][data-ci="${ci}"]`); if (tgt) tgt.focus() }
-                                    if (e.key === 'ArrowUp') { e.preventDefault(); const tgt = document.querySelector(`[data-bid="${block.id}"][data-ri="${ri - 1}"][data-ci="${ci}"]`); if (tgt) tgt.focus() }
-                                  }}
-                                  onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
-                                  style={{ width: '100%', background: 'transparent', border: 'none', color: text2, fontFamily: "'DM Mono',monospace", fontSize: 11, padding: '5px 7px', outline: 'none', minWidth: 60, resize: 'none', overflow: 'hidden', lineHeight: 1.5, wordBreak: 'break-word' }} />
-                              </td>
-                            ))}
-                            <td style={{ borderTop: `1px solid ${border}22`, borderLeft: `1px solid ${border}`, width: 26 }}>
-                              <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { rows: block.rows.filter((_, i) => i !== ri) }) }} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, width: '100%', padding: '5px 3px' }} onMouseEnter={e => e.currentTarget.style.color = red} onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
-                            </td>
-                          </tr>
-                        ))}
-                        <tr><td colSpan={block.headers.length + 1} style={{ borderTop: `1px solid ${border}22` }}>
-                          <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { rows: [...block.rows, Array(block.headers.length).fill('')] }) }} style={{ width: '100%', background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '5px', fontFamily: "'DM Sans',sans-serif" }} onMouseEnter={e => e.currentTarget.style.color = accent} onMouseLeave={e => e.currentTarget.style.color = text3}>+ row</button>
-                        </td></tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <SheetGrid
+                    block={block}
+                    colors={colors}
+                    maxHeight={Math.max(120, (block.h || 260) - 30)}
+                    onUpdateBlock={onUpdateBlock}
+                    editingRef={editingRef}
+                  />
                   <ResizeHandle border={border} onResizeStart={e => startResize(e, block)} />
                 <Ports show={isSelected || isHovered} />
                 </div>
@@ -994,9 +1096,9 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     <div style={{ width: 4, height: 18, borderRadius: 2, background: block.sectionColor || accent }} />
                     {renamingBlockId === block.id ? (
                       <input autoFocus defaultValue={block.name || 'Section'} onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Section' }); setRenamingBlockId(null) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} onMouseDown={e => e.stopPropagation()} maxLength={40}
-                        style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${block.sectionColor || accent}`, color: text, fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 0 }} />
+                        style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${block.sectionColor || accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 0 }} />
                     ) : (
-                      <span onDoubleClick={e => { e.stopPropagation(); setRenamingBlockId(block.id) }} style={{ flex: 1, color: text, fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.name || 'Section'}</span>
+                      <span onDoubleClick={e => { e.stopPropagation(); setRenamingBlockId(block.id) }} style={{ flex: 1, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.name || 'Section'}</span>
                     )}
                     <div style={{ display: 'flex', gap: 3 }}>
                       {['#5B5FE8','#1D9E75','#E8B85B','#f87171','#a78bfa','#38bdf8','#fb923c'].map(hex => (
@@ -1009,7 +1111,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = text3 }}>✕</button>
                   </div>
                   {blocks.filter(b => b.parentSectionId === block.id).length === 0 && (
-                    <div style={{ position: 'absolute', top: 38, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', color: `${block.sectionColor || accent}77`, fontSize: 11, fontStyle: 'italic', fontFamily: "'DM Sans',sans-serif" }}>
+                    <div style={{ position: 'absolute', top: 38, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', color: `${block.sectionColor || accent}77`, fontSize: 11, fontStyle: 'italic', fontFamily: 'var(--ds-font-body)' }}>
                       Drag blocks here
                     </div>
                   )}
@@ -1061,9 +1163,9 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
         </div>
         {blocks.length === 0 && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-            <div style={{ textAlign: 'center', color: text3, fontFamily: "'DM Sans',sans-serif" }}>
+            <div style={{ textAlign: 'center', color: text3, fontFamily: 'var(--ds-font-body)' }}>
               <div style={{ fontSize: 36, marginBottom: 14 }}>📓</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: text2, fontFamily: "'Syne',sans-serif", marginBottom: 8 }}>Click anywhere to write</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: text2, fontFamily: 'var(--ds-font-head)', marginBottom: 8 }}>Click anywhere to write</div>
               <div style={{ fontSize: 12, lineHeight: 1.9 }}>Or use + Text · + Table · + Kanban above<br />Drag header to move blocks · Right-click drag to pan</div>
             </div>
           </div>

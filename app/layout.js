@@ -1,4 +1,4 @@
-import { Syne, DM_Sans, DM_Mono } from 'next/font/google'
+import { Syne, DM_Sans, DM_Mono, Inter } from 'next/font/google'
 import './globals.css'
 import { ThemeProvider } from './providers'
 
@@ -10,6 +10,11 @@ const syne = Syne({
 const dmSans = DM_Sans({
   subsets: ['latin'],
   variable: '--font-dm-sans',
+})
+
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
 })
 
 const dmMono = DM_Mono({
@@ -26,7 +31,7 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className={`${syne.variable} ${dmSans.variable} ${dmMono.variable}`}>
+      <body className={`${inter.variable} ${syne.variable} ${dmSans.variable} ${dmMono.variable}`}>
         <ThemeProvider>
           {children}
         </ThemeProvider>

@@ -101,7 +101,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                 flex: 1,
                 background: 'transparent',
                 border: 'none',
-                fontFamily: "'DM Sans',sans-serif",
+                fontFamily: 'var(--ds-font-body)',
                 fontWeight: 700,
                 fontSize: 12,
                 color: text,
@@ -153,7 +153,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                 position: 'relative'
               }}
             >
-              <div style={{ fontSize: 12, color: text, fontFamily: "'DM Sans',sans-serif", lineHeight: 1.4, paddingRight: 16 }}>
+              <div style={{ fontSize: 12, color: text, fontFamily: 'var(--ds-font-body)', lineHeight: 1.4, paddingRight: 16 }}>
                 {card.title}
               </div>
 
@@ -211,7 +211,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                   border: 'none',
                   borderTop: `1px solid ${border}33`,
                   color: text3,
-                  fontFamily: "'DM Sans',sans-serif",
+                  fontFamily: 'var(--ds-font-body)',
                   fontSize: 10,
                   outline: 'none',
                   padding: '3px 0',
@@ -239,7 +239,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                   background: 'transparent',
                   border: 'none',
                   color: text,
-                  fontFamily: "'DM Sans',sans-serif",
+                  fontFamily: 'var(--ds-font-body)',
                   fontSize: 12,
                   outline: 'none',
                   marginBottom: 6
@@ -251,7 +251,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                     e.stopPropagation()
                     addCard(lane.id)
                   }}
-                  style={{ background: accent, border: 'none', borderRadius: 4, color: '#fff', fontFamily: "'DM Sans',sans-serif", fontSize: 11, padding: '3px 10px', cursor: 'pointer' }}
+                  style={{ background: accent, border: 'none', borderRadius: 4, color: '#fff', fontFamily: 'var(--ds-font-body)', fontSize: 11, padding: '3px 10px', cursor: 'pointer' }}
                 >
                   Add
                 </button>
@@ -260,7 +260,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                     e.stopPropagation()
                     setAddingCard(p => ({ ...p, [lane.id]: false }))
                   }}
-                  style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, padding: '3px 8px', cursor: 'pointer' }}
+                  style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 11, padding: '3px 8px', cursor: 'pointer' }}
                 >
                   ✕
                 </button>
@@ -273,7 +273,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                 setAddingCard(p => ({ ...p, [lane.id]: true }))
               }}
               onMouseDown={e => e.stopPropagation()}
-              style={{ width: '100%', background: 'none', border: `1px dashed ${border}`, borderRadius: 6, padding: '5px', color: text3, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: 'pointer' }}
+              style={{ width: '100%', background: 'none', border: `1px dashed ${border}`, borderRadius: 6, padding: '5px', color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 11, cursor: 'pointer' }}
               onMouseEnter={e => {
                 e.currentTarget.style.borderColor = accent
                 e.currentTarget.style.color = accent

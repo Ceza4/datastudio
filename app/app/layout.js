@@ -20,7 +20,7 @@ export default function AppLayout({ children }) {
   }, [dark])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: "'DM Sans', sans-serif", overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'var(--ds-font-body)', overflow: 'hidden' }}>
       {children}
     </div>
   )

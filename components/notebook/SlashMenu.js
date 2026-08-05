@@ -61,7 +61,7 @@ export default function SlashMenu({ x, y, filter, colors, onSelect, onClose }) {
         position: 'fixed', left, top, zIndex: 99999,
         background: surface, border: `1px solid ${border}`, borderRadius: 10,
         boxShadow: '0 12px 40px rgba(0,0,0,0.3)', padding: 6,
-        fontFamily: "'DM Sans',sans-serif", minWidth: 240, maxHeight: 320, overflowY: 'auto',
+        fontFamily: 'var(--ds-font-body)', minWidth: 240, maxHeight: 320, overflowY: 'auto',
       }}>
       <div style={{ padding: '8px 12px 6px', fontSize: 11, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>
         Commands
@@ -78,13 +78,13 @@ export default function SlashMenu({ x, y, filter, colors, onSelect, onClose }) {
             padding: '9px 12px', border: 'none', borderRadius: 8, cursor: 'pointer',
             background: i === activeIdx ? accentDim : 'transparent',
             color: i === activeIdx ? accent : text,
-            fontFamily: "'DM Sans',sans-serif", fontSize: 14, textAlign: 'left',
+            fontFamily: 'var(--ds-font-body)', fontSize: 14, textAlign: 'left',
           }}>
           <span style={{
             width: 32, height: 32, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: i === activeIdx ? accent : raised, color: i === activeIdx ? '#fff' : text2,
             fontSize: 13, fontWeight: 700, flexShrink: 0,
-            fontFamily: cmd.id === 'code' ? "'DM Mono',monospace" : "'DM Sans',sans-serif",
+            fontFamily: cmd.id === 'code' ? 'var(--ds-font-mono)' : 'var(--ds-font-body)',
           }}>
             {cmd.icon}
           </span>

@@ -15,6 +15,12 @@ export function ThemeProvider({ children }) {
     setMounted(true)
   }, [])
 
+  // Drive the CSS custom properties in globals.css. Everything themed via
+  // var(--ds-*) updates from this single attribute — no per-component work.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+  }, [dark])
+
   function setDark(val) {
     const next = typeof val === 'function' ? val(dark) : val
     setDarkRaw(next)

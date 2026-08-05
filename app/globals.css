@@ -1,3 +1,107 @@
+/* globals.css
+   --------------------------------------------------------------------------
+   DataStudio design tokens.
+
+   Every colour, font, radius, spacing step and shadow in the app is declared
+   here once as a CSS custom property. Components read them via var(--ds-*)
+   instead of hardcoding hex values in 280+ inline style objects, so changing
+   the palette or the corner radius is a one-line edit here rather than a
+   find-and-replace across every file.
+
+   Theme switching is data-attribute driven: providers.js sets
+   `data-theme="dark"` on <html>, and the [data-theme='dark'] block below
+   overrides the colour tokens. No JS recomputation, no prop drilling, and it
+   applies to pseudo-elements and :hover states that inline styles can't reach.
+
+   The `colors` object still passed down as a prop mirrors these values for
+   the components that haven't been migrated yet — both point at the same
+   source of truth, so they can't drift.
+   -------------------------------------------------------------------------- */
+
+:root {
+  /* ── Surfaces (light theme is the default) ── */
+  --ds-base:       #F5F3EE;
+  --ds-surface:    #EDEAE3;
+  --ds-raised:     #E4E1D8;
+  --ds-border:     #D5D1C7;
+  --ds-canvas-bg:  #EAE7DE;
+
+  /* ── Text ── */
+  --ds-text:       #1A1917;
+  --ds-text-2:     #6B6860;
+  --ds-text-3:     #A09D97;
+
+  /* ── Accent & status ── */
+  --ds-accent:     #1D9E75;
+  --ds-accent-dim: #d0f0e4;
+  --ds-green:      #4ade80;
+  --ds-red:        #f87171;
+  --ds-amber:      #E8B85B;
+
+  /* Status tints — used by result rows / summary cards */
+  --ds-green-bg:   #dcfce7;
+  --ds-amber-bg:   #fef3c7;
+  --ds-red-bg:     #fee2e2;
+
+  /* ── Elevation ── */
+  --ds-shadow-sm:  0 2px 8px rgba(0, 0, 0, 0.06);
+  --ds-shadow-md:  0 4px 24px rgba(0, 0, 0, 0.08);
+  --ds-shadow-lg:  0 8px 40px rgba(0, 0, 0, 0.12);
+  --ds-glass:      rgba(237, 234, 227, 0.94);
+
+  /* ── Typography ── */
+  /* Inter across the whole app UI. --ds-font-head stays a separate token so
+     headings can diverge later without touching every component again. */
+  --ds-font-head:  var(--font-inter, 'Inter'), system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --ds-font-body:  var(--font-inter, 'Inter'), system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --ds-font-mono:  var(--font-dm-mono, 'DM Mono'), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --ds-fs-xs:      10px;
+  --ds-fs-sm:      11px;
+  --ds-fs-md:      12px;
+  --ds-fs-lg:      13px;
+  --ds-fs-xl:      15px;
+
+  /* ── Geometry ── */
+  --ds-radius-sm:  6px;
+  --ds-radius-md:  8px;
+  --ds-radius-lg:  12px;
+  --ds-radius-xl:  16px;
+
+  --ds-space-1:    4px;
+  --ds-space-2:    6px;
+  --ds-space-3:    10px;
+  --ds-space-4:    14px;
+  --ds-space-5:    20px;
+
+  --ds-btn-padding: 6px 12px;
+  --ds-transition:  0.15s ease;
+}
+
+[data-theme='dark'] {
+  --ds-base:       #1A1917;
+  --ds-surface:    #201F1C;
+  --ds-raised:     #262522;
+  --ds-border:     #2E2D29;
+  --ds-canvas-bg:  #141412;
+
+  --ds-text:       #E8E6E1;
+  --ds-text-2:     #9A9790;
+  --ds-text-3:     #5A5955;
+
+  --ds-accent:     #5B5FE8;
+  --ds-accent-dim: #1e2057;
+
+  --ds-green-bg:   #0d2a1a;
+  --ds-amber-bg:   #2a1f0d;
+  --ds-red-bg:     #2a0d0d;
+
+  --ds-shadow-sm:  0 2px 8px rgba(0, 0, 0, 0.25);
+  --ds-shadow-md:  0 4px 24px rgba(0, 0, 0, 0.5);
+  --ds-shadow-lg:  0 8px 40px rgba(0, 0, 0, 0.6);
+  --ds-glass:      rgba(32, 31, 28, 0.94);
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -5,15 +109,230 @@
 }
 
 body {
-  background: #1A1917;
-  color: #E8E6E1;
-  font-family: var(--font-dm-sans), sans-serif;
+  background: var(--ds-base);
+  color: var(--ds-text);
+  font-family: var(--ds-font-body);
 }
 
 h1, h2, h3, h4 {
-  font-family: var(--font-syne), sans-serif;
+  font-family: var(--ds-font-head);
 }
 
 .mono {
-  font-family: var(--font-dm-mono), monospace;
+  font-family: var(--ds-font-mono);
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--ds-border);
+  border-radius: var(--ds-radius-sm);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--ds-text-3); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Reusable components
+   These replace the inline style objects that were duplicated across
+   the toolbar islands, the sidebar and the Crosscheck panel.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* Frosted-glass floating island — the app's core surface idiom. */
+.ds-island {
+  background: var(--ds-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg);
+  box-shadow: var(--ds-shadow-lg);
+  font-family: var(--ds-font-body);
+}
+
+/* Buttons ------------------------------------------------------------- */
+.ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-space-1);
+  padding: var(--ds-btn-padding);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: var(--ds-text-2);
+  font-family: var(--ds-font-body);
+  font-size: var(--ds-fs-md);
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--ds-transition), color var(--ds-transition),
+              border-color var(--ds-transition), opacity var(--ds-transition);
+}
+.ds-btn:hover:not(:disabled) {
+  background: var(--ds-raised);
+  color: var(--ds-text);
+  border-color: var(--ds-text-3);
+}
+.ds-btn:disabled { opacity: 0.4; cursor: default; }
+
+.ds-btn-ghost { border-color: transparent; color: var(--ds-text-3); }
+.ds-btn-ghost:hover:not(:disabled) { border-color: transparent; }
+
+.ds-btn-primary {
+  background: var(--ds-accent);
+  border-color: var(--ds-accent);
+  color: #fff;
+  font-weight: 600;
+}
+.ds-btn-primary:hover:not(:disabled) {
+  background: var(--ds-accent);
+  border-color: var(--ds-accent);
+  color: #fff;
+  opacity: 0.88;
+}
+
+/* Active/selected toggle state, e.g. Snap and Draw in the toolbar. */
+.ds-btn.is-active {
+  background: var(--ds-accent-dim);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent);
+  font-weight: 600;
+}
+
+/* Small pill used for counts and modes. */
+.ds-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  padding: 2px 7px;
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-accent-dim);
+  color: var(--ds-accent);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Inline text inputs that sit flush in toolbars and tables. */
+.ds-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--ds-accent);
+  color: var(--ds-text);
+  font-family: var(--ds-font-body);
+  font-size: var(--ds-fs-md);
+  outline: none;
+  min-width: 0;
+}
+
+/* Selectable card (column pickers). */
+.ds-card {
+  border: 1.5px solid var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-raised);
+  padding: var(--ds-space-3) var(--ds-space-4);
+  cursor: pointer;
+  transition: border-color var(--ds-transition), background var(--ds-transition);
+}
+.ds-card:hover { border-color: var(--ds-accent); }
+.ds-card.is-selected {
+  border-color: var(--ds-accent);
+  background: var(--ds-accent-dim);
+}
+
+/* Section label above a group of controls. */
+.ds-label {
+  font-size: var(--ds-fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--ds-text-3);
+}
+
+/* ── Hover-reveal helpers (inline styles can't express :hover) ────────── */
+.file-row:hover, .folder-row:hover, .nb-row:hover { background: var(--ds-raised) !important; }
+.folder-row:hover .folder-actions,
+.nb-row:hover .nb-actions,
+.col-row:hover .col-actions,
+.kanban-card:hover .card-del { opacity: 1 !important; }
+
+.col-row { transition: background 0.1s; cursor: grab; user-select: none; }
+.col-row:hover { background: var(--ds-raised) !important; }
+.col-row:active { cursor: grabbing; }
+.col-actions { opacity: 0; transition: opacity var(--ds-transition); display: flex; gap: 3px; }
+
+.import-btn:hover { opacity: 0.88; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fadein { animation: fadeUp 0.4s ease both; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.ds-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--ds-accent);
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
+
+/* ── Toolbar island buttons ───────────────────────────────────────────────
+   One class instead of the six near-identical inline style objects (each with
+   its own pair of onMouseEnter/onMouseLeave handlers) that the island used to
+   carry. Bordered and filled by default so they read as distinct controls
+   rather than floating text. */
+.ds-tbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  background: var(--ds-base);
+  color: var(--ds-text-2);
+  font-family: var(--ds-font-body);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--ds-transition), color var(--ds-transition),
+              border-color var(--ds-transition), box-shadow var(--ds-transition);
+}
+.ds-tbtn:hover {
+  background: var(--ds-raised);
+  color: var(--ds-text);
+  border-color: var(--ds-text-3);
+}
+.ds-tbtn:active { transform: translateY(0.5px); }
+
+/* Toggled on (Snap, Mind map, Draw). */
+.ds-tbtn.is-on {
+  background: var(--ds-accent-dim);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent);
+  font-weight: 650;
+  box-shadow: inset 0 0 0 1px var(--ds-accent);
+}
+
+/* Primary action in the toolbar (Crosscheck). */
+.ds-tbtn.is-accent {
+  color: var(--ds-accent);
+  border-color: var(--ds-accent);
+  font-weight: 650;
+}
+.ds-tbtn.is-accent:hover {
+  background: var(--ds-accent-dim);
+  color: var(--ds-accent);
+  border-color: var(--ds-accent);
+}
+
+
+/* Guard against any single bad var() dropping the whole page to serif. */
+html, body, button, input, textarea, select {
+  font-family: var(--ds-font-body);
 }

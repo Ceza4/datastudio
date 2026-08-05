@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom'
    -------------------------------------------------------------------------- */
 
 const FONTS = [
-  'DM Sans', 'Times New Roman', 'Georgia', 'Helvetica',
+  'Inter', 'DM Sans', 'Times New Roman', 'Georgia', 'Helvetica',
   'Arial', 'Courier New', 'Verdana',
 ]
 
@@ -74,7 +74,7 @@ export default function TextBlockToolbar({ x, y, colors, onClose }) {
     padding: '6px 11px',
     color: text2,
     cursor: 'pointer',
-    fontFamily: "'DM Sans',sans-serif",
+    fontFamily: 'var(--ds-font-body)',
     fontSize: 13,
     borderRadius: 6,
     display: 'flex',
@@ -113,7 +113,7 @@ export default function TextBlockToolbar({ x, y, colors, onClose }) {
         position: 'fixed', left, top, zIndex: 99999,
         background: surface, border: `1px solid ${border}`, borderRadius: 10,
         boxShadow: '0 12px 40px rgba(0,0,0,0.3)', padding: '6px 8px',
-        fontFamily: "'DM Sans',sans-serif",
+        fontFamily: 'var(--ds-font-body)',
         display: 'flex', flexDirection: 'column', gap: 4,
       }}
     >
@@ -167,9 +167,9 @@ export default function TextBlockToolbar({ x, y, colors, onClose }) {
 
       {/* Row 2: Structure */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-        <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h1') }} title="Heading 1" style={{ fontWeight: 700, fontFamily: "'Syne',sans-serif" }}>H1</Btn>
-        <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h2') }} title="Heading 2" style={{ fontWeight: 700, fontFamily: "'Syne',sans-serif" }}>H2</Btn>
-        <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h3') }} title="Heading 3" style={{ fontWeight: 700, fontFamily: "'Syne',sans-serif" }}>H3</Btn>
+        <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h1') }} title="Heading 1" style={{ fontWeight: 700, fontFamily: 'var(--ds-font-head)' }}>H1</Btn>
+        <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h2') }} title="Heading 2" style={{ fontWeight: 700, fontFamily: 'var(--ds-font-head)' }}>H2</Btn>
+        <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h3') }} title="Heading 3" style={{ fontWeight: 700, fontFamily: 'var(--ds-font-head)' }}>H3</Btn>
         <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'div') }} title="Normal paragraph">Text</Btn>
 
         {sep}
