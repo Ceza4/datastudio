@@ -1,5 +1,6 @@
 'use client'
 import { useState, useRef, useEffect, useCallback } from 'react'
+import SendToSheet from './SendToSheet'
 
 /* CrosscheckPanel
    --------------------------------------------------------------------------
@@ -30,7 +31,10 @@ const SENSITIVITY = {
   strict:  { label: 'Strict',  hint: 'only high confidence',          match: 93, maybe: 82 },
 }
 
-export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToNotebook }) {
+export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToNotebook, tables = [], onWriteToTable }) {
+  // Which result field to push into a sheet column, and whether that panel is open.
+  const [sendOpen, setSendOpen] = useState(false)
+  const [sendField, setSendField] = useState('match')
   const [pos, setPos] = useState({ x: null, y: 96 })
   const [step, setStep] = useState(1)
   const [colAId, setColAId] = useState('')
@@ -571,10 +575,51 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
           <>
             <button onClick={() => { setStep(1); setResults(null) }} className="ds-btn">↺ Again</button>
             <button onClick={exportCSV} className="ds-btn" style={{ marginLeft: 'auto' }}>CSV</button>
+            {tables.length > 0 && (
+              <button onClick={() => setSendOpen(v => !v)}
+                className={`ds-btn${sendOpen ? ' is-active' : ''}`}>
+                To column
+              </button>
+            )}
             <button onClick={addToNotebook} className="ds-btn ds-btn-primary">Add to notebook ✓</button>
           </>
         )}
       </div>
+
+      {/* Send one result field into an existing sheet column.
+          "Add to notebook" spawns a fresh four-column results table, which is
+          right when you want the whole report — but when you just want the
+          matched name or the score sitting beside the data you started from,
+          a new floating block means copying it back by hand. */}
+      {step === 4 && sendOpen && results && (
+        <div style={{ borderTop: '1px solid var(--ds-border)', padding: '12px 16px 14px' }}>
+          <div style={{ marginBottom: 9 }}>
+            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }}>
+              Which values
+            </span>
+            <select value={sendField} onChange={e => setSendField(e.target.value)}
+              style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-raised)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none' }}>
+              <option value="match">Matched name from the master list</option>
+              <option value="score">Match score</option>
+              <option value="status">Status (matched / maybe / unmatched)</option>
+              <option value="source">Your original value</option>
+            </select>
+            <div style={{ fontSize: 10, color: 'var(--ds-text-3)', marginTop: 5, lineHeight: 1.45 }}>
+              Rows follow the same order as the results above
+              {matchedOnly ? ' — currently filtered to matches only.' : '.'}
+            </div>
+          </div>
+          <SendToSheet
+            compact
+            tables={tables}
+            columns={[{
+              header: { match: 'Matched', score: 'Score', status: 'Status', source: 'Original' }[sendField],
+              values: buildResultRows().map(r => r[{ source: 0, match: 1, score: 2, status: 3 }[sendField]]),
+            }]}
+            onWrite={(id, patch) => onWriteToTable?.(id, patch)}
+          />
+        </div>
+      )}
     </div>
   )
 }

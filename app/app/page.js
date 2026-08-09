@@ -1,10 +1,51 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useTheme } from '../providers'
 import * as XLSX from 'xlsx'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckPanel from '../../components/tools/CrosscheckPanel'
-import { saveState, loadState, debounce } from '../../lib/persistence'
+import { saveState, loadState, clearState, debounce, SAVE_OK, storageEstimate, formatBytes } from '../../lib/persistence'
+import { pruneImages, requestPersistence, idbClear, STORE_IMAGES } from '../../lib/idb'
+import { processImageFile, putImage, newImageId, IMAGE_EXTS, MAX_IMAGE_BYTES } from '../../lib/images'
+import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
+
+/* Import formats, in two tiers.
+   --------------------------------------------------------------------------
+   ADVERTISED — shown in the sidebar. Every one of these was verified by
+   round-tripping a real workbook through XLSX.read and checking the data came
+   back intact, not by reading the library's feature list.
+
+   The first version of this listed 28 extensions scraped from what SheetJS
+   *can* parse. That was wrong in three ways: .xlam and .xla are Excel add-ins
+   (macro containers, not data files), .prn came back lossy in testing, and
+   .dif / .slk / .eth / .wk1 / .wks / .wk3 / .123 are formats from 1981–1993
+   that no one is going to hand a researcher. Listing a format is a promise to
+   support it; promising Lotus 1-2-3 buys nothing and costs bug reports.
+
+   ALSO_ACCEPTED — allowed by the file picker but not advertised. These work
+   (or should), they're just rare enough that headlining them adds noise
+   rather than confidence. If someone has one, it opens; nobody is being
+   invited to rely on it. */
+const IMPORT_FORMATS = [
+  { group: 'Excel',   exts: ['.xlsx', '.xlsm', '.xlsb', '.xls'] },
+  { group: 'Text',    exts: ['.csv', '.tsv', '.txt'] },
+  { group: 'OpenDoc', exts: ['.ods'] },
+]
+
+/* Templates, flat ODS, SpreadsheetML 2003, dBase, and Apple Numbers.
+   .numbers is the one genuinely untested entry — the parser and its IWA
+   decoder are both present in this build, but SheetJS can't WRITE .numbers so
+   there was no way to generate a fixture. It's accepted, not advertised. */
+const ALSO_ACCEPTED = ['.xlt', '.xltx', '.xltm', '.fods', '.xml', '.dbf', '.numbers']
+
+/* One picker for everything. Images are routed to an image block, spreadsheets
+   to the sidebar — the user shouldn't have to know which button to press. */
+const ACCEPT_EXTS = [...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED, ...IMAGE_EXTS].join(',')
+const DATA_EXTS = new Set([...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED])
+const extOf = name => {
+  const m = /\.[a-z0-9]+$/i.exec(name || '')
+  return m ? m[0].toLowerCase() : ''
+}
 
 export default function AppPage() {
   const { dark, setDark } = useTheme()
@@ -39,50 +80,115 @@ export default function AppPage() {
   // notebook workspace now, so we guarantee a notebook exists and is active
   // as soon as the app boots — first-run users land straight in a blank
   // notebook instead of an empty shell.
+  /* Load is now async (IndexedDB). `hydrated` gates the first save so an
+     empty initial render can't overwrite a real workspace before it arrives. */
+  const [hydrated, setHydrated] = useState(false)
+  const [saveError, setSaveError] = useState(null)
+  const [importError, setImportError] = useState(null)
+  const [importing, setImporting] = useState(false)
+  const [usage, setUsage] = useState(null)
+  // null = not asked yet, true = protected from eviction, false = refused
+  const [persisted, setPersisted] = useState(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  const settingsRef = useRef(null)
+
   useEffect(() => {
-    const saved = loadState()
-    let initialNotebooks = saved?.notebooks?.length ? saved.notebooks : []
-    const initialFolders = saved?.folders?.length ? saved.folders : []
-    if (initialNotebooks.length === 0) {
+    let cancelled = false
+    loadState().then(saved => {
+      if (cancelled) return
+      let initialNotebooks = saved?.notebooks?.length ? saved.notebooks : []
+      const initialFolders = saved?.folders?.length ? saved.folders : []
+      if (initialNotebooks.length === 0) {
+        const nb = freshNotebook()
+        initialNotebooks = [nb]
+        setActiveNotebookId(nb.id)
+      } else {
+        setActiveNotebookId(initialNotebooks[0].id)
+      }
+      setNotebooks(initialNotebooks)
+      setFolders(initialFolders)
+      setHydrated(true)
+    }).catch(err => {
+      if (cancelled) return
+      // Even a total load failure must leave a usable app.
       const nb = freshNotebook()
-      initialNotebooks = [nb]
-      setActiveNotebookId(nb.id)
-    } else {
-      setActiveNotebookId(initialNotebooks[0].id)
-    }
-    setNotebooks(initialNotebooks)
-    setFolders(initialFolders)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      setNotebooks([nb]); setActiveNotebookId(nb.id); setHydrated(true)
+      setSaveError(`Could not read your saved workspace: ${err.message}`)
+    })
+    /* Ask the browser to keep this origin's storage. Without it IndexedDB is
+       best-effort and can be evicted under disk pressure — fine for a cache,
+       not for the only copy of someone's work. Asking at load rather than on
+       first save means the answer is known before there's anything to lose. */
+    requestPersistence().then(({ supported, persisted: ok }) => {
+      if (!cancelled) setPersisted(supported ? ok : null)
+    })
+    storageEstimate().then(u => { if (!cancelled) setUsage(u) })
+
+    return () => { cancelled = true }
   }, [])
 
-  // Debounced auto-save. Fires 600ms after the last change to any
-  // persistable state.
+  /* Debounced auto-save, 600ms after the last change.
+     saveState resolves with an outcome rather than throwing — a failed save
+     used to be a console.warn nobody saw, so people kept working on a
+     workspace that had silently stopped persisting. */
   const debouncedSaveRef = useRef(null)
   if (!debouncedSaveRef.current) {
-    debouncedSaveRef.current = debounce((state) => saveState(state), 600)
+    debouncedSaveRef.current = debounce(async (state, onResult) => {
+      const res = await saveState(state)
+      onResult(res)
+    }, 600)
   }
   useEffect(() => {
-    debouncedSaveRef.current({ notebooks, folders })
-  }, [notebooks, folders])
-
-  // Warn before closing tab if there's any work in progress.
-  useEffect(() => {
-    function handleBeforeUnload(e) {
-      const hasWork = notebooks.some(n => n.sheets?.some(s => s.blocks?.length > 0))
-      if (hasWork) {
-        e.preventDefault()
-        e.returnValue = ''
-        return ''
+    if (!hydrated) return
+    debouncedSaveRef.current({ notebooks, folders }, res => {
+      setSaveError(res.status === SAVE_OK ? null : res.error)
+      if (res.status === SAVE_OK) {
+        // Drop image bytes no block references any more, then refresh the meter.
+        const live = []
+        notebooks.forEach(n => n.sheets?.forEach(s => s.blocks?.forEach(b => {
+          if (b.type === 'image' && b.imageId) live.push(b.imageId)
+        })))
+        pruneImages(live).then(() => storageEstimate().then(setUsage))
       }
+    })
+  }, [notebooks, folders, hydrated])
+
+  /* Warn before closing only when a save is actually outstanding. The old
+     handler fired whenever any block existed, i.e. almost always — training
+     everyone to dismiss it, which meant the one time it mattered it was
+     ignored. */
+  useEffect(() => {
+    if (!saveError) return
+    function handleBeforeUnload(e) {
+      e.preventDefault()
+      e.returnValue = ''
+      return ''
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [notebooks])
+  }, [saveError])
 
   useEffect(() => { window.__nbTableDrag = null }, [])
 
+  // Dismiss Settings on outside click or Escape.
+  useEffect(() => {
+    if (!settingsOpen) return
+    function onDown(e) {
+      if (settingsRef.current && !settingsRef.current.contains(e.target)) setSettingsOpen(false)
+    }
+    function onKey(e) { if (e.key === 'Escape') setSettingsOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [settingsOpen])
+
   const dragData = useRef(null)
   const fileInputRef = useRef(null)
+  const imageInputRef = useRef(null)
 
   const base      = dark ? '#1A1917' : '#F5F3EE'
   const surface   = dark ? '#201F1C' : '#EDEAE3'
@@ -99,25 +205,98 @@ export default function AppPage() {
 
   // ── File import ──────────────────────────────────────────────
   function handleImportClick() { fileInputRef.current.click() }
-  function handleFileChange(e) {
-    const file = e.target.files[0]
+
+  /* Import router.
+     ------------------------------------------------------------------
+     The previous version piped every file's bytes straight into XLSX.read
+     with no type check, no try/catch and no reader.onerror. XLSX.read throws
+     inside the FileReader callback, where the exception has nowhere to go —
+     so an unsupported file (an image, say) produced absolutely nothing: no
+     error, no message, no console output. That is why importing an image
+     appeared to do nothing at all.
+
+     Now: route by extension, validate, and surface every failure. */
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = (evt) => {
-      const data = new Uint8Array(evt.target.result)
-      const workbook = XLSX.read(data, { type: 'array' })
-      const sheets = workbook.SheetNames.map(sheetName => {
-        const ws = workbook.Sheets[sheetName]
-        const json = XLSX.utils.sheet_to_json(ws, { header: 1 })
-        const headers = (json[0] || []).map((h, i) => ({ id: `col_${Date.now()}_${i}`, label: h || `Column ${i + 1}`, index: i, hidden: false }))
-        return { name: sheetName, headers, rows: json.slice(1) }
+
+    setImportError(null)
+    const ext = extOf(file.name)
+
+    if (IMAGE_EXTS.includes(ext)) return importImage(file)
+    if (DATA_EXTS.has(ext)) return importWorkbook(file)
+
+    setImportError(
+      `"${file.name}" isn't a format DataStudio can read. Spreadsheets: ${[...DATA_EXTS].slice(0, 6).join(' ')}… · Images: ${IMAGE_EXTS.join(' ')}`
+    )
+  }
+
+  async function importImage(file) {
+    if (!activeNotebookId) { setImportError('Open a notebook before adding an image.'); return }
+    setImporting(true)
+    try {
+      const processed = await processImageFile(file)
+      const id = newImageId()
+      await putImage(id, {
+        blob: processed.blob, width: processed.width, height: processed.height,
+        type: processed.type, name: processed.name, addedAt: Date.now(),
       })
-      const newFile = { id: `file_${Date.now()}`, name: file.name, sheets }
-      setFiles(prev => [...prev, newFile])
-      setExpandedFiles(prev => { const next = new Set(prev); next.add(newFile.id); return next })
+      // Size the block to the image's aspect ratio, capped so a tall photo
+      // doesn't arrive taller than the viewport.
+      const maxW = 420
+      const scale = Math.min(1, maxW / processed.width)
+      addNotebookBlock(
+        activeNotebookId, 'image',
+        180 + Math.random() * 40, 140 + Math.random() * 30,
+        null, null,
+        Math.round(processed.width * scale),
+        Math.round(processed.height * scale) + 30,
+        {
+          imageId: id, name: processed.name,
+          natW: processed.width, natH: processed.height, alt: '', fit: 'contain',
+        }
+      )
+      storageEstimate().then(setUsage)
+    } catch (err) {
+      setImportError(err?.message || 'That image could not be imported.')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  function importWorkbook(file) {
+    setImporting(true)
+    const reader = new FileReader()
+    reader.onerror = () => {
+      setImporting(false)
+      setImportError(`Could not read "${file.name}" from disk.`)
+    }
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target.result)
+        const workbook = XLSX.read(data, { type: 'array' })
+        if (!workbook.SheetNames?.length) throw new Error('the file contains no sheets')
+        const sheets = workbook.SheetNames.map(sheetName => {
+          const ws = workbook.Sheets[sheetName]
+          const json = XLSX.utils.sheet_to_json(ws, { header: 1 })
+          // A missing header stays blank rather than becoming "Column 3" —
+          // the grid shows the column letter, so a placeholder is just clutter.
+          const headers = (json[0] || []).map((h, i) => ({ id: `col_${Date.now()}_${i}`, label: h ?? '', index: i, hidden: false }))
+          return { name: sheetName, headers, rows: json.slice(1) }
+        })
+        const totalRows = sheets.reduce((n, s) => n + s.rows.length, 0)
+        if (totalRows === 0) throw new Error('no rows were found in it')
+        const newFile = { id: `file_${Date.now()}`, name: file.name, sheets }
+        setFiles(prev => [...prev, newFile])
+        setExpandedFiles(prev => { const next = new Set(prev); next.add(newFile.id); return next })
+      } catch (err) {
+        setImportError(`Could not import "${file.name}" — ${err?.message || 'the file may be corrupt or password-protected'}.`)
+      } finally {
+        setImporting(false)
+      }
     }
     reader.readAsArrayBuffer(file)
-    e.target.value = ''
   }
 
   // ── Column visibility ────────────────────────────────────────
@@ -255,8 +434,16 @@ export default function AppPage() {
         ]}
       : type === 'section'
       ? { id, type: 'section', x, y, w: customW || 500, h: customH || 350, name: 'Section', sectionColor: '#5B5FE8' }
+      // Image blocks hold only an id. The bytes live in IndexedDB so autosave
+      // never rewrites pixels — see lib/images.js.
+      : type === 'image'
+      ? { id, type: 'image', x, y, w: customW || 360, h: customH || 260, name: 'Image', imageId: null, alt: '', fit: 'contain', rev: 0 }
+      // Header starts blank. It used to default to the string "Column 1",
+      // which was pure noise: the grid already prints the column letter above
+      // every header, so the cell read "A / Column 1" and the user's first
+      // action was always to delete it.
       : { id, type: 'table', x, y, w: customW || undefined, name: '',
-          headers: customHeaders || ['Column 1'],
+          headers: customHeaders || [''],
           rows: customRows || Array(8).fill(null).map(() => ['']) }
     if (patch) block = { ...block, ...patch, id }
     setNotebooks(prev => prev.map(n => {
@@ -417,7 +604,7 @@ export default function AppPage() {
           <span style={{ color: text3, fontSize: 10, flexShrink: 0 }}>{isExpanded ? '▾' : '▸'}</span>
         </div>
         {isExpanded && (
-          <div style={{ paddingLeft: 20 }}>
+          <div style={{ marginLeft: 11, paddingLeft: 12, borderLeft: `1px solid ${border}` }}>
             {nb.sheets?.map(sheet => {
               const isActive = activeNotebookId === nb.id && nb.activeSheetId === sheet.id
               const isRenaming = renamingSheetId === sheet.id
@@ -604,25 +791,47 @@ export default function AppPage() {
     addNotebookBlock(activeNotebookId, 'table', x, y, headers, rows)
   }
 
-  const colors = { surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber }
+  // Memoised on `dark` alone. This object is compared by identity inside
+  // SheetGrid's memo() comparator — rebuilding it every render (as this used
+  // to) made that comparison false every time, so every table block
+  // re-rendered on every keystroke anywhere in the app.
+  const colors = useMemo(
+    () => ({ surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber }),
+    [surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber]
+  )
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
 
-      <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleFileChange} />
+      <input ref={fileInputRef} type="file" accept={ACCEPT_EXTS} style={{ display: 'none' }} onChange={handleFileChange} />
+      {/* Separate picker for Add → Image, so the dialog only offers images. */}
+      <input ref={imageInputRef} type="file" accept={IMAGE_EXTS.join(',')} style={{ display: 'none' }}
+        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { setImportError(null); importImage(f) } }} />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: 'var(--ds-font-body)', position: 'relative' }}>
 
         {/* ── Sidebar (floating island) ── */}
-        <div style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: 100, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 14, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)' }}>
+        <div data-kbd-zone style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: 100, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 14, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)' }}>
           <div style={{ padding: '12px 12px 6px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700, color: text, flex: 1 }}>DataStudio</span>
-              <span style={{ fontSize: 8, color: accent, fontFamily: 'var(--ds-font-mono)', fontWeight: 500, padding: '2px 7px', background: accentDim, borderRadius: 4, letterSpacing: 0.8, textTransform: 'uppercase' }}>Beta</span>
             </div>
-            <button className="import-btn" onClick={handleImportClick} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 7, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-              <span style={{ fontSize: 15 }}>+</span> Import File
+            <button className="import-btn" onClick={handleImportClick} disabled={importing} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 7, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, cursor: importing ? 'default' : 'pointer', opacity: importing ? 0.65 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+              {importing ? 'Importing…' : <><span style={{ fontSize: 15 }}>+</span> Import File</>}
             </button>
+
+            {/* Failures are shown, not swallowed. */}
+            {importError && (
+              <div role="alert" style={{ marginTop: 7, padding: '7px 9px', borderRadius: 6, background: 'var(--ds-red-bg)', border: `1px solid ${red}`, color: red, fontSize: 10.5, lineHeight: 1.45 }}>
+                {importError}
+                <button onClick={() => setImportError(null)} style={{ display: 'block', marginTop: 4, background: 'none', border: 'none', color: red, opacity: 0.75, fontSize: 10, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)', textDecoration: 'underline' }}>Dismiss</button>
+              </div>
+            )}
+            {saveError && (
+              <div role="alert" style={{ marginTop: 7, padding: '7px 9px', borderRadius: 6, background: 'var(--ds-amber-bg)', border: `1px solid ${amber}`, color: dark ? amber : '#8a6410', fontSize: 10.5, lineHeight: 1.45 }}>
+                <b>Not saving.</b> {saveError}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
               <button onClick={createFolder}
                 style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 7, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
@@ -676,7 +885,11 @@ export default function AppPage() {
                     </div>
                   </div>
                   {!folder.collapsed && (
-                    <div style={{ paddingLeft: 10 }}>
+                    /* 10px of padding wasn't enough to read as nesting — a
+                       notebook inside a folder sat at almost the same x as one
+                       outside it. Deeper indent plus a guide line down the left
+                       edge, so containment is visible rather than inferred. */
+                    <div style={{ marginLeft: 11, paddingLeft: 12, borderLeft: `1px solid ${border}` }}>
                       {folderFiles.map(file => renderFileInSidebar(file, folder.id))}
                       {folderNotebooks.map(nb => renderNotebookInSidebar(nb, folder.id))}
                       {folderFiles.length === 0 && folderNotebooks.length === 0 && (
@@ -693,8 +906,27 @@ export default function AppPage() {
             {notebooks.filter(n => !folders.some(folder => folder.itemIds.includes(n.id))).map(nb => renderNotebookInSidebar(nb, null))}
 
             {files.length === 0 && notebooks.length <= 1 && folders.length === 0 && (
-              <div style={{ margin: '16px 6px', padding: '14px 12px', borderRadius: 8, border: `1px dashed ${border}`, textAlign: 'center', color: text3, fontSize: 12, lineHeight: 1.7 }}>
-                No files yet.<br /><span style={{ color: text2 }}>Supports .xlsx .xls .csv</span>
+              <div style={{ margin: '16px 6px', padding: '13px 12px', borderRadius: 8, border: `1px dashed ${border}`, color: text3, fontSize: 12, lineHeight: 1.6 }}>
+                <div style={{ textAlign: 'center', color: text2, fontWeight: 600, marginBottom: 10 }}>No files yet</div>
+                {/* Only the verified formats are named. The old copy claimed
+                    just ".xlsx .xls .csv" and undersold the importer; the fix
+                    for that briefly overshot into listing everything SheetJS
+                    can parse, which promised support for 1980s formats nobody
+                    has. This is the tested middle. */}
+                {IMPORT_FORMATS.map(({ group, exts }) => (
+                  <div key={group} style={{ display: 'flex', gap: 7, marginBottom: 5, alignItems: 'baseline' }}>
+                    <span style={{ flexShrink: 0, width: 54, fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase', letterSpacing: 0.5, color: text3, opacity: 0.75 }}>
+                      {group}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 10.5, color: text2, lineHeight: 1.55, wordBreak: 'break-word' }}>
+                      {exts.join(' ')}
+                    </span>
+                  </div>
+                ))}
+                <div title={`Also accepted: ${ALSO_ACCEPTED.join(' ')}`}
+                  style={{ marginTop: 8, paddingTop: 7, borderTop: `1px solid ${border}`, fontSize: 10, color: text3, textAlign: 'center' }}>
+                  + {ALSO_ACCEPTED.length} more accepted
+                </div>
               </div>
             )}
           </div>
@@ -714,21 +946,130 @@ export default function AppPage() {
             </div>
           )}
           <div style={{ padding: '8px 12px 12px', borderTop: `1px solid ${border}` }}>
-            <button onClick={() => setDark(!dark)} style={{ background: 'none', border: 'none', padding: '4px 2px', fontFamily: 'var(--ds-font-body)', fontSize: 12, color: text3, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {dark ? 'Light mode' : 'Dark mode'}
-            </button>
+            {/* Real numbers from navigator.storage.estimate(), not a guess.
+                Storage used to fail silently at ~5MB with nothing on screen. */}
+            {usage && usage.quota > 0 && (
+              <div title={`${formatBytes(usage.usage)} used of about ${formatBytes(usage.quota)} available to this site`}
+                style={{ marginBottom: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 9.5, color: text3, fontFamily: 'var(--ds-font-mono)', marginBottom: 3 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    STORAGE
+                    {/* Whether the browser agreed to protect this data from
+                        eviction. A refusal is worth showing: it means the OS
+                        may reclaim the workspace if the disk fills up. */}
+                    {persisted === true && (
+                      <span title="This browser has agreed to keep your workspace — it won't be evicted to reclaim disk space."
+                        style={{ color: accent, letterSpacing: 0.4 }}>· KEPT</span>
+                    )}
+                    {persisted === false && (
+                      <span title="The browser would not guarantee this storage, so it may be cleared if the disk fills up. Bookmarking or installing the app usually earns the guarantee. Export anything important."
+                        style={{ color: amber, letterSpacing: 0.4, cursor: 'help' }}>· AT RISK</span>
+                    )}
+                  </span>
+                  <span>{formatBytes(usage.usage)}</span>
+                </div>
+                <div style={{ height: 3, borderRadius: 2, background: raised, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', borderRadius: 2,
+                    width: `${Math.min(100, Math.max(1, usage.pct * 100))}%`,
+                    background: usage.pct > 0.9 ? red : usage.pct > 0.6 ? amber : accent,
+                    transition: 'width .4s ease, background .3s ease',
+                  }} />
+                </div>
+              </div>
+            )}
+            {/* The theme toggle moved into Settings — it was the only thing
+                down here besides the meter, and two places to change one
+                setting is one too many. */}
           </div>
         </div>
 
-        {/* ── Profile Island ── */}
-        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 100 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: text2 }}>
-            <span style={{ fontSize: 10, color: text3, fontFamily: 'var(--ds-font-mono)' }}>Free plan</span>
-            <div style={{ width: 1, height: 14, background: border }} />
-            <div style={{ width: 24, height: 24, borderRadius: '50%', background: accentDim, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, color: accent, fontFamily: 'var(--ds-font-body)' }}>
-              {String.fromCodePoint(128100)}
+        {/* ── Settings island ──
+            Was a "Free plan" label next to an emoji avatar: two pieces of
+            chrome that did nothing and implied an account system that doesn't
+            exist. Replaced with the one thing that belongs in the corner of a
+            local-first app — where your data lives and what state it's in. */}
+        <div ref={settingsRef} data-kbd-zone style={{ position: 'absolute', top: 16, right: 16, zIndex: 100 }}>
+          <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${settingsOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: settingsOpen ? accent : text2, cursor: 'pointer' }}>
+            <svg viewBox="0 0 24 24" width={14} height={14} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M19.4 14a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5v.2a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H2.9a2 2 0 010-4H3a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V2.9a2 2 0 014 0V3a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1h.2a2 2 0 010 4H21a1.7 1.7 0 00-1.5 1z" />
+            </svg>
+            Settings
+          </button>
+
+          {settingsOpen && (
+            <div role="dialog" aria-label="Settings"
+              style={{ position: 'absolute', top: '100%', right: 0, marginTop: 8, width: 268, background: surface, border: `1px solid ${border}`, borderRadius: 12, boxShadow: `0 12px 40px ${dark ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.16)'}`, padding: 12, fontFamily: 'var(--ds-font-body)', animation: 'fadeUp 0.15s ease both' }}>
+
+              <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9, textTransform: 'uppercase', color: text3, marginBottom: 7 }}>Appearance</div>
+              <div style={{ display: 'flex', gap: 5, marginBottom: 14 }}>
+                {[['Light', false], ['Dark', true]].map(([lbl, val]) => (
+                  <button key={lbl} onClick={() => setDark(val)}
+                    style={{ flex: 1, padding: '7px 0', borderRadius: 7, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', border: `1.5px solid ${dark === val ? accent : border}`, background: dark === val ? accentDim : 'transparent', color: dark === val ? accent : text2, fontWeight: dark === val ? 650 : 500 }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+
+              {/* Keyboard reference. Same source as the ? overlay
+                  (lib/shortcuts.js), so the two can't disagree. */}
+              <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9, textTransform: 'uppercase', color: text3, marginBottom: 7 }}>Keyboard</div>
+              <button onClick={() => setShowShortcuts(s => !s)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '7px 9px', marginBottom: showShortcuts ? 8 : 14, borderRadius: 7, cursor: 'pointer', border: `1px solid ${showShortcuts ? accent : border}`, background: showShortcuts ? accentDim : 'transparent', color: showShortcuts ? accent : text2, fontFamily: 'var(--ds-font-body)', fontSize: 12 }}>
+                <span style={{ flex: 1, textAlign: 'left' }}>Shortcuts</span>
+                <span style={{ fontSize: 10, fontFamily: 'var(--ds-font-mono)', opacity: 0.8 }}>{showShortcuts ? '▾' : '?'}</span>
+              </button>
+              {showShortcuts && (
+                <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 14, paddingRight: 2 }}>
+                  {SHORTCUT_GROUPS.map(({ title, note, rows }) => (
+                    <div key={title} style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.7, textTransform: 'uppercase', color: text3, marginBottom: note ? 2 : 5 }}>{title}</div>
+                      {note && <div style={{ fontSize: 10, color: text3, marginBottom: 5, lineHeight: 1.4 }}>{note}</div>}
+                      {rows.map(([k, d]) => (
+                        <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '2px 0' }}>
+                          <span style={{ flex: '0 0 96px', fontFamily: 'var(--ds-font-mono)', fontSize: 9.5, color: accent, lineHeight: 1.4 }}>{k}</span>
+                          <span style={{ flex: 1, fontSize: 10.5, color: text2, lineHeight: 1.45 }}>{d}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9, textTransform: 'uppercase', color: text3, marginBottom: 7 }}>Storage</div>
+              <div style={{ fontSize: 11.5, color: text2, lineHeight: 1.6, marginBottom: 8 }}>
+                Everything is stored in this browser. Nothing is uploaded.
+              </div>
+              {usage && (
+                <div style={{ fontSize: 11, color: text2, display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontFamily: 'var(--ds-font-mono)' }}>
+                  <span>{formatBytes(usage.usage)} used</span>
+                  <span style={{ color: text3 }}>of ~{formatBytes(usage.quota)}</span>
+                </div>
+              )}
+              <div style={{ fontSize: 11, marginBottom: 10, lineHeight: 1.5, color: persisted === false ? amber : persisted === true ? accent : text3 }}>
+                {persisted === true && 'Protected — the browser has agreed not to evict it.'}
+                {persisted === false && 'Not protected. The browser may clear this if the disk fills up — export anything important.'}
+                {persisted === null && 'Eviction protection is unavailable in this browser.'}
+              </div>
+
+              <button
+                onClick={async () => {
+                  if (!window.confirm('Delete every notebook, folder and image stored in this browser?\n\nThis cannot be undone, and there is no cloud copy. Export first if you need anything.')) return
+                  await clearState()
+                  await idbClear(STORE_IMAGES)
+                  window.location.reload()
+                }}
+                style={{ width: '100%', padding: '8px 0', borderRadius: 7, border: `1px solid ${border}`, background: 'transparent', color: red, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
+                Delete all local data
+              </button>
+
+              <div style={{ borderTop: `1px solid ${border}`, marginTop: 12, paddingTop: 9, fontSize: 10, color: text3, lineHeight: 1.6, fontFamily: 'var(--ds-font-mono)' }}>
+                DataStudio · local-first
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* ── Main: always the notebook workspace ── */}
@@ -753,6 +1094,7 @@ export default function AppPage() {
                 addNotebookBlock(activeNotebookId, 'table', Math.max(0, x - 160), Math.max(0, y - 20), headers, rows)
                 dragData.current = null
               }}
+              onPickImage={() => imageInputRef.current?.click()}
               onAddDrawing={(drawing) => addNotebookDrawing(activeNotebookId, drawing)}
               onDeleteDrawing={(drawingId) => deleteNotebookDrawing(activeNotebookId, drawingId)}
               onClearDrawings={() => clearNotebookDrawings(activeNotebookId)}
@@ -779,6 +1121,8 @@ export default function AppPage() {
       </div>
 
       <CrosscheckPanel
+        tables={getActiveNotebookSheet()?.blocks?.filter(b => b.type === 'table') || []}
+        onWriteToTable={(id, patch) => updateNotebookBlock(activeNotebookId, id, patch)}
         open={showCCWizard}
         onClose={() => setShowCCWizard(false)}
         sourceColumns={getCrosscheckSourceColumns()}

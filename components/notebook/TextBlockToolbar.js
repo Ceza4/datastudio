@@ -21,7 +21,7 @@ const COLORS = [
   '#f87171', '#a78bfa', '#38bdf8', '#ffffff',
 ]
 
-export default function TextBlockToolbar({ x, y, colors, onClose }) {
+export default function TextBlockToolbar({ colors, onClose }) {
   const { surface, raised, border, text, text2, text3, accent, accentDim } = colors
   const ref = useRef(null)
   const [showFontMenu, setShowFontMenu] = useState(false)
@@ -65,8 +65,8 @@ export default function TextBlockToolbar({ x, y, colors, onClose }) {
     }
   }
 
-  const left = Math.min(Math.max(x - 160, 8), window.innerWidth - 340)
-  const top = Math.min(y + 8, window.innerHeight - 140)
+  /* x/y are still accepted so callers don't have to change, but the rail is
+     docked rather than cursor-positioned, so they're no longer used. */
 
   const btnStyle = {
     background: 'transparent',
@@ -109,16 +109,41 @@ export default function TextBlockToolbar({ x, y, colors, onClose }) {
       ref={ref}
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
+      data-island-rail
+      data-kbd-zone
+      /* Docked as a floating island on the right, matching the sheet and image
+         rails, rather than popping up at the cursor. Three reasons it's better
+         here: it never covers the text you're formatting, it lands in the same
+         place every time so the buttons become muscle memory, and it makes the
+         formatting controls keyboard-reachable through the same Tab-to-toolbar
+         path as every other rail. */
       style={{
-        position: 'fixed', left, top, zIndex: 99999,
-        background: surface, border: `1px solid ${border}`, borderRadius: 10,
-        boxShadow: '0 12px 40px rgba(0,0,0,0.3)', padding: '6px 8px',
+        position: 'fixed', right: 16, top: '50%', transform: 'translateY(-50%)',
+        zIndex: 99999, width: 176,
+        background: `${surface}f2`,
+        backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+        border: `1px solid ${border}`, borderRadius: 12,
+        boxShadow: '0 6px 30px rgba(0,0,0,0.28)', padding: 10,
         fontFamily: 'var(--ds-font-body)',
-        display: 'flex', flexDirection: 'column', gap: 4,
+        display: 'flex', flexDirection: 'column', gap: 6,
+        animation: 'dsRailIn 0.18s cubic-bezier(.34,1.3,.64,1)',
       }}
     >
+      <style>{`
+        @keyframes dsRailIn {
+          from { opacity: 0; transform: translateY(-50%) translateX(8px); }
+          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+        }
+      `}</style>
+      <div style={{
+        fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
+        letterSpacing: 0.9, color: text3, padding: '0 2px 6px',
+        borderBottom: `1px solid ${border}`,
+      }}>
+        Format
+      </div>
       {/* Row 1: Text formatting */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
         <Btn onMouseDown={e => { e.preventDefault(); exec('bold') }} title="Bold"><b style={{ fontSize: 14 }}>B</b></Btn>
         <Btn onMouseDown={e => { e.preventDefault(); exec('italic') }} title="Italic"><i style={{ fontSize: 14 }}>I</i></Btn>
         <Btn onMouseDown={e => { e.preventDefault(); exec('underline') }} title="Underline"><u style={{ fontSize: 14 }}>U</u></Btn>
@@ -166,7 +191,7 @@ export default function TextBlockToolbar({ x, y, colors, onClose }) {
       </div>
 
       {/* Row 2: Structure */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
         <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h1') }} title="Heading 1" style={{ fontWeight: 700, fontFamily: 'var(--ds-font-head)' }}>H1</Btn>
         <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h2') }} title="Heading 2" style={{ fontWeight: 700, fontFamily: 'var(--ds-font-head)' }}>H2</Btn>
         <Btn onMouseDown={e => { e.preventDefault(); exec('formatBlock', 'h3') }} title="Heading 3" style={{ fontWeight: 700, fontFamily: 'var(--ds-font-head)' }}>H3</Btn>

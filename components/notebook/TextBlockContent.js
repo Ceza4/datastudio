@@ -1,7 +1,7 @@
 'use client'
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import TextBlockToolbar from './TextBlockToolbar'
-import SlashMenu from './SlashMenu'
+import SlashMenu, { filterCommands } from './SlashMenu'
 
 /* TextBlockContent — SESSION A (FIXED)
    --------------------------------------------------------------------------
@@ -26,30 +26,73 @@ export default function TextBlockContent({
   onEditStart,
   onEditEnd,
   minHeight = 80,
+  showRail = false,
 }) {
   const ref = useRef(null)
   const savedContent = useRef(initialContent || '')
   const [menuPos, setMenuPos] = useState(null)
+  // { x, y, filter, idx } — idx lives here, not in SlashMenu, because this
+  // component owns the caret and therefore has to own the arrow keys too.
   const [slashMenu, setSlashMenu] = useState(null)
   const [isEmpty, setIsEmpty] = useState(true)
+  // Mirror of slashMenu for the keydown handler. handleKeyDown is attached via
+  // React's synthetic system and reads state from the render closure; during
+  // fast typing that closure can be a frame behind, which previously let a
+  // keystroke slip past the open menu.
+  const slashRef = useRef(null)
+  useEffect(() => { slashRef.current = slashMenu }, [slashMenu])
 
+  /* Dismiss on any click that isn't the menu itself. SlashMenu preventDefaults
+     its own mousedown, so selecting an item never reaches this. */
+  useEffect(() => {
+    if (!slashMenu) return
+    function onDown(e) {
+      if (e.target.closest?.('[role="listbox"]')) return
+      slashRef.current = null
+      setSlashMenu(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [slashMenu])
+
+  /* Scrolling or panning the canvas leaves the menu stranded at stale
+     coordinates, because it's positioned from a caret rect measured once. */
+  useEffect(() => {
+    if (!slashMenu) return
+    function bail() { slashRef.current = null; setSlashMenu(null) }
+    window.addEventListener('wheel', bail, { passive: true })
+    window.addEventListener('resize', bail)
+    return () => {
+      window.removeEventListener('wheel', bail)
+      window.removeEventListener('resize', bail)
+    }
+  }, [slashMenu])
+
+  /* ── Empty detection ────────────────────────────────────── */
+
+  /* Declared before the mount effect that calls it. Function declarations
+     hoist, so the old order worked at runtime, but React's compiler analyses
+     use-before-declare as a real ordering hazard and flagged it. */
+  const checkEmpty = useCallback(() => {
+    if (!ref.current) return
+    const html = ref.current.innerHTML || ''
+    const stripped = html.replace(/<br\s*\/?>/gi, '').replace(/<[^>]*>/g, '').trim()
+    const hasStructure = /<(h[1-6]|ul|ol|li|hr|pre|div\s[^>]*data-type|img)/i.test(html)
+    setIsEmpty(!stripped && !hasStructure)
+  }, [])
+
+  /* Load content when the block identity changes. initialContent is
+     deliberately not a dependency: this is an uncontrolled contentEditable, so
+     re-writing innerHTML on every prop change would fight the user's caret
+     mid-typing. Only a genuinely different block should reload. */
   useEffect(() => {
     if (ref.current) {
       ref.current.innerHTML = initialContent || ''
       savedContent.current = initialContent || ''
       checkEmpty()
     }
-  }, [blockId])
-
-  /* ── Empty detection (fixed) ────────────────────────────── */
-
-  function checkEmpty() {
-    if (!ref.current) return
-    const html = ref.current.innerHTML || ''
-    const stripped = html.replace(/<br\s*\/?>/gi, '').replace(/<[^>]*>/g, '').trim()
-    const hasStructure = /<(h[1-6]|ul|ol|li|hr|pre|div\s[^>]*data-type|img)/i.test(html)
-    setIsEmpty(!stripped && !hasStructure)
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockId, checkEmpty])
 
   function persistContent() {
     if (!ref.current) return
@@ -62,23 +105,55 @@ export default function TextBlockContent({
 
   /* ── Slash menu ─────────────────────────────────────────── */
 
+  function closeSlash() {
+    slashRef.current = null
+    setSlashMenu(null)
+  }
+
   function detectSlash() {
     const sel = window.getSelection()
-    if (!sel?.rangeCount) { setSlashMenu(null); return }
+    if (!sel?.rangeCount) { closeSlash(); return }
 
     const range = sel.getRangeAt(0)
     const node = range.startContainer
-    if (node.nodeType !== Node.TEXT_NODE) { setSlashMenu(null); return }
+    if (node.nodeType !== Node.TEXT_NODE) { closeSlash(); return }
 
     const textBefore = node.textContent.substring(0, range.startOffset)
-    const match = textBefore.match(/(^|\s)\/(\S*)$/)
+    // Allow spaces in the query ("/bullet l") but bail once it's clearly prose.
+    const match = textBefore.match(/(^|\s)\/([^/]{0,20})$/)
 
     if (match) {
+      const filter = match[2]
+      // Nothing matches and the query is getting long — the user is writing a
+      // path or a date, not invoking a command. Get out of the way.
+      if (filter.length > 0 && filterCommands(filter).length === 0) { closeSlash(); return }
       const rect = range.getBoundingClientRect()
-      setSlashMenu({ x: rect.left, y: rect.bottom, filter: match[2] })
+      const next = {
+        x: rect.left, y: rect.bottom, filter,
+        // Reset the highlight whenever the query changes, clamp otherwise.
+        idx: slashRef.current && slashRef.current.filter === filter
+          ? Math.min(slashRef.current.idx, Math.max(0, filterCommands(filter).length - 1))
+          : 0,
+      }
+      slashRef.current = next
+      setSlashMenu(next)
     } else {
-      setSlashMenu(null)
+      closeSlash()
     }
+  }
+
+  function moveSlash(delta) {
+    const cur = slashRef.current
+    if (!cur) return
+    const n = filterCommands(cur.filter).length
+    if (n === 0) return
+    // Wraps, so holding ArrowDown cycles instead of dead-ending. Guard the
+    // arithmetic: an undefined idx would make this NaN and blank the menu.
+    const from = Number.isFinite(cur.idx) ? cur.idx : 0
+    const idx = (((from + delta) % n) + n) % n
+    const next = { ...cur, idx }
+    slashRef.current = next
+    setSlashMenu(next)
   }
 
   function handleSlashSelect(cmdId) {
@@ -104,8 +179,8 @@ export default function TextBlockContent({
       }
     }
 
+    closeSlash()
     applyCommand(cmdId)
-    setSlashMenu(null)
     ref.current?.focus()
     persistContent()
     checkEmpty()
@@ -123,7 +198,12 @@ export default function TextBlockContent({
       case 'checklist': insertChecklist(); break
       case 'divider': insertDivider(); break
       case 'code': insertCodeBlock(); break
+      case 'quote': insertQuote(); break
     }
+  }
+
+  function insertQuote() {
+    document.execCommand('formatBlock', false, 'blockquote')
   }
 
   function insertChecklist() {
@@ -147,6 +227,40 @@ export default function TextBlockContent({
   /* ── Keyboard handler (markdown shortcuts + checklist Enter) ── */
 
   function handleKeyDown(e) {
+    /* Slash menu owns these keys while it's open, and it must claim them
+       before the browser gets a chance to move the caret — moving the caret
+       is what used to break the "/query" match and close the menu.
+       stopPropagation as well as preventDefault, so the canvas keymap
+       underneath doesn't also act on them. */
+    const sm = slashRef.current
+    if (sm) {
+      const n = filterCommands(sm.filter).length
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault(); e.stopPropagation(); moveSlash(1); return
+        case 'ArrowUp':
+          e.preventDefault(); e.stopPropagation(); moveSlash(-1); return
+        case 'Enter':
+        case 'Tab': {
+          if (n === 0) { closeSlash(); return }
+          e.preventDefault(); e.stopPropagation()
+          const cmd = filterCommands(sm.filter)[Math.min(sm.idx, n - 1)]
+          if (cmd) handleSlashSelect(cmd.id)
+          return
+        }
+        case 'Escape':
+          e.preventDefault(); e.stopPropagation(); closeSlash(); return
+        case 'ArrowLeft':
+        case 'ArrowRight':
+          // Horizontal movement is a genuine caret action; let it through and
+          // re-evaluate whether we're still inside a slash query afterwards.
+          setTimeout(detectSlash, 0)
+          return
+        default:
+          break
+      }
+    }
+
     /* Markdown shortcuts: fire BEFORE the space is inserted.
        User types "# " — we catch the space keydown, check that
        the text before cursor is "#", prevent the space, delete
@@ -313,6 +427,8 @@ export default function TextBlockContent({
   }
 
   function handleToolbarClose() {
+    // Only the right-click invocation is dismissable; the always-on rail is
+    // controlled by selection, so closing it here would just make it flicker.
     setMenuPos(null)
     persistContent()
     checkEmpty()
@@ -353,6 +469,11 @@ export default function TextBlockContent({
     }
     [data-ds-text] a { color: #5B5FE8; text-decoration: underline; }
     [data-ds-text] a:hover { opacity: 0.75; }
+    [data-ds-text] blockquote {
+      margin: 10px 0; padding: 4px 0 4px 14px;
+      border-left: 3px solid rgba(128,128,128,0.35);
+      font-style: italic; opacity: 0.9;
+    }
   `
 
   /* ── Render ─────────────────────────────────────────────── */
@@ -416,16 +537,32 @@ export default function TextBlockContent({
           x={slashMenu.x}
           y={slashMenu.y}
           filter={slashMenu.filter}
+          activeIdx={slashMenu.idx}
           colors={colors}
           onSelect={handleSlashSelect}
-          onClose={() => setSlashMenu(null)}
+          /* Guarded. Spreading a null ref here produced `{ idx }` with no
+             x/y/filter — a truthy menu positioned at NaN, i.e. one that
+             vanishes. That's what happened when the list scrolled under a
+             stationary cursor during keyboard looping and fired mouseenter
+             against a ref that had just been cleared. */
+          onHover={i => {
+            const cur = slashRef.current
+            if (!cur) return
+            const next = { ...cur, idx: i }
+            slashRef.current = next
+            setSlashMenu(next)
+          }}
         />
       )}
 
-      {menuPos && colors && (
+      {/* The format rail is shown whenever this text block is the active one,
+          not only after a right-click. A formatting toolbar you have to
+          summon is a toolbar most people never find — and now that it's
+          docked on the right instead of popping up at the cursor, there's no
+          reason to hide it. Right-click still opens it, for anyone used to
+          that. */}
+      {(showRail || menuPos) && colors && (
         <TextBlockToolbar
-          x={menuPos.x}
-          y={menuPos.y}
           colors={colors}
           onClose={handleToolbarClose}
         />

@@ -122,6 +122,36 @@ h1, h2, h3, h4 {
   font-family: var(--ds-font-mono);
 }
 
+/* ── Focus ────────────────────────────────────────────────────────────────
+   The app shipped with zero focus styling, so every keyboard-focused control
+   got the browser default — a black ring in light mode and, worse, a black
+   ring on a near-black surface in dark mode. Now it's the accent colour in
+   both themes.
+
+   :focus-visible rather than :focus, so a mouse click doesn't leave a ring
+   behind but a Tab press does. */
+:focus { outline: none; }
+
+:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+  border-radius: var(--ds-radius-sm);
+}
+
+/* Toolbar buttons sit on a glass island; a plain outline reads thin there, so
+   they get a filled state as well as the ring. */
+.ds-tbtn:focus-visible,
+.ds-btn:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 1px;
+  background: var(--ds-accent-dim);
+  color: var(--ds-accent);
+}
+
+/* The canvas is a focus target in keyboard mode but must not draw a 2px ring
+   around the entire workspace — it uses an inset glow set inline instead. */
+[role='application']:focus-visible { outline: none; }
+
 /* ── Scrollbars ───────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }

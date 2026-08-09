@@ -2,9 +2,40 @@
 
 These features were considered during the polish pass but explicitly NOT built. Each one is documented here so future-Claude (or your collaborator) can pick them up properly when there's time, instead of finding a half-built version and getting confused.
 
-## 1. Image upload (canvas + text blocks)
+## 1. Image upload (canvas + text blocks) — ✅ BUILT
 
-**Why deferred:** This is a feature, not polish. Doing it right requires answering questions polish work shouldn't have to answer.
+**Status: shipped.** The architectural questions below were answered as follows.
+
+- **Storage:** IndexedDB, as recommended. `lib/idb.js` is a ~120-line dependency-free
+  wrapper with two object stores: `state` (one workspace snapshot) and `images`
+  (one Blob per image). Blocks carry only an `imageId`, so autosave never
+  rewrites pixels and loading a workspace doesn't deserialise megabytes to draw
+  a text block. Orphaned image records are pruned after every successful save.
+- **Formats:** PNG, JPEG, WebP, GIF, AVIF, BMP. **SVG is rejected by design** —
+  it's XML and can carry `<script>`, external entities and `foreignObject` HTML.
+- **Max size:** 2MB *after* processing, not 5MB. Hosted competitors cap at 5MB
+  because they have object storage; this has the browser's disk quota. Oversized
+  images are downscaled to fit a 2400px longest edge and re-encoded down a
+  quality ladder rather than being refused.
+- **Validation:** magic bytes, not the extension or the MIME type — both are
+  attacker-controlled. `photo.png` containing HTML is rejected.
+- **Sanitisation:** everything is re-encoded through a canvas, which discards
+  EXIF (including GPS coordinates), colour-profile payloads and any appended
+  polyglot data. The one casualty is animated GIFs, which flatten to one frame.
+- **Text blocks:** images are a separate `ImageBlock`, *not* inlined into
+  contentEditable — the original recommendation, and it avoids the known
+  cursor/selection bugs with inline `<img>`.
+- **Export:** text formats reference the image and carry its alt text rather
+  than embedding bytes. Embedding in DOCX/PPTX is still open.
+
+**Still open:** embedding image bytes into exported Word/PowerPoint files, and
+drag-and-drop of images onto the canvas (import is via the file picker today).
+
+---
+
+## 1b. Original notes, kept for context
+
+**Why it was deferred:** This is a feature, not polish. Doing it right requires answering questions polish work shouldn't have to answer.
 
 **Architectural questions to answer first:**
 - Where do images get stored? Three real options:

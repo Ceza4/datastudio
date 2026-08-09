@@ -61,6 +61,21 @@ const OVERSCAN_C = 2
 const AHEAD_COLS = 6
 const AHEAD_ROWS = 40
 const MAX_HISTORY = 60
+const EMPTY_SIZES = {}   // stable identity, so derived colW/rowH don't churn
+const EMPTY_ROWS = []    // ditto for rows/headers — `x || []` mints a new
+const EMPTY_HEADERS = [] // array every render, invalidating the memos below
+const STATS_CELL_CAP = 50000
+
+/* Compact number formatting for the status bar: keep it readable without
+   letting a long decimal push the aggregates off the edge. */
+function fmtNum(v) {
+  if (!Number.isFinite(v)) return '—'
+  const abs = Math.abs(v)
+  if (abs >= 1e9) return (v / 1e9).toFixed(2) + 'B'
+  if (abs >= 1e6) return (v / 1e6).toFixed(2) + 'M'
+  if (Number.isInteger(v)) return v.toLocaleString()
+  return v.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
 
 function colName(i) {
   let s = ''
@@ -85,8 +100,8 @@ const inR = (r, row, col) => {
 function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef }) {
   const { border, text, text2, text3, accent, accentDim, raised, surface } = colors
 
-  const rows = block.rows || []
-  const headers = block.headers || []
+  const rows = block.rows || EMPTY_ROWS
+  const headers = block.headers || EMPTY_HEADERS
   const nRows = rows.length
   const nCols = headers.length
 
@@ -96,11 +111,20 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const [draft, setDraft] = useState('')
   const [scroll, setScroll] = useState({ top: 0, left: 0 })
   const [viewport, setViewport] = useState({ w: 600, h: maxHeight })
-  // Column widths and row heights live ON THE BLOCK so they persist with the
-  // notebook. Kept in local state during a drag for responsiveness, then
-  // committed on mouse-up rather than on every mousemove.
-  const [colW, setColW] = useState(() => block.colWidths || {})
-  const [rowH, setRowH] = useState(() => block.rowHeights || {})
+  /* Column widths and row heights live ON THE BLOCK so they persist with the
+     notebook. A drag needs to feel instant without writing to notebook state
+     on every mousemove, so it holds a local override that shadows the block
+     value until mouse-up commits it.
+
+     This used to be two pieces of state kept in sync with the block by two
+     effects (`useEffect(() => setColW(block.colWidths || {}), [...])`). That's
+     the classic prop-mirror antipattern: every prop change caused a second
+     render pass, and a commit landing mid-drag could clobber the drag. The
+     override is simply derived instead — null except while dragging. */
+  const [dragColW, setDragColW] = useState(null)
+  const [dragRowH, setDragRowH] = useState(null)
+  const colW = dragColW ?? block.colWidths ?? EMPTY_SIZES
+  const rowH = dragRowH ?? block.rowHeights ?? EMPTY_SIZES
   const [extraCols, setExtraCols] = useState(0)
   const [extraRows, setExtraRows] = useState(0)
   const [menu, setMenu] = useState(null)            // { x, y, r, c }
@@ -110,9 +134,6 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const dragSel = useRef(false)
   const undoStack = useRef([])
   const redoStack = useRef([])
-
-  useEffect(() => { setColW(block.colWidths || {}) }, [block.colWidths])
-  useEffect(() => { setRowH(block.rowHeights || {}) }, [block.rowHeights])
 
   const commitColW = useCallback(m => onUpdateBlock(block.id, { colWidths: m }), [block.id, onUpdateBlock])
   const commitRowH = useCallback(m => onUpdateBlock(block.id, { rowHeights: m }), [block.id, onUpdateBlock])
@@ -178,11 +199,13 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const p = undoStack.current.pop(); if (!p) return
     redoStack.current.push({ rows: block.rows, headers: block.headers })
     setEditing(null); onUpdateBlock(block.id, { rows: p.rows, headers: p.headers })
+    refocus()
   }
   function redo() {
     const n = redoStack.current.pop(); if (!n) return
     undoStack.current.push({ rows: block.rows, headers: block.headers })
     setEditing(null); onUpdateBlock(block.id, { rows: n.rows, headers: n.headers })
+    refocus()
   }
 
   /* ── mutation ─────────────────────────────────────────────────────── */
@@ -192,7 +215,9 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const wantCols = Math.max(nCols, minCols)
     if (wantCols > nCols) {
       hdrs = headers.slice()
-      while (hdrs.length < wantCols) hdrs.push(colName(hdrs.length))
+      // Blank, not the column letter — the grid already renders that above
+      // every header, so filling it in duplicated the label.
+      while (hdrs.length < wantCols) hdrs.push('')
     }
     const tc = hdrs.length
     let next = rows.map(r => (r.length < tc ? r.concat(Array(tc - r.length).fill('')) : r))
@@ -208,55 +233,93 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     onUpdateBlock(block.id, patch)
   }
 
+  /* Materialise the grid out to at least minRows × minCols.
+     ------------------------------------------------------------------
+     The sheet renders further than its data: a table with one real column
+     still shows A through K so there's always somewhere to type. Those extra
+     columns are virtual until written to.
+
+     Every mutator below used to operate on the REAL arrays while taking an
+     index from the VIRTUAL grid. Right-clicking column E on a one-column
+     table called insertCols(4), and `splice(4, 0, …)` on a length-1 array
+     silently clamps to the end — so the new column appeared at B, four
+     columns away from where it was asked for. Same class of bug on rows.
+
+     Padding first means the index always refers to something real, and insert
+     lands exactly where the user pointed. */
+  function materialise(minRows, minCols) {
+    const hdrs = headers.slice()
+    while (hdrs.length < minCols) hdrs.push('')
+    const width = Math.max(hdrs.length, 1)
+    const out = rows.map(r => (r.length < width ? r.concat(Array(width - r.length).fill('')) : r.slice()))
+    while (out.length < minRows) out.push(Array(width).fill(''))
+    return { hdrs, rows: out }
+  }
+
   function insertRows(at, count = 1) {
     snapshot()
-    const tc = Math.max(nCols, 1)
-    const next = rows.slice()
-    for (let i = 0; i < count; i++) next.splice(at, 0, Array(tc).fill(''))
-    onUpdateBlock(block.id, { rows: next })
+    const { hdrs, rows: base } = materialise(at, nCols)
+    const width = Math.max(hdrs.length, 1)
+    for (let i = 0; i < count; i++) base.splice(at, 0, Array(width).fill(''))
+    onUpdateBlock(block.id, { headers: hdrs, rows: base })
   }
+
   function deleteRows(from, to) {
+    // Deleting virtual rows is a no-op — there's nothing there to remove.
+    if (from >= nRows) return
     snapshot()
     const next = rows.slice()
-    next.splice(from, to - from + 1)
+    next.splice(from, Math.min(to, nRows - 1) - from + 1)
     onUpdateBlock(block.id, { rows: next.length ? next : [Array(Math.max(nCols, 1)).fill('')] })
   }
+
   function duplicateRows(from, to) {
+    if (from >= nRows) return
     snapshot()
+    const hi = Math.min(to, nRows - 1)
     const next = rows.slice()
-    const copy = rows.slice(from, to + 1).map(r => r.slice())
-    next.splice(to + 1, 0, ...copy)
+    const copy = rows.slice(from, hi + 1).map(r => r.slice())
+    next.splice(hi + 1, 0, ...copy)
     onUpdateBlock(block.id, { rows: next })
   }
+
   function insertCols(at, count = 1) {
     snapshot()
-    const hdrs = headers.slice()
-    for (let i = 0; i < count; i++) hdrs.splice(at, 0, colName(hdrs.length))
-    const next = rows.map(r => {
+    const { hdrs, rows: base } = materialise(nRows, at)
+    for (let i = 0; i < count; i++) hdrs.splice(at, 0, '')
+    const next = base.map(r => {
       const row = r.slice()
       for (let i = 0; i < count; i++) row.splice(at, 0, '')
       return row
     })
     onUpdateBlock(block.id, { headers: hdrs, rows: next })
   }
+
   function deleteCols(from, to) {
+    if (from >= nCols) return
     snapshot()
-    const hdrs = headers.slice(); hdrs.splice(from, to - from + 1)
-    const next = rows.map(r => { const row = r.slice(); row.splice(from, to - from + 1); return row })
+    const hi = Math.min(to, nCols - 1)
+    const hdrs = headers.slice(); hdrs.splice(from, hi - from + 1)
+    const next = rows.map(r => { const row = r.slice(); row.splice(from, hi - from + 1); return row })
     onUpdateBlock(block.id, {
-      headers: hdrs.length ? hdrs : ['A'],
+      headers: hdrs.length ? hdrs : [''],
       rows: hdrs.length ? next : rows.map(() => ['']),
     })
   }
-  function renameHeader(ci, value) {
-    snapshot()
-    const hdrs = headers.slice()
-    while (hdrs.length <= ci) hdrs.push(colName(hdrs.length))
-    hdrs[ci] = value
-    const tc = hdrs.length
-    const next = rows.map(r => (r.length < tc ? r.concat(Array(tc - r.length).fill('')) : r))
-    onUpdateBlock(block.id, { headers: hdrs, rows: next })
-  }
+  /* Committing an edit unmounts the <input>. Focus then falls back to
+     document.body, which is why typing stopped after every Enter and why
+     Ctrl+Z appeared broken — the keydown handler lives on the scroll
+     container, and nothing was focused to deliver keys to it. Every exit path
+     out of edit mode now hands focus back to the grid. */
+  const refocus = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // Synchronous focus would land before React removes the input, and the
+    // unmounting input's blur would immediately steal it back.
+    requestAnimationFrame(() => {
+      if (document.activeElement !== el) el.focus({ preventScroll: true })
+    })
+  }, [])
 
   function commitEdit(value, move) {
     if (!editing) return
@@ -265,7 +328,13 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       writeCells([{ r, c, v: value }], r + 1, c + 1)
     }
     setEditing(null)
+    refocus()
     if (move) moveTo(r + move.dr, c + move.dc)
+  }
+
+  function cancelEdit() {
+    setEditing(null)
+    refocus()
   }
 
   function clearSelection() {
@@ -336,6 +405,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
 
     if (meta && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
     if (meta && k === 'y') { e.preventDefault(); redo(); return }
+    if (meta && k === 'd') { e.preventDefault(); fillDown(); return }
     if (meta && k === 'a') {
       e.preventDefault(); setRanges([])
       setSel({ r1: 0, c1: 0, r2: Math.max(nRows - 1, 0), c2: Math.max(nCols - 1, 0) })
@@ -349,7 +419,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       case 'ArrowRight': e.preventDefault(); meta ? jump(0, 1, ext)  : moveTo(r, c + 1, ext); return
       case 'Tab':        e.preventDefault(); moveTo(r, c + (ext ? -1 : 1)); return
       case 'Enter':      e.preventDefault(); moveTo(r + (ext ? -1 : 1), c); return
-      case 'F2':         e.preventDefault(); beginEdit(r, c, cellAt(r, c)); return
+      case 'F2':         e.preventDefault(); beginEdit(r, c, cellAt(r, c), 'edit'); return
       case 'Home':       e.preventDefault(); meta ? moveTo(0, 0, ext) : moveTo(r, 0, ext); return
       case 'End': {
         e.preventDefault()
@@ -361,13 +431,33 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       case 'PageUp':     e.preventDefault(); moveTo(r - Math.floor(viewport.h / ROW_H), c, ext); return
       case 'Delete':
       case 'Backspace':  e.preventDefault(); clearSelection(); return
-      case 'Escape':     setEditing(null); setRanges([]); return
+      case 'Escape':     cancelEdit(); setRanges([]); return
       default: break
     }
-    if (!meta && !e.altKey && e.key.length === 1) { e.preventDefault(); beginEdit(r, c, e.key) }
+    if (!meta && !e.altKey && e.key.length === 1) { e.preventDefault(); beginEdit(r, c, e.key, 'type') }
   }
 
-  function beginEdit(r, c, initial) { setDraft(initial); setEditing({ r, c }) }
+  /* Excel distinguishes two states. "type" mode is entered by typing over a
+     cell: arrow keys commit and move, because you're still navigating. "edit"
+     mode is entered with F2 or a double-click: arrows move the caret inside
+     the text. Conflating the two is why arrow keys felt wrong mid-entry. */
+  function beginEdit(r, c, initial, kind = 'edit') {
+    setDraft(initial)
+    setEditing({ r, c, kind })
+  }
+
+  /* Ctrl+D — fill the selection down from its top row. One of the handful of
+     Excel shortcuts people reach for without thinking. */
+  function fillDown() {
+    const m = normR(sel)
+    if (m.r2 <= m.r1) return
+    const edits = []
+    for (let c = m.c1; c <= m.c2; c++) {
+      const src = cellAt(m.r1, c)
+      for (let r = m.r1 + 1; r <= m.r2; r++) edits.push({ r, c, v: src })
+    }
+    if (edits.length) writeCells(edits, m.r2 + 1, m.c2 + 1)
+  }
 
   /* ── clipboard ────────────────────────────────────────────────────── */
   function onCopy(e) {
@@ -404,40 +494,43 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   function startColResize(e, ci) {
     e.preventDefault(); e.stopPropagation()
     const sx = e.clientX, sw = widthOf(ci)
-    let latest = colW
-    const move = ev => setColW(p => {
-      latest = { ...p, [ci]: Math.max(MIN_COL_W, sw + ev.clientX - sx) }
-      return latest
-    })
+    const start = colW
+    let latest = start
+    const move = ev => {
+      latest = { ...start, [ci]: Math.max(MIN_COL_W, sw + ev.clientX - sx) }
+      setDragColW(latest)
+    }
     const up = () => {
       window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
       commitColW(latest)
+      setDragColW(null)   // block value takes over again
     }
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
   }
   function startRowResize(e, ri) {
     e.preventDefault(); e.stopPropagation()
     const sy = e.clientY, sh = heightOf(ri)
-    let latest = rowH
-    const move = ev => setRowH(p => {
-      latest = { ...p, [ri]: Math.max(MIN_ROW_H, sh + ev.clientY - sy) }
-      return latest
-    })
+    const start = rowH
+    let latest = start
+    const move = ev => {
+      latest = { ...start, [ri]: Math.max(MIN_ROW_H, sh + ev.clientY - sy) }
+      setDragRowH(latest)
+    }
     const up = () => {
       window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
       commitRowH(latest)
+      setDragRowH(null)
     }
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
   }
   function autoFitCol(ci) {
     let longest = String(headerLabel(ci) || '').length
     for (let r = 0; r < nRows; r++) longest = Math.max(longest, cellAt(r, ci).length)
-    const next = { ...colW, [ci]: Math.max(MIN_COL_W, Math.min(460, longest * 7.4 + 26)) }
-    setColW(next); commitColW(next)
+    commitColW({ ...colW, [ci]: Math.max(MIN_COL_W, Math.min(460, longest * 7.4 + 26)) })
   }
   function autoFitRow(ri) {
     const next = { ...rowH }; delete next[ri]
-    setRowH(next); commitRowH(next)
+    commitRowH(next)
   }
 
   /* ── selection helpers ────────────────────────────────────────────── */
@@ -480,6 +573,30 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const n = normR(sel)
   const cur = { r: sel.r2, c: sel.c2 }
 
+  /* Live aggregates over the selection, for the status bar. Capped so that
+     Ctrl+A on a 200k-row import can't stall a render — past the cap we still
+     report the cell count, just not the maths. */
+  const stats = useMemo(() => {
+    const m = normR(sel)
+    const cells = (m.r2 - m.r1 + 1) * (m.c2 - m.c1 + 1)
+    let sum = 0, count = 0
+    if (cells > 1 && cells <= STATS_CELL_CAP) {
+      const rMax = Math.min(m.r2, nRows - 1)
+      const cMax = Math.min(m.c2, nCols - 1)
+      for (let r = m.r1; r <= rMax; r++) {
+        const row = rows[r]
+        if (!row) continue
+        for (let c = m.c1; c <= cMax; c++) {
+          const raw = row[c]
+          if (raw == null || raw === '') continue
+          const num = Number(String(raw).replace(/[\s,]/g, ''))
+          if (Number.isFinite(num)) { sum += num; count++ }
+        }
+      }
+    }
+    return { cells, sum, count }
+  }, [sel, rows, nRows, nCols])
+
   const headBase = {
     boxSizing: 'border-box', background: raised,
     borderRight: `1px solid ${border}`, borderBottom: `1px solid ${border}`,
@@ -494,21 +611,47 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     setMenu({ x: e.clientX, y: e.clientY, r, c })
   }
 
+  /* Menu items are plain data — a label and an action name — rather than
+     closures. Building closures here put a path from render to the undo
+     stack's ref (menuItems → fillDown → writeCells → snapshot →
+     undoStack.current), which React's lint correctly flags: anything
+     reachable during render must not read a ref. Dispatch happens in the
+     click handler below, where reading refs is legal. */
   const menuItems = menu ? (() => {
     const m = normR(sel)
+    const multiR = m.r2 > m.r1 ? 's' : ''
+    const multiC = m.c2 > m.c1 ? 's' : ''
     return [
-      { label: 'Insert row above', fn: () => insertRows(m.r1, 1) },
-      { label: 'Insert row below', fn: () => insertRows(m.r2 + 1, 1) },
-      { label: `Duplicate row${m.r2 > m.r1 ? 's' : ''}`, fn: () => duplicateRows(m.r1, Math.min(m.r2, nRows - 1)) },
-      { label: `Delete row${m.r2 > m.r1 ? 's' : ''}`, fn: () => deleteRows(m.r1, Math.min(m.r2, nRows - 1)), danger: true },
+      { label: 'Insert row above', act: 'rowAbove' },
+      { label: 'Insert row below', act: 'rowBelow' },
+      { label: `Duplicate row${multiR}`, act: 'rowDup' },
+      { label: `Delete row${multiR}`, act: 'rowDel', danger: true },
       { sep: true },
-      { label: 'Insert column left', fn: () => insertCols(m.c1, 1) },
-      { label: 'Insert column right', fn: () => insertCols(m.c2 + 1, 1) },
-      { label: `Delete column${m.c2 > m.c1 ? 's' : ''}`, fn: () => deleteCols(m.c1, Math.min(m.c2, nCols - 1)), danger: true },
+      { label: 'Insert column left', act: 'colLeft' },
+      { label: 'Insert column right', act: 'colRight' },
+      { label: `Delete column${multiC}`, act: 'colDel', danger: true },
       { sep: true },
-      { label: 'Clear contents', fn: clearSelection },
+      { label: 'Fill down', act: 'fillDown' },
+      { label: 'Clear contents', act: 'clear' },
     ]
   })() : []
+
+  function runMenuAction(act) {
+    const m = normR(sel)
+    switch (act) {
+      case 'rowAbove':  insertRows(m.r1, 1); break
+      case 'rowBelow':  insertRows(m.r2 + 1, 1); break
+      case 'rowDup':    duplicateRows(m.r1, Math.min(m.r2, nRows - 1)); break
+      case 'rowDel':    deleteRows(m.r1, Math.min(m.r2, nRows - 1)); break
+      case 'colLeft':   insertCols(m.c1, 1); break
+      case 'colRight':  insertCols(m.c2 + 1, 1); break
+      case 'colDel':    deleteCols(m.c1, Math.min(m.c2, nCols - 1)); break
+      case 'fillDown':  fillDown(); break
+      case 'clear':     clearSelection(); break
+      default: break
+    }
+    refocus()
+  }
 
   return (
     <div style={{ height: maxHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: surface }}>
@@ -551,12 +694,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                   }}
                   title={label || colName(c)}
                   onMouseDown={ev => { ev.preventDefault(); setRanges([]); setSel({ r1: 0, c1: c, r2: Math.max(displayRows - 1, 0), c2: c }) }}
-                  onContextMenu={ev => ctxMenu(ev, 0, c)}
-                  onDoubleClick={ev => {
-                    ev.stopPropagation()
-                    const v = window.prompt('Column name', label || colName(c))
-                    if (v != null) renameHeader(c, v)
-                  }}>
+                  onContextMenu={ev => ctxMenu(ev, 0, c)}>
                   <span style={{ fontSize: 9, lineHeight: '10px', color: active ? accent : text3, fontWeight: 600, opacity: 0.7 }}>
                     {colName(c)}
                   </span>
@@ -624,9 +762,15 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                     onBlur={() => commitEdit(draft, null)}
                     onKeyDown={ev => {
                       ev.stopPropagation()
+                      const m = ev.ctrlKey || ev.metaKey
                       if (ev.key === 'Enter') { ev.preventDefault(); commitEdit(draft, { dr: ev.shiftKey ? -1 : 1, dc: 0 }) }
                       else if (ev.key === 'Tab') { ev.preventDefault(); commitEdit(draft, { dr: 0, dc: ev.shiftKey ? -1 : 1 }) }
-                      else if (ev.key === 'Escape') { ev.preventDefault(); setEditing(null) }
+                      else if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit() }
+                      // Undo mid-edit abandons the edit rather than typing into it.
+                      else if (m && ev.key.toLowerCase() === 'z') { ev.preventDefault(); cancelEdit() }
+                      // In type mode the arrows are still navigation, as in Excel.
+                      else if (editing.kind === 'type' && ev.key === 'ArrowDown') { ev.preventDefault(); commitEdit(draft, { dr: 1, dc: 0 }) }
+                      else if (editing.kind === 'type' && ev.key === 'ArrowUp') { ev.preventDefault(); commitEdit(draft, { dr: -1, dc: 0 }) }
                     }}
                     style={{
                       position: 'absolute', left: colOff[c] - 1, top: rowOff[r] - 1,
@@ -662,18 +806,33 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
         </div>
       </div>
 
-      {/* status bar */}
+      {/* Status bar.
+          Was: a cell ref, a "2104 × 4" dimension glyph, then a long trailing
+          string of shortcut hints strung together with · and ⌘ symbols. It
+          read as decoration, cost a third of the bar's width, and told a
+          returning user nothing they didn't already know.
+          Now: labelled facts on the left, and — like Excel — live aggregates
+          for the current selection on the right, which is the thing you
+          actually want a status bar for. */}
       <div style={{
-        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10, height: 20, padding: '0 8px',
+        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14, height: 22, padding: '0 10px',
         background: raised, borderTop: `1px solid ${border}`,
         fontFamily: 'var(--ds-font-body)', fontSize: 10.5,
-        fontVariantNumeric: 'tabular-nums', color: text3,
+        fontVariantNumeric: 'tabular-nums', color: text3, userSelect: 'none',
       }}>
-        <span style={{ color: accent, fontWeight: 700 }}>{colName(cur.c)}{cur.r + 1}</span>
-        <span>{nRows.toLocaleString()} × {nCols}</span>
-        {(n.r1 !== n.r2 || n.c1 !== n.c2) && <span>{(n.r2 - n.r1 + 1) * (n.c2 - n.c1 + 1)} cells</span>}
-        {ranges.length > 0 && <span>+{ranges.length} range{ranges.length > 1 ? 's' : ''}</span>}
-        <span style={{ marginLeft: 'auto', opacity: 0.7 }}>Right-click for row &amp; column actions</span>
+        <span style={{ color: accent, fontWeight: 700, minWidth: 34 }}>{colName(cur.c)}{cur.r + 1}</span>
+        <span>{nRows.toLocaleString()} rows</span>
+        <span>{nCols} cols</span>
+        {stats.cells > 1 && <span>{stats.cells.toLocaleString()} selected</span>}
+        {ranges.length > 0 && <span>{ranges.length + 1} ranges</span>}
+
+        {stats.count > 0 && (
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 14 }}>
+            <span>Sum <b style={{ color: text2, fontWeight: 600 }}>{fmtNum(stats.sum)}</b></span>
+            <span>Avg <b style={{ color: text2, fontWeight: 600 }}>{fmtNum(stats.sum / stats.count)}</b></span>
+            <span>Count <b style={{ color: text2, fontWeight: 600 }}>{stats.count.toLocaleString()}</b></span>
+          </span>
+        )}
       </div>
 
       {/* context menu */}
@@ -689,7 +848,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
             ? <div key={i} style={{ height: 1, background: border, margin: '4px 0' }} />
             : (
               <button key={i}
-                onClick={() => { it.fn(); setMenu(null) }}
+                onClick={() => { runMenuAction(it.act); setMenu(null) }}
                 style={{
                   display: 'block', width: '100%', textAlign: 'left', padding: '7px 14px',
                   background: 'none', border: 'none', cursor: 'pointer',
