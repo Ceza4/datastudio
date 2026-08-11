@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../../components/ui/Icon'
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useTheme } from '../providers'
 import * as XLSX from 'xlsx'
@@ -594,14 +595,14 @@ export default function AppPage() {
                 title="Remove from folder"
                 style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3 }}
                 onMouseEnter={e => e.currentTarget.style.color = accent}
-                onMouseLeave={e => e.currentTarget.style.color = text3}>↑</button>
+                onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-move-out" size={11} /></button>
             )}
             <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${nb.name}"?`)) deleteNotebook(nb.id) }}
               style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3 }}
               onMouseEnter={e => e.currentTarget.style.color = red}
-              onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+              onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-delete" size={11} /></button>
           </div>
-          <span style={{ color: text3, fontSize: 10, flexShrink: 0 }}>{isExpanded ? '▾' : '▸'}</span>
+          <Icon name={isExpanded ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} style={{ color: text3, flexShrink: 0 }} />
         </div>
         {isExpanded && (
           <div style={{ marginLeft: 11, paddingLeft: 12, borderLeft: `1px solid ${border}` }}>
@@ -629,12 +630,12 @@ export default function AppPage() {
                   ) : (
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
                   )}
-                  {isActive && !isRenaming && <span style={{ fontSize: 9, color: accent }}>✓</span>}
+                  {isActive && !isRenaming && <Icon name="action-check" size={11} style={{ color: accent }} />}
                   {!isRenaming && nb.sheets.length > 1 && (
                     <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete sheet "${sheet.name}"?`)) deleteNotebookSheet(nb.id, sheet.id) }}
                       style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0.35, flexShrink: 0 }}
                       onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
-                      onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0.35' }}>✕</button>
+                      onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0.35' }}><Icon name="action-delete" size={10} /></button>
                   )}
                 </div>
               )
@@ -643,7 +644,7 @@ export default function AppPage() {
               style={{ padding: '3px 8px', border: 'none', background: 'none', color: text3, fontSize: 10, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}
               onMouseEnter={e => e.currentTarget.style.color = accent}
               onMouseLeave={e => e.currentTarget.style.color = text3}>
-              + New Sheet
+              <Icon name="action-add" size={11} /> New Sheet
             </button>
           </div>
         )}
@@ -709,23 +710,23 @@ export default function AppPage() {
             style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3, opacity: 0, flexShrink: 0 }}
             className="col-actions"
             onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
-            onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0' }}>✕</button>
+            onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0' }}><Icon name="action-delete" size={11} /></button>
 
           {folderId && (
             <button onClick={e => { e.stopPropagation(); removeFromFolder(file.id, folderId) }}
               title="Remove from folder"
               style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0 }}
               onMouseEnter={e => e.currentTarget.style.opacity = '1'}
-              onMouseLeave={e => e.currentTarget.style.opacity = '0'}>↑</button>
+              onMouseLeave={e => e.currentTarget.style.opacity = '0'}><Icon name="action-move-out" size={10} /></button>
           )}
-          <span style={{ color: text3, fontSize: 10, flexShrink: 0 }}>{expandedFiles.has(file.id) ? '▾' : '▸'}</span>
+          <Icon name={expandedFiles.has(file.id) ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} style={{ color: text3, flexShrink: 0 }} />
         </div>
         {expandedFiles.has(file.id) && file.sheets[0] && (
           <>
             {selectedSidebarCols.length > 1 && (
               <div style={{ padding: '4px 8px 6px 24px' }}>
                 <button onClick={() => { const colInfos = selectedSidebarCols.map(id => { const col = file.sheets[0].headers.find(h => h.id === id); return col ? { fileId: file.id, fileName: file.name, sheetName: file.sheets[0].name, col } : null }).filter(Boolean); addColumnsToNotebook(colInfos) }} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accent, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontWeight: 600 }}>
-                  + Add {selectedSidebarCols.length} to notebook
+                  <Icon name="action-add" size={11} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Add {selectedSidebarCols.length} to notebook
                 </button>
               </div>
             )}
@@ -740,8 +741,8 @@ export default function AppPage() {
                   <span title={col.label} style={{ flex: 1, fontSize: 12, color: isSelected ? accent : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
                   <span style={{ fontSize: 9, color: text3 }}>{file.sheets[0].rows.length}</span>
                   <div className="col-actions">
-                    <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} onClick={e => { e.stopPropagation(); hideColumn(file.id, file.sheets[0].name, col.id) }}>◌</button>
-                    <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} onClick={e => { e.stopPropagation(); deleteColumn(file.id, file.sheets[0].name, col.id) }}>✕</button>
+                    <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Hide column" aria-label="Hide column" onClick={e => { e.stopPropagation(); hideColumn(file.id, file.sheets[0].name, col.id) }}><Icon name="status-empty" size={11} /></button>
+                    <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Delete column" aria-label="Delete column" onClick={e => { e.stopPropagation(); deleteColumn(file.id, file.sheets[0].name, col.id) }}><Icon name="action-delete" size={11} /></button>
                   </div>
                 </div>
               )
@@ -814,22 +815,31 @@ export default function AppPage() {
         <div data-kbd-zone style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: 100, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 14, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)' }}>
           <div style={{ padding: '12px 12px 6px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <Icon name="app-logo" size={17} style={{ color: accent, flexShrink: 0 }} />
               <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700, color: text, flex: 1 }}>DataStudio</span>
             </div>
             <button className="import-btn" onClick={handleImportClick} disabled={importing} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 7, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, cursor: importing ? 'default' : 'pointer', opacity: importing ? 0.65 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-              {importing ? 'Importing…' : <><span style={{ fontSize: 15 }}>+</span> Import File</>}
+              {importing
+                ? <><Icon name="status-spinner" size={14} /> Importing…</>
+                : <><Icon name="action-import" size={14} /> Import File</>}
             </button>
 
             {/* Failures are shown, not swallowed. */}
             {importError && (
               <div role="alert" style={{ marginTop: 7, padding: '7px 9px', borderRadius: 6, background: 'var(--ds-red-bg)', border: `1px solid ${red}`, color: red, fontSize: 10.5, lineHeight: 1.45 }}>
-                {importError}
+                <span style={{ display: 'flex', gap: 6 }}>
+                  <Icon name="status-error" size={13} style={{ marginTop: 1 }} />
+                  <span>{importError}</span>
+                </span>
                 <button onClick={() => setImportError(null)} style={{ display: 'block', marginTop: 4, background: 'none', border: 'none', color: red, opacity: 0.75, fontSize: 10, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)', textDecoration: 'underline' }}>Dismiss</button>
               </div>
             )}
             {saveError && (
               <div role="alert" style={{ marginTop: 7, padding: '7px 9px', borderRadius: 6, background: 'var(--ds-amber-bg)', border: `1px solid ${amber}`, color: dark ? amber : '#8a6410', fontSize: 10.5, lineHeight: 1.45 }}>
-                <b>Not saving.</b> {saveError}
+                <span style={{ display: 'flex', gap: 6 }}>
+                  <Icon name="status-warning" size={13} style={{ marginTop: 1 }} />
+                  <span><b>Not saving.</b> {saveError}</span>
+                </span>
               </div>
             )}
             <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
@@ -837,13 +847,13 @@ export default function AppPage() {
                 style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 7, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
-                Folder
+                <Icon name="nav-folder" size={13} /> Folder
               </button>
               <button onClick={createNotebook}
                 style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 7, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
-                Notebook
+                <Icon name="nav-notebook" size={13} /> Notebook
               </button>
             </div>
           </div>
@@ -861,7 +871,10 @@ export default function AppPage() {
                     onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFolderDragOver(null) }}
                     onDrop={e => { e.preventDefault(); if (sidebarItemDrag) { moveToFolder(sidebarItemDrag.itemId, folder.id); setSidebarItemDrag(null); setFolderDragOver(null) } }}
                     style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 6px', borderRadius: 6, border: isDragOver ? `1px solid ${accent}` : '1px solid transparent', background: isDragOver ? accentDim : 'transparent' }}>
-                    <span onClick={() => toggleFolder(folder.id)} style={{ fontSize: 9, color: text3, cursor: 'pointer', flexShrink: 0, width: 10 }}>{folder.collapsed ? '▸' : '▾'}</span>
+                    <span onClick={() => toggleFolder(folder.id)} style={{ display: 'flex', color: text3, cursor: 'pointer', flexShrink: 0 }}>
+                      <Icon name={folder.collapsed ? 'nav-chevron-right' : 'nav-chevron-down'} size={11} />
+                    </span>
+                    <Icon name={folder.collapsed ? 'nav-folder' : 'nav-folder-open'} size={13} style={{ color: text3, flexShrink: 0 }} />
                     
                     {renamingFolderId === folder.id ? (
                       <input autoFocus value={renamingFolderLabel}
@@ -877,11 +890,11 @@ export default function AppPage() {
                       <button onClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); setRenamingFolderLabel(folder.name) }}
                         style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '1px 3px', borderRadius: 3, lineHeight: 1 }}
                         onMouseEnter={e => e.currentTarget.style.color = accent}
-                        onMouseLeave={e => e.currentTarget.style.color = text3}>✎</button>
+                        onMouseLeave={e => e.currentTarget.style.color = text3} aria-label="Rename folder"><Icon name="action-rename" size={11} /></button>
                       <button onClick={e => { e.stopPropagation(); deleteFolder(folder.id) }}
                         style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '1px 3px', borderRadius: 3, lineHeight: 1 }}
                         onMouseEnter={e => e.currentTarget.style.color = red}
-                        onMouseLeave={e => e.currentTarget.style.color = text3}>✕</button>
+                        onMouseLeave={e => e.currentTarget.style.color = text3} aria-label="Delete folder"><Icon name="action-delete" size={11} /></button>
                     </div>
                   </div>
                   {!folder.collapsed && (
@@ -925,7 +938,7 @@ export default function AppPage() {
                 ))}
                 <div title={`Also accepted: ${ALSO_ACCEPTED.join(' ')}`}
                   style={{ marginTop: 8, paddingTop: 7, borderTop: `1px solid ${border}`, fontSize: 10, color: text3, textAlign: 'center' }}>
-                  + {ALSO_ACCEPTED.length} more accepted
+                  <Icon name="action-add" size={10} style={{ display: 'inline-block', verticalAlign: '-1px', marginRight: 2 }} />{ALSO_ACCEPTED.length} more accepted
                 </div>
               </div>
             )}
@@ -934,13 +947,13 @@ export default function AppPage() {
           {allHiddenCols.length > 0 && (
             <div style={{ borderTop: `1px solid ${border}`, padding: '8px 10px' }}>
               <button onClick={() => setShowHidden(!showHidden)} style={{ background: 'none', border: 'none', cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontFamily: 'var(--ds-font-body)', fontSize: 11, color: text3 }}>
-                <span style={{ fontSize: 10 }}>{showHidden ? '▾' : '▸'}</span> Hidden ({allHiddenCols.length})
+                <Icon name={showHidden ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} /> Hidden ({allHiddenCols.length})
               </button>
               {showHidden && allHiddenCols.map(({ fileId, sheetName, col }) => (
                 <div key={col.id} style={{ padding: '4px 4px 4px 16px', display: 'flex', alignItems: 'center', gap: 5 }}>
                   <div style={{ width: 6, height: 6, borderRadius: 2, background: border, flexShrink: 0 }} />
                   <span title={col.label} style={{ flex: 1, fontSize: 11, color: text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through' }}>{col.label}</span>
-                  <button onClick={() => restoreColumn(fileId, sheetName, col.id)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', color: accent, fontSize: 11, padding: '2px 6px', fontFamily: 'var(--ds-font-body)' }}>↩</button>
+                  <button onClick={() => restoreColumn(fileId, sheetName, col.id)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', color: accent, fontSize: 11, padding: '2px 6px', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center' }} title="Restore column" aria-label="Restore column"><Icon name="action-move-out" size={11} /></button>
                 </div>
               ))}
             </div>
@@ -953,6 +966,7 @@ export default function AppPage() {
                 style={{ marginBottom: 8 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 9.5, color: text3, fontFamily: 'var(--ds-font-mono)', marginBottom: 3 }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Icon name="storage-drive" size={11} />
                     STORAGE
                     {/* Whether the browser agreed to protect this data from
                         eviction. A refusal is worth showing: it means the OS
@@ -992,10 +1006,7 @@ export default function AppPage() {
         <div ref={settingsRef} data-kbd-zone style={{ position: 'absolute', top: 16, right: 16, zIndex: 100 }}>
           <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen}
             style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${settingsOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: settingsOpen ? accent : text2, cursor: 'pointer' }}>
-            <svg viewBox="0 0 24 24" width={14} height={14} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3.2" />
-              <path d="M19.4 14a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5v.2a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H2.9a2 2 0 010-4H3a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V2.9a2 2 0 014 0V3a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1h.2a2 2 0 010 4H21a1.7 1.7 0 00-1.5 1z" />
-            </svg>
+            <Icon name="settings-gear" size={14} />
             Settings
           </button>
 
@@ -1019,7 +1030,9 @@ export default function AppPage() {
               <button onClick={() => setShowShortcuts(s => !s)}
                 style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '7px 9px', marginBottom: showShortcuts ? 8 : 14, borderRadius: 7, cursor: 'pointer', border: `1px solid ${showShortcuts ? accent : border}`, background: showShortcuts ? accentDim : 'transparent', color: showShortcuts ? accent : text2, fontFamily: 'var(--ds-font-body)', fontSize: 12 }}>
                 <span style={{ flex: 1, textAlign: 'left' }}>Shortcuts</span>
-                <span style={{ fontSize: 10, fontFamily: 'var(--ds-font-mono)', opacity: 0.8 }}>{showShortcuts ? '▾' : '?'}</span>
+                {showShortcuts
+                  ? <Icon name="nav-chevron-down" size={11} style={{ opacity: 0.8 }} />
+                  : <span style={{ fontSize: 10, fontFamily: 'var(--ds-font-mono)', opacity: 0.8 }}>?</span>}
               </button>
               {showShortcuts && (
                 <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 14, paddingRight: 2 }}>

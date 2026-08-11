@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 
 /* SheetGrid — the spreadsheet inside a notebook table block.
@@ -622,17 +623,17 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const multiR = m.r2 > m.r1 ? 's' : ''
     const multiC = m.c2 > m.c1 ? 's' : ''
     return [
-      { label: 'Insert row above', act: 'rowAbove' },
-      { label: 'Insert row below', act: 'rowBelow' },
-      { label: `Duplicate row${multiR}`, act: 'rowDup' },
-      { label: `Delete row${multiR}`, act: 'rowDel', danger: true },
+      { label: 'Insert row above', act: 'rowAbove', icon: 'grid-row-insert-above' },
+      { label: 'Insert row below', act: 'rowBelow', icon: 'grid-row-insert-below' },
+      { label: `Duplicate row${multiR}`, act: 'rowDup', icon: 'grid-row-duplicate' },
+      { label: `Delete row${multiR}`, act: 'rowDel', icon: 'grid-row-delete', danger: true },
       { sep: true },
-      { label: 'Insert column left', act: 'colLeft' },
-      { label: 'Insert column right', act: 'colRight' },
-      { label: `Delete column${multiC}`, act: 'colDel', danger: true },
+      { label: 'Insert column left', act: 'colLeft', icon: 'grid-col-insert-left' },
+      { label: 'Insert column right', act: 'colRight', icon: 'grid-col-insert-right' },
+      { label: `Delete column${multiC}`, act: 'colDel', icon: 'grid-col-delete', danger: true },
       { sep: true },
-      { label: 'Fill down', act: 'fillDown' },
-      { label: 'Clear contents', act: 'clear' },
+      { label: 'Fill down', act: 'fillDown', icon: 'grid-fill-down' },
+      { label: 'Clear contents', act: 'clear', icon: 'grid-clear' },
     ]
   })() : []
 
@@ -850,13 +851,14 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
               <button key={i}
                 onClick={() => { runMenuAction(it.act); setMenu(null) }}
                 style={{
-                  display: 'block', width: '100%', textAlign: 'left', padding: '7px 14px',
+                  display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', padding: '7px 14px',
                   background: 'none', border: 'none', cursor: 'pointer',
                   fontFamily: 'var(--ds-font-body)', fontSize: 12,
                   color: it.danger ? 'var(--ds-red)' : text2,
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = raised}
                 onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <Icon name={it.icon} size={14} />
                 {it.label}
               </button>
             ))}

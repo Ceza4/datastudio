@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 import { useState, useEffect, useMemo } from 'react'
 
 /* ExportPanel
@@ -19,6 +20,14 @@ import { useState, useEffect, useMemo } from 'react'
 
 import { formatsFor, runExport, toColumns } from '../../lib/exporters'
 import SendToSheet from './SendToSheet'
+
+/* Export format → icon. Keyed on format id rather than extension so an id can
+   change file type later without silently falling back to the generic glyph. */
+const FORMAT_ICON = {
+  pdf: 'format-pdf', docx: 'format-word', md: 'format-markdown',
+  xlsx: 'format-excel', csv: 'format-csv', pptx: 'format-powerpoint',
+  png: 'format-image', html: 'format-html', json: 'format-json',
+}
 
 export default function ExportPanel({ open, onClose, blocks, selectedIds, notebookName, sheetName, dark, onUpdateBlock }) {
   const [scope, setScope] = useState('canvas')
@@ -154,7 +163,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
               fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: toSheet ? 650 : 500,
             }}>
             <span style={{ flex: 1, textAlign: 'left' }}>Send to a sheet column</span>
-            <span style={{ fontSize: 10, opacity: 0.8 }}>{toSheet ? '▾' : '▸'}</span>
+            <Icon name={toSheet ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} style={{ opacity: 0.8 }} />
           </button>
 
           {toSheet && (
@@ -212,9 +221,12 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
                       fontFamily: 'var(--ds-font-body)', transition: 'border-color .15s, background .15s',
                     }}>
                     <span style={{ fontSize: 12.5, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+                      <Icon name={FORMAT_ICON[f.id] || 'action-export'} size={15} />
                       {f.label}
-                      <span style={{ marginLeft: 'auto', fontFamily: 'var(--ds-font-mono)', fontSize: 9, color: 'var(--ds-text-3)', textTransform: 'uppercase' }}>
-                        {isBusy ? '…' : isDone ? 'saved' : f.ext}
+                      <span style={{ marginLeft: 'auto', fontFamily: 'var(--ds-font-mono)', fontSize: 9, color: 'var(--ds-text-3)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 3 }}>
+                        {isBusy ? <Icon name="status-spinner" size={11} />
+                          : isDone ? <><Icon name="action-check" size={11} />saved</>
+                          : f.ext}
                       </span>
                     </span>
                     <span style={{ fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.35 }}>{f.note}</span>

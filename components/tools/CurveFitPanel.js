@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 import { useState, useMemo, useEffect } from 'react'
 import { fit, curvePoints, MODELS } from '../../lib/curvefit'
 import SendToSheet from './SendToSheet'
@@ -222,7 +223,7 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                     fontFamily: 'var(--ds-font-body)', fontSize: 11.5,
                   }}>
                   <span style={{ flex: 1, textAlign: 'left' }}>Send to a column</span>
-                  <span style={{ fontSize: 9 }}>{sendOpen ? '▾' : '▸'}</span>
+                  <Icon name={sendOpen ? 'nav-chevron-down' : 'nav-chevron-right'} size={10} />
                 </button>
                 {sendOpen && (
                   <div style={{ marginTop: 8 }}>

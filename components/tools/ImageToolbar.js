@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 import { useState, useRef } from 'react'
 import { transformImage, cropImage, processImageFile, putImage, newImageId, IMAGE_EXTS, MAX_IMAGE_BYTES } from '../../lib/images'
 
@@ -123,38 +124,42 @@ export default function ImageToolbar({
           <button className="ds-tbtn is-on" style={btn}
             disabled={!pendingCrop || busy}
             onClick={applyCrop}>
+            <Icon name={busy === 'crop' ? 'status-spinner' : 'action-check'} size={14} />
             {busy === 'crop' ? 'Cropping…' : 'Apply crop'}
           </button>
-          <button className="ds-tbtn" style={btn} onClick={onCancelCrop}>Cancel</button>
+          <button className="ds-tbtn" style={btn} onClick={onCancelCrop}><Icon name="draw-exit" size={14} />Cancel</button>
         </>
       ) : (
         <>
           <button className="ds-tbtn" style={btn} disabled={!!busy}
-            onClick={onStartCrop} title="Drag a rectangle, then apply">Crop</button>
+            onClick={onStartCrop} title="Drag a rectangle, then apply"><Icon name="img-crop" size={14} />Crop</button>
           <button className="ds-tbtn" style={btn} disabled={!!busy}
-            onClick={() => rotate(90)} title="Rotate 90° clockwise">Rotate</button>
+            onClick={() => rotate(90)} title="Rotate 90° clockwise"><Icon name="img-rotate" size={14} />Rotate</button>
           <button className="ds-tbtn" style={btn} disabled={!!busy}
-            onClick={() => flip('h')} title="Mirror horizontally">Flip H</button>
+            onClick={() => flip('h')} title="Mirror horizontally"><Icon name="img-flip-h" size={14} />Flip H</button>
           <button className="ds-tbtn" style={btn} disabled={!!busy}
-            onClick={() => flip('v')} title="Mirror vertically">Flip V</button>
+            onClick={() => flip('v')} title="Mirror vertically"><Icon name="img-flip-v" size={14} />Flip V</button>
 
           <div style={{ height: 1, background: border, margin: '3px 0' }} />
 
           <button className={`ds-tbtn${block.fit === 'cover' ? ' is-on' : ''}`} style={btn}
             onClick={() => onUpdateBlock(block.id, { fit: block.fit === 'cover' ? 'contain' : 'cover' })}
             title="Fit the whole image, or fill the block and crop the overflow">
+            <Icon name={block.fit === 'cover' ? 'size-fill' : 'size-fit'} size={14} />
             {block.fit === 'cover' ? 'Fill' : 'Fit'}
           </button>
 
           <button className={`ds-tbtn${block.alt ? '' : ' is-accent'}`} style={btn}
             onClick={() => { setAltDraft(block.alt || ''); setEditingAlt(true) }}
             title={block.alt ? `Alt text: ${block.alt}` : 'No alt text set — screen readers will skip this image'}>
+            <Icon name={block.alt ? 'img-alt-text' : 'img-no-alt'} size={14} />
             Alt text
           </button>
 
           <button className="ds-tbtn" style={btn} disabled={!!busy}
             onClick={() => replaceRef.current?.click()}
             title={`Swap in a different image (max ${(MAX_IMAGE_BYTES / 1024 / 1024).toFixed(0)}MB)`}>
+            <Icon name={busy === 'replace' ? 'status-spinner' : 'img-replace'} size={14} />
             {busy === 'replace' ? 'Loading…' : 'Replace'}
           </button>
           <input ref={replaceRef} type="file" accept={IMAGE_EXTS.join(',')}

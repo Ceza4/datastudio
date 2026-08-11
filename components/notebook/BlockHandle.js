@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 
 /* The grey title bar at the top of every notebook block (text, table, kanban).
    Holds the block name and a delete button. */
@@ -110,7 +111,7 @@ export default function BlockHandle({
         onMouseEnter={e => (e.currentTarget.style.color = red)}
         onMouseLeave={e => (e.currentTarget.style.color = text3)}
       >
-        ✕
+        <Icon name="action-delete" size={11} />
       </button>
     </div>
   )

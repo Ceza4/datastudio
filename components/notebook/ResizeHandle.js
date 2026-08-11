@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 
 /* Resize affordances for a block.
    --------------------------------------------------------------------------
@@ -40,12 +41,13 @@ export default function ResizeHandle({ onResizeStart, border, accent, show }) {
       {/* Corner grip, drawn only on the bottom-right so the block still reads
           as resizable at a glance without eight visible dots. */}
       <div style={{
-        position: 'absolute', right: 2, bottom: 2, width: 8, height: 8,
-        borderRight: `2px solid ${show ? accent : border}`,
-        borderBottom: `2px solid ${show ? accent : border}`,
-        opacity: show ? 0.9 : 0.45, pointerEvents: 'none',
-        transition: 'opacity .15s, border-color .15s',
-      }} />
+        position: 'absolute', right: 1, bottom: 1, pointerEvents: 'none',
+        color: show ? accent : border,
+        opacity: show ? 0.95 : 0.5,
+        transition: 'opacity .15s, color .15s',
+      }}>
+        <Icon name="handle-resize" size={11} />
+      </div>
     </>
   )
 }

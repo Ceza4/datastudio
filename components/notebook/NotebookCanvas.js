@@ -10,6 +10,7 @@ import ExportPanel from '../tools/ExportPanel'
 import SheetToolbar from '../tools/SheetToolbar'
 import CurveFitPanel from '../tools/CurveFitPanel'
 import ImageToolbar from '../tools/ImageToolbar'
+import Icon from '../ui/Icon'
 import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
 
 /* The freeform infinite-canvas notebook view. Hosts text/table/kanban blocks
@@ -1808,6 +1809,7 @@ function addBlockAnimated(type, x, y) {
 
         <button onClick={togglePresentation} className="ds-tbtn" style={{ flexShrink: 0, marginLeft: 6 }}
           title={isPresentation ? 'Leave full screen' : 'Full screen'}>
+          <Icon name={isPresentation ? 'view-fullscreen-exit' : 'view-fullscreen-enter'} size={14} />
           {isPresentation ? 'Exit' : 'Full Screen'}
         </button>
       </div>
@@ -1820,6 +1822,7 @@ function addBlockAnimated(type, x, y) {
         <div ref={addMenuRef} style={{ position: 'relative' }}>
           <button onClick={() => setAddMenuOpen(!addMenuOpen)}
             className={`ds-tbtn${addMenuOpen ? ' is-on' : ''}`}>
+            <Icon name="action-add" size={14} />
             Add
           </button>
           {addMenuOpen && (
@@ -1849,6 +1852,7 @@ function addBlockAnimated(type, x, y) {
         <button onClick={toggleSnap}
           title={snapEnabled ? 'Magnetic alignment: on · hold Alt while dragging to suspend' : 'Magnetic alignment: off'}
           className={`ds-tbtn${snapEnabled ? ' is-on' : ''}`}>
+          <Icon name="tool-snap" size={14} />
           Snap
         </button>
 
@@ -1860,6 +1864,7 @@ function addBlockAnimated(type, x, y) {
 
         <button onClick={toggleMindMap} className={`ds-tbtn${mindMapMode ? ' is-on' : ''}`}
           title={mindMapMode ? 'Exit mind map mode' : 'Click master then slave to connect'}>
+          <Icon name="tool-mindmap" size={14} />
           Mind map
         </button>
 
@@ -1871,6 +1876,7 @@ function addBlockAnimated(type, x, y) {
           <button onClick={() => setDrawMode(v => !v)}
             className={`ds-tbtn${drawMode ? ' is-on' : ''}`}
             title={drawMode ? 'Turn drawing off' : 'Draw on the canvas · hover for options'}>
+            <Icon name="tool-draw" size={14} />
             Draw
           </button>
           {showDrawPanel && (
@@ -1886,29 +1892,33 @@ function addBlockAnimated(type, x, y) {
               </div>
               <div>
                 <div style={{ fontSize: 10, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Size</div>
+                {/* Brushes render at 20px, not 14. draw-brush-sm is a 1.6-weight
+                    stroke — below 16px it lands on a sub-pixel and washes out to
+                    nothing, so the three sizes stop reading as a family. */}
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  {[2, 4, 8].map(s => (
-                    <div key={s} onClick={() => setDrawSize(s)}
-                      style={{ width: 28, height: 28, borderRadius: 6, background: drawSize === s ? accentDim : raised, border: `1px solid ${drawSize === s ? accent : border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <div style={{ width: Math.min(s * 2.5, 20), height: s === 2 ? 1.5 : s === 4 ? 3 : 5, background: drawColor, borderRadius: 4 }} />
-                    </div>
+                  {[[2, 'draw-brush-sm'], [4, 'draw-brush-md'], [8, 'draw-brush-lg']].map(([s, ic]) => (
+                    <button key={s} onClick={() => setDrawSize(s)}
+                      aria-label={`Brush size ${s}`} aria-pressed={drawSize === s}
+                      style={{ width: 28, height: 28, borderRadius: 6, background: drawSize === s ? accentDim : raised, border: `1px solid ${drawSize === s ? accent : border}`, color: drawSize === s ? accent : text2, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                      <Icon name={ic} size={20} />
+                    </button>
                   ))}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6, borderTop: `1px solid ${border}`, paddingTop: 8 }}>
                 <button onClick={undoLastDrawing}
-                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
-                  ↩ Undo
+                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
+                  <Icon name="draw-undo" size={13} /> Undo
                 </button>
                 <button onClick={clearAllDrawings}
-                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}
+                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}
                   onMouseEnter={e => { e.currentTarget.style.color = '#f87171'; e.currentTarget.style.borderColor = '#f87171' }}
                   onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
-                  🗑 Clear
+                  <Icon name="draw-clear" size={13} /> Clear
                 </button>
                 <button onClick={() => { setDrawMode(false); setShowDrawPanel(false) }}
-                  style={{ flex: 1, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
-                  ✕ Exit
+                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
+                  <Icon name="draw-exit" size={13} /> Exit
                 </button>
               </div>
             </div>
@@ -1919,6 +1929,7 @@ function addBlockAnimated(type, x, y) {
 
         <button onClick={() => setExportOpen(true)} className="ds-tbtn"
           title="Export this sheet, or just the selected blocks">
+          <Icon name="action-export" size={14} />
           Export
         </button>
 
@@ -2038,9 +2049,12 @@ function addBlockAnimated(type, x, y) {
 
       {mindMapMode && (
         <div style={{ position: 'absolute', top: 120, left: '50%', transform: 'translateX(-50%)', zIndex: 150, padding: '8px 16px', background: accentDim, border: `1px solid ${accent}`, borderRadius: 8, boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: accent, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span>⟋</span>
+          <Icon name="tool-mindmap" size={15} />
           <span>{mindMapMaster ? 'Now click the target block · Esc to finish' : 'Click a source block — or just drag from any block’s port dot'}</span>
-          <button onClick={() => { setMindMapMode(false); setMindMapMaster(null) }} style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1, opacity: 0.7 }}>✕</button>
+          <button onClick={() => { setMindMapMode(false); setMindMapMaster(null) }} aria-label="Exit mind map mode"
+            style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', padding: 0, lineHeight: 1, opacity: 0.7, display: 'flex' }}>
+            <Icon name="action-delete" size={13} />
+          </button>
         </div>
       )}
       {ctxMenu && (() => {
@@ -2052,16 +2066,16 @@ function addBlockAnimated(type, x, y) {
             // Sizing acts on one block; with a multi-selection there's no
             // sensible single target, so these drop out.
             ...(soleSelected ? [
-              { label: 'Fit to screen', icon: '⤢', color: text2, action: () => fitBlockToScreen(soleSelected) },
-              { label: 'Reset size', icon: '⤡', color: text2, action: () => resetBlockSize(soleSelected) },
+              { label: 'Fit to screen', icon: 'size-fit-screen', color: text2, action: () => fitBlockToScreen(soleSelected) },
+              { label: 'Reset size', icon: 'size-reset', color: text2, action: () => resetBlockSize(soleSelected) },
             ] : []),
-            { label: `Duplicate (${selectedIds.size})`, icon: '⊕', color: text2, action: duplicateSelected },
-            { label: `Delete (${selectedIds.size})`, icon: '✕', color: red, action: deleteSelected },
+            { label: `Duplicate (${selectedIds.size})`, icon: 'action-duplicate', color: text2, action: duplicateSelected },
+            { label: `Delete (${selectedIds.size})`, icon: 'action-delete', color: red, action: deleteSelected },
           ].map((item, i) => (
             <button key={i} onClick={item.action}
               style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: item.color, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
               onMouseEnter={e => e.currentTarget.style.background = raised} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
-              <span style={{ width: 16, textAlign: 'center' }}>{item.icon}</span>{item.label}
+              <Icon name={item.icon} size={14} />{item.label}
             </button>
           ))}
           {singleConns.length > 0 && (<>
@@ -2726,9 +2740,12 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                           style={{ width: 9, height: 9, borderRadius: '50%', background: hex, cursor: 'pointer', border: hex === (block.sectionColor || accent) ? `2px solid ${text}` : '2px solid transparent' }} />
                       ))}
                     </div>
-                    <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); confirmDelete(block) }} style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 13, padding: '2px 4px', opacity: 0.5 }}
+                    <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); confirmDelete(block) }} aria-label="Delete section"
+                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', padding: '2px 4px', opacity: 0.5, display: 'flex' }}
                       onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = red }}
-                      onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = text3 }}>✕</button>
+                      onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = text3 }}>
+                      <Icon name="action-delete" size={12} />
+                    </button>
                   </div>
                   {blocks.filter(b => b.parentSectionId === block.id).length === 0 && (
                     <div style={{ position: 'absolute', top: 38, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', color: `${block.sectionColor || accent}77`, fontSize: 11, fontStyle: 'italic', fontFamily: 'var(--ds-font-body)' }}>
@@ -2786,7 +2803,9 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
         {blocks.length === 0 && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
             <div style={{ textAlign: 'center', color: text3, fontFamily: 'var(--ds-font-body)' }}>
-              <div style={{ fontSize: 36, marginBottom: 14 }}>📓</div>
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14, opacity: 0.55 }}>
+                <Icon name="nav-notebook" size={40} strokeWidth={3.6} />
+              </div>
               <div style={{ fontSize: 16, fontWeight: 700, color: text2, fontFamily: 'var(--ds-font-head)', marginBottom: 8 }}>Click anywhere to write</div>
               <div style={{ fontSize: 12, lineHeight: 1.9 }}>Or pick a block type from <b style={{ color: text2, fontWeight: 600 }}>Add</b> in the toolbar<br />Drag a header to move · right-click drag to pan · Esc to deselect</div>
             </div>

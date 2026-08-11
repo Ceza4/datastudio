@@ -299,6 +299,20 @@ h1, h2, h3, h4 {
 .fadein { animation: fadeUp 0.4s ease both; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Animated icons (status-spinner). CSS rather than SMIL: it's
+   GPU-composited, and it can be switched off for people who ask for reduced
+   motion — a spinner is exactly the kind of perpetual motion that triggers
+   vestibular symptoms. When motion is reduced it holds still rather than
+   disappearing, so "busy" is still legible. */
+.ds-icon-spin {
+  transform-origin: 50% 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-icon-spin { animation: none; }
+}
 .ds-spinner {
   width: 28px;
   height: 28px;

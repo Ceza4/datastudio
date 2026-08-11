@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -29,15 +30,15 @@ import { createPortal } from 'react-dom'
    -------------------------------------------------------------------------- */
 
 export const COMMANDS = [
-  { id: 'h1',        label: 'Heading 1',   desc: 'Large section heading',      icon: 'H1',    keywords: 'heading title big' },
-  { id: 'h2',        label: 'Heading 2',   desc: 'Medium section heading',     icon: 'H2',    keywords: 'heading subtitle' },
-  { id: 'h3',        label: 'Heading 3',   desc: 'Small section heading',      icon: 'H3',    keywords: 'heading small' },
-  { id: 'bullet',    label: 'Bullet list', desc: 'Unordered list',             icon: '•',     keywords: 'bullet unordered list ul point' },
-  { id: 'numbered',  label: 'Numbered list', desc: 'Ordered list with numbers', icon: '1.',   keywords: 'numbered ordered list ol' },
-  { id: 'checklist', label: 'Checklist',   desc: 'To-do items with checkboxes', icon: '☐',    keywords: 'checklist todo checkbox task' },
-  { id: 'quote',     label: 'Quote',       desc: 'Indented quotation',          icon: '❝',    keywords: 'quote blockquote cite' },
-  { id: 'divider',   label: 'Divider',     desc: 'Horizontal separator line',   icon: '—',    keywords: 'divider line separator rule hr' },
-  { id: 'code',      label: 'Code block',  desc: 'Monospaced code snippet',     icon: '</>',  keywords: 'code snippet pre monospace' },
+  { id: 'h1',        label: 'Heading 1',   desc: 'Large section heading',      icon: 'text-h1',    keywords: 'heading title big' },
+  { id: 'h2',        label: 'Heading 2',   desc: 'Medium section heading',     icon: 'text-h2',    keywords: 'heading subtitle' },
+  { id: 'h3',        label: 'Heading 3',   desc: 'Small section heading',      icon: 'text-h3',    keywords: 'heading small' },
+  { id: 'bullet',    label: 'Bullet list', desc: 'Unordered list',             icon: 'text-bullet-list',     keywords: 'bullet unordered list ul point' },
+  { id: 'numbered',  label: 'Numbered list', desc: 'Ordered list with numbers', icon: 'text-numbered-list',   keywords: 'numbered ordered list ol' },
+  { id: 'checklist', label: 'Checklist',   desc: 'To-do items with checkboxes', icon: 'text-checklist',    keywords: 'checklist todo checkbox task' },
+  { id: 'quote',     label: 'Quote',       desc: 'Indented quotation',          icon: 'text-quote',    keywords: 'quote blockquote cite' },
+  { id: 'divider',   label: 'Divider',     desc: 'Horizontal separator line',   icon: 'text-divider',    keywords: 'divider line separator rule hr' },
+  { id: 'code',      label: 'Code block',  desc: 'Monospaced code snippet',     icon: 'text-code',  keywords: 'code snippet pre monospace' },
 ]
 
 /* Shared by the menu and by its parent, so the parent can clamp the active
@@ -110,7 +111,7 @@ export default function SlashMenu({ x, y, filter, activeIdx, colors, onSelect, o
         display: 'flex', alignItems: 'center', gap: 6,
       }}>
         <span style={{ flex: 1 }}>Insert</span>
-        <span style={{ opacity: 0.7, textTransform: 'none', letterSpacing: 0 }}>↑↓ ⏎</span>
+        <span style={{ opacity: 0.7, textTransform: 'none', letterSpacing: 0 }}>&#8593;&#8595; &#9166;</span>
       </div>
 
       {filtered.length === 0 && (
@@ -139,10 +140,8 @@ export default function SlashMenu({ x, y, filter, activeIdx, colors, onSelect, o
               width: 27, height: 27, borderRadius: 6, display: 'flex',
               alignItems: 'center', justifyContent: 'center', flexShrink: 0,
               background: on ? accent : raised, color: on ? '#fff' : text2,
-              fontSize: cmd.id === 'code' ? 10 : 12, fontWeight: 700,
-              fontFamily: cmd.id === 'code' ? 'var(--ds-font-mono)' : 'var(--ds-font-body)',
             }}>
-              {cmd.icon}
+              <Icon name={cmd.icon} size={15} />
             </span>
             <span style={{ minWidth: 0 }}>
               <span style={{ display: 'block', fontWeight: 500, fontSize: 13 }}>{cmd.label}</span>

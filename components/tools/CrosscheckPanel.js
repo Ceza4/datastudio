@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import SendToSheet from './SendToSheet'
 
@@ -249,7 +250,8 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
           <span className="ds-chip">{results.summary.matched} matched</span>
         )}
         <button onClick={onClose} className="ds-btn ds-btn-ghost"
-          style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 14 }}>✕</button>
+          aria-label="Close Crosscheck"
+          style={{ marginLeft: 'auto', padding: '4px 6px', display: 'flex' }}><Icon name="action-delete" size={13} /></button>
       </div>
 
       {/* Step rail */}
@@ -357,7 +359,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                         background: on ? 'var(--ds-accent)' : 'transparent',
                         color: '#fff', fontSize: 9, display: 'flex',
                         alignItems: 'center', justifyContent: 'center',
-                      }}>{on ? '✓' : ''}</span>
+                      }}>{on ? <Icon name="action-check" size={10} /> : null}</span>
                       {label}
                     </button>
                   ))}
@@ -452,7 +454,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                 background: matchedOnly ? 'var(--ds-accent)' : 'transparent',
                 color: '#fff', fontSize: 9, display: 'flex',
                 alignItems: 'center', justifyContent: 'center',
-              }}>{matchedOnly ? '✓' : ''}</span>
+              }}>{matchedOnly ? <Icon name="action-check" size={10} /> : null}</span>
               Output matched rows only
               <span style={{ marginLeft: 'auto', opacity: 0.7, fontFamily: 'var(--ds-font-mono)' }}>
                 {outputCount.toLocaleString()} rows
@@ -515,9 +517,11 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                     {needsReview ? (
                       <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
                         <button onClick={() => setConfirmed(p => new Set([...p, key]))}
-                          className="ds-btn" style={{ padding: '2px 6px', fontSize: 'var(--ds-fs-sm)', color: 'var(--ds-green)' }}>✓</button>
+                          aria-label="Confirm match" title="Confirm match"
+                          className="ds-btn" style={{ padding: '3px 6px', color: 'var(--ds-green)' }}><Icon name="cc-confirm" size={12} /></button>
                         <button onClick={() => setRejected(p => new Set([...p, key]))}
-                          className="ds-btn" style={{ padding: '2px 6px', fontSize: 'var(--ds-fs-sm)', color: 'var(--ds-red)' }}>✕</button>
+                          aria-label="Reject match" title="Reject match"
+                          className="ds-btn" style={{ padding: '3px 6px', color: 'var(--ds-red)' }}><Icon name="cc-reject" size={12} /></button>
                       </div>
                     ) : (
                       <span style={{ fontSize: 9, color, fontWeight: 700, flexShrink: 0, width: 46, textAlign: 'right' }}>
@@ -581,7 +585,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                 To column
               </button>
             )}
-            <button onClick={addToNotebook} className="ds-btn ds-btn-primary">Add to notebook ✓</button>
+            <button onClick={addToNotebook} className="ds-btn ds-btn-primary"><Icon name="action-check" size={13} /> Add to notebook</button>
           </>
         )}
       </div>

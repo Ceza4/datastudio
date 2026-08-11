@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 import { useState } from 'react'
 
 const CARD_COLORS = ['#5B5FE8', '#4ade80', '#E8B85B', '#f87171', '#a78bfa', '#38bdf8', '#fb923c']
@@ -122,8 +123,9 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
               style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, flexShrink: 0 }}
               onMouseEnter={e => e.currentTarget.style.color = red}
               onMouseLeave={e => e.currentTarget.style.color = text3}
+              aria-label="Delete lane"
             >
-              ✕
+              <Icon name="action-delete" size={11} />
             </button>
           </div>
 
@@ -171,8 +173,9 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                 style={{ position: 'absolute', top: 5, right: 5, background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '1px 3px' }}
                 onMouseEnter={e => e.currentTarget.style.color = red}
                 onMouseLeave={e => e.currentTarget.style.color = text3}
+                aria-label="Delete card"
               >
-                ✕
+                <Icon name="action-delete" size={11} />
               </button>
 
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
@@ -261,8 +264,9 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
                     setAddingCard(p => ({ ...p, [lane.id]: false }))
                   }}
                   style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 11, padding: '3px 8px', cursor: 'pointer' }}
+                  aria-label="Cancel"
                 >
-                  ✕
+                  <Icon name="draw-exit" size={11} />
                 </button>
               </div>
             </div>

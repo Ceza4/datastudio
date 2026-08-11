@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../ui/Icon'
 
 /* SheetToolbar
    --------------------------------------------------------------------------
@@ -27,19 +28,19 @@
    -------------------------------------------------------------------------- */
 
 export const SHEET_TOOLS = [
-  { id: 'crosscheck', label: 'Crosscheck', ready: true,
+  { id: 'crosscheck', label: 'Crosscheck', icon: 'tool-crosscheck', ready: true,
     hint: 'Fuzzy-match two columns with IDF weighting' },
-  { id: 'curvefit',  label: 'Curve fit',  ready: true,
+  { id: 'curvefit',  label: 'Curve fit',  icon: 'tool-curvefit',  ready: true,
     hint: 'Least-squares fitting with uncertainties and residuals' },
-  { id: 'simulate',  label: 'Simulate',   ready: false,
+  { id: 'simulate',  label: 'Simulate',   icon: 'tool-simulate',   ready: false,
     hint: 'Monte Carlo / GBM fan chart — for data with no fixed governing shape' },
-  { id: 'stats',     label: 'Statistics', ready: false,
+  { id: 'stats',     label: 'Statistics', icon: 'tool-statistics', ready: false,
     hint: 'Descriptives, correlation, hypothesis tests' },
-  { id: 'chart',     label: 'Chart',      ready: false,
+  { id: 'chart',     label: 'Chart',      icon: 'tool-chart',      ready: false,
     hint: 'Plot columns as a chart block' },
-  { id: 'clean',     label: 'Clean',      ready: false,
+  { id: 'clean',     label: 'Clean',      icon: 'tool-clean',      ready: false,
     hint: 'Trim whitespace, fix types, drop duplicate rows' },
-  { id: 'formula',   label: 'Formula',    ready: false,
+  { id: 'formula',   label: 'Formula',    icon: 'tool-formula',    ready: false,
     hint: 'Computed columns and cell formulas' },
 ]
 
@@ -57,7 +58,7 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
         top: '50%',
         transform: 'translateY(-50%)',
         zIndex: 96,
-        width: 128,
+        width: 146,
         display: 'flex', flexDirection: 'column', gap: 3,
         padding: 8,
         // Matches the other islands exactly.
@@ -100,6 +101,7 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
             opacity: t.ready ? 1 : 0.38,
             cursor: t.ready ? 'pointer' : 'not-allowed',
           }}>
+          <Icon name={t.icon} size={14} />
           <span style={{ flex: 1, textAlign: 'left' }}>{t.label}</span>
           {!t.ready && (
             <span style={{

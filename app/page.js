@@ -1,4 +1,5 @@
 'use client'
+import Icon from '../components/ui/Icon'
 
 import { useTheme } from './providers'
 
@@ -318,7 +319,7 @@ export default function Home() {
                     display: 'flex', alignItems: 'flex-start', gap: '10px',
                     padding: '7px 0', fontSize: '14px', color: t.text2,
                   }}>
-                    <span style={{ color: t.red, flexShrink: 0, marginTop: '2px' }}>✕</span>
+                    <Icon name="action-delete" size={14} style={{ color: t.red, flexShrink: 0, marginTop: '3px' }} />
                     {step}
                   </li>
                 ))}
@@ -372,7 +373,7 @@ export default function Home() {
                     display: 'flex', alignItems: 'flex-start', gap: '10px',
                     padding: '7px 0', fontSize: '14px', color: t.text,
                   }}>
-                    <span style={{ color: t.accent, flexShrink: 0, marginTop: '2px' }}>✓</span>
+                    <Icon name="action-check" size={14} style={{ color: t.accent, flexShrink: 0, marginTop: '3px' }} />
                     {step}
                   </li>
                 ))}
