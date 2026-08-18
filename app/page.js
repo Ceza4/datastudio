@@ -44,14 +44,14 @@ export default function Home() {
   const btnPrimary = {
     background: t.accent, color: 'white', border: 'none',
     borderRadius: '8px', fontSize: '15px', fontWeight: 500,
-    cursor: 'pointer', fontFamily: 'var(--font-dm-sans)',
+    cursor: 'pointer', fontFamily: 'var(--ds-font-body)',
     textDecoration: 'none', display: 'inline-block',
   }
 
   const btnGhost = {
     background: 'none', color: t.text, border: `1.5px solid ${t.border}`,
     borderRadius: '8px', fontSize: '15px',
-    cursor: 'pointer', fontFamily: 'var(--font-dm-sans)',
+    cursor: 'pointer', fontFamily: 'var(--ds-font-body)',
     textDecoration: 'none', display: 'inline-block',
   }
 
@@ -86,7 +86,7 @@ export default function Home() {
               <rect x="7.5" y="7.5" width="5.5" height="5.5" rx="1" fill="white" opacity=".3" />
             </svg>
           </div>
-          <span onClick={() => window.scrollTo({ top: 0 })} style={{ fontFamily: 'var(--font-syne)', fontWeight: 700, fontSize: '17px', color: t.text, cursor: 'pointer' }}>DataStudio</span>
+          <span onClick={() => window.scrollTo({ top: 0 })} style={{ fontFamily: 'var(--ds-font-head)', fontWeight: 700, fontSize: '17px', color: t.text, cursor: 'pointer' }}>DataStudio</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
           <a href="#problem" style={{ fontSize: '14px', color: t.text2, textDecoration: 'none' }}>The problem</a>
@@ -131,7 +131,7 @@ export default function Home() {
             <h1 style={{
               fontSize: '68px', fontWeight: 800, lineHeight: 1.02,
               letterSpacing: '-0.035em', marginBottom: '24px', color: t.text,
-              fontFamily: 'var(--font-syne)',
+              fontFamily: 'var(--ds-font-head)',
             }}>
               The <span style={{ color: t.accent }}>4 hours a week</span><br />
               Excel can't give you back.
@@ -205,7 +205,7 @@ export default function Home() {
                 }}>
                   {scenario.hours} / week
                 </div>
-                <h3 style={{ fontSize: '18px', fontWeight: 700, color: t.text, marginBottom: '10px', fontFamily: 'var(--font-syne)' }}>
+                <h3 style={{ fontSize: '18px', fontWeight: 700, color: t.text, marginBottom: '10px', fontFamily: 'var(--ds-font-head)' }}>
                   {scenario.title}
                 </h3>
                 <p style={{ fontSize: '14px', color: t.text2, lineHeight: 1.7 }}>
@@ -252,7 +252,7 @@ export default function Home() {
             ].map(s => (
               <div key={s.num} style={{ background: t.surface, padding: '44px 36px' }}>
                 <div style={{
-                  fontFamily: 'var(--font-syne)',
+                  fontFamily: 'var(--ds-font-head)',
                   fontSize: '56px',
                   fontWeight: 800,
                   color: t.accent,
@@ -262,7 +262,7 @@ export default function Home() {
                 }}>
                   {s.num}
                 </div>
-                <h3 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '12px', color: t.text, fontFamily: 'var(--font-syne)' }}>{s.title}</h3>
+                <h3 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '12px', color: t.text, fontFamily: 'var(--ds-font-head)' }}>{s.title}</h3>
                 <p style={{ fontSize: '14px', color: t.text2, lineHeight: 1.75 }}>{s.desc}</p>
               </div>
             ))}
@@ -300,7 +300,7 @@ export default function Home() {
               }}>
                 Before
               </div>
-              <h3 style={{ fontSize: '19px', fontWeight: 700, color: t.text, marginBottom: '18px', fontFamily: 'var(--font-syne)' }}>
+              <h3 style={{ fontSize: '19px', fontWeight: 700, color: t.text, marginBottom: '18px', fontFamily: 'var(--ds-font-head)' }}>
                 In Excel
               </h3>
               <ol style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -358,7 +358,7 @@ export default function Home() {
               }}>
                 After
               </div>
-              <h3 style={{ fontSize: '19px', fontWeight: 700, color: t.text, marginBottom: '18px', fontFamily: 'var(--font-syne)' }}>
+              <h3 style={{ fontSize: '19px', fontWeight: 700, color: t.text, marginBottom: '18px', fontFamily: 'var(--ds-font-head)' }}>
                 In DataStudio
               </h3>
               <ol style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -441,11 +441,11 @@ export default function Home() {
                   fontSize: '28px',
                   color: t.accent,
                   marginBottom: '14px',
-                  fontFamily: 'var(--font-syne)',
+                  fontFamily: 'var(--ds-font-head)',
                 }}>
                   {persona.icon}
                 </div>
-                <h3 style={{ fontSize: '18px', fontWeight: 700, color: t.text, marginBottom: '18px', fontFamily: 'var(--font-syne)' }}>
+                <h3 style={{ fontSize: '18px', fontWeight: 700, color: t.text, marginBottom: '18px', fontFamily: 'var(--ds-font-head)' }}>
                   {persona.role}
                 </h3>
                 <p style={{ fontSize: '12px', color: t.text3, textTransform: 'uppercase', letterSpacing: '.08em', fontWeight: 600, marginBottom: '14px' }}>
@@ -529,10 +529,10 @@ export default function Home() {
                 <div style={{
                   fontSize: '11px', fontWeight: 600, letterSpacing: '.08em', textTransform: 'uppercase',
                   color: plan.featured ? (dark ? '#9A9790' : '#6B6860') : t.text3,
-                  marginBottom: '10px', fontFamily: 'var(--font-syne)',
+                  marginBottom: '10px', fontFamily: 'var(--ds-font-head)',
                 }}>{plan.name}</div>
                 <div style={{
-                  fontFamily: 'var(--font-syne)', fontWeight: 800, fontSize: '56px',
+                  fontFamily: 'var(--ds-font-head)', fontWeight: 800, fontSize: '56px',
                   letterSpacing: '-0.035em',
                   color: plan.featured ? (dark ? '#1A1917' : '#E8E6E1') : t.text,
                   lineHeight: 1, marginBottom: '8px',
@@ -566,7 +566,7 @@ export default function Home() {
 
                 <a href={plan.href} style={{
                   display: 'block', width: '100%', padding: '13px', borderRadius: '8px',
-                  fontFamily: 'var(--font-dm-sans)', fontSize: '14px', fontWeight: 600,
+                  fontFamily: 'var(--ds-font-body)', fontSize: '14px', fontWeight: 600,
                   cursor: 'pointer', marginTop: '20px', border: 'none', textAlign: 'center',
                   textDecoration: 'none',
                   background: plan.featured ? (dark ? '#1A1917' : '#E8E6E1') : t.raised,
@@ -616,7 +616,7 @@ export default function Home() {
               <details key={i} style={{ background: t.surface, padding: '22px 28px', cursor: 'pointer' }}>
                 <summary style={{
                   fontSize: '16px', fontWeight: 600, color: t.text,
-                  fontFamily: 'var(--font-dm-sans)', listStyle: 'none',
+                  fontFamily: 'var(--ds-font-body)', listStyle: 'none',
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 }}>
                   {faq.q}
@@ -636,7 +636,7 @@ export default function Home() {
         <h2 style={{
           fontSize: '56px', fontWeight: 800, letterSpacing: '-0.03em',
           marginBottom: '20px', lineHeight: 1.08, color: t.text,
-          fontFamily: 'var(--font-syne)',
+          fontFamily: 'var(--ds-font-head)',
         }}>
           Get those 4 hours back.
         </h2>
@@ -666,7 +666,7 @@ export default function Home() {
               <rect x="7.5" y="7.5" width="5.5" height="5.5" rx="1" fill="white" opacity=".3" />
             </svg>
           </div>
-          <span style={{ fontFamily: 'var(--font-syne)', fontWeight: 700, fontSize: '15px', color: t.text }}>DataStudio</span>
+          <span style={{ fontFamily: 'var(--ds-font-head)', fontWeight: 700, fontSize: '15px', color: t.text }}>DataStudio</span>
         </div>
         <div style={{ display: 'flex', gap: '28px' }}>
           <a href="#" style={{ color: t.text3, textDecoration: 'none' }}>Privacy</a>
@@ -725,7 +725,7 @@ function CrosscheckVisual({ t, dark }) {
       <div style={{ padding: '18px 22px 14px', borderBottom: `1px solid ${t.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
           <span style={{ fontSize: '15px', color: t.accent }}>⚡</span>
-          <span style={{ fontFamily: 'var(--font-syne)', fontSize: '15px', fontWeight: 800, color: t.accent, letterSpacing: '-0.2px' }}>Crosscheck results</span>
+          <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: '15px', fontWeight: 800, color: t.accent, letterSpacing: '-0.2px' }}>Crosscheck results</span>
         </div>
         <div style={{ fontSize: '11px', color: t.text3, fontFamily: 'var(--font-dm-mono)' }}>
           sales_leads.csv × crm_accounts.xlsx
@@ -747,7 +747,7 @@ function CrosscheckVisual({ t, dark }) {
             textAlign: 'center',
             border: `1px solid ${chip.color}33`,
           }}>
-            <div style={{ fontSize: '20px', fontWeight: 800, color: chip.color, fontFamily: 'var(--font-syne)', lineHeight: 1 }}>
+            <div style={{ fontSize: '20px', fontWeight: 800, color: chip.color, fontFamily: 'var(--ds-font-head)', lineHeight: 1 }}>
               {chip.value}
             </div>
             <div style={{ fontSize: '9px', color: chip.color, marginTop: '3px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.5px' }}>

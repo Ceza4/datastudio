@@ -2,6 +2,12 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import TextBlockToolbar from './TextBlockToolbar'
 import SlashMenu, { filterCommands } from './SlashMenu'
+import BlockPicker from './BlockPicker'
+import {
+  LINK_ATTR, DANGLING_ATTR, DANGLING_MESSAGE,
+  linkHtml, parseAddress, resolveTarget,
+} from '../../lib/teleport'
+import { safeLinkUrl } from '../../lib/urls'
 
 /* TextBlockContent — SESSION A (FIXED)
    --------------------------------------------------------------------------
@@ -27,6 +33,20 @@ export default function TextBlockContent({
   onEditEnd,
   minHeight = 80,
   showRail = false,
+  /* Teleporters. All optional — a text block still works standalone, which
+     keeps this component testable and reusable outside the canvas. */
+  notebooks,
+  linkShape,
+  onFollowLink,
+  /* "Put a block of this type on the canvas, near this one."
+     ------------------------------------------------------------------
+     Deliberately generic rather than one prop per type: the slash menu is
+     meant to become the central way of inserting modular components, so the
+     NEXT type that wants an entry adds one row to SlashMenu.COMMANDS and
+     nothing else. Optional, like the teleport props — a text block rendered
+     outside the canvas simply has nowhere to put a block, and the command
+     stays out of its way rather than throwing. */
+  onInsertBlock,
 }) {
   const ref = useRef(null)
   const savedContent = useRef(initialContent || '')
@@ -34,6 +54,7 @@ export default function TextBlockContent({
   // { x, y, filter, idx } — idx lives here, not in SlashMenu, because this
   // component owns the caret and therefore has to own the arrow keys too.
   const [slashMenu, setSlashMenu] = useState(null)
+  const [linkPicker, setLinkPicker] = useState(null)
   const [isEmpty, setIsEmpty] = useState(true)
   // Mirror of slashMenu for the keydown handler. handleKeyDown is attached via
   // React's synthetic system and reads state from the render closure; during
@@ -180,11 +201,106 @@ export default function TextBlockContent({
     }
 
     closeSlash()
+
+    /* `link` isn't a formatting command — it needs a target before it can
+       insert anything. Opening the picker moves focus out of the editor and
+       the caret is lost with it, so the range is captured HERE, while the
+       selection is still ours, and restored when the pick comes back. */
+    if (cmdId === 'link') {
+      const s2 = window.getSelection()
+      setLinkPicker({ range: s2?.rangeCount ? s2.getRangeAt(0).cloneRange() : null })
+      return
+    }
+
+    /* Nor does this one produce markup: it asks the canvas for a new block,
+       beside this one. The "/" text has already been deleted above, so the
+       paragraph is left exactly as it was rather than carrying a stray
+       command nobody typed on purpose. */
+    if (cmdId === 'database') {
+      persistContent()
+      checkEmpty()
+      onInsertBlock?.('database')
+      return
+    }
+
     applyCommand(cmdId)
     ref.current?.focus()
     persistContent()
     checkEmpty()
   }
+
+  /* ── Teleport links ─────────────────────────────────────── */
+
+  function insertLink(result) {
+    const { range } = linkPicker || {}
+    setLinkPicker(null)
+    if (!result || !ref.current) return
+
+    ref.current.focus()
+    if (range) {
+      const sel = window.getSelection()
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+    document.execCommand('insertHTML', false, linkHtml(result.addr, result.label))
+    persistContent()
+    checkEmpty()
+  }
+
+  function cancelLink() {
+    setLinkPicker(null)
+    ref.current?.focus()
+  }
+
+  /* Click-to-follow. Delegated from the editor rather than bound per span:
+     spans come and go as the user types, and contenteditable recreates nodes
+     on undo, so per-node listeners would silently stop working. */
+  function handleLinkClick(e) {
+    const el = e.target.closest?.(`[${LINK_ATTR}]`)
+    if (!el) return
+    e.preventDefault()
+    e.stopPropagation()
+    const addr = parseAddress(el.getAttribute(LINK_ATTR))
+    if (addr) onFollowLink?.(addr)
+  }
+
+  /* What the pass below is allowed to re-run on. Which links exist here is
+     `initialContent`; whether each one still RESOLVES is decided by the set of
+     block addresses in the workspace, and by nothing else. `notebooks` carries
+     both, but it is re-minted on every frame of a block drag — so keying on it
+     re-ran the querySelectorAll and the setAttribute writes, for every text
+     block on the sheet, sixty times a second, to write back exactly the
+     attributes it had just written.
+
+     `linkShape` is that address set as a string, built once per canvas render:
+     equal by value while a block is only being moved, different the instant
+     one is created, deleted or moved to another sheet. Absent — a text block
+     rendered outside the canvas, with nobody to build it — this falls back to
+     the tree itself and behaves as it always did. */
+  const linkScope = linkShape ?? notebooks
+
+  /* Mark links whose target no longer exists. Done as a DOM pass rather than
+     by rewriting the stored HTML — the content is the user's text, and a
+     deleted target is not a reason to edit what they wrote. Struck through in
+     CSS; the link stays exactly where it is and can still be read. */
+  useEffect(() => {
+    const root = ref.current
+    if (!root || !notebooks) return
+    for (const el of root.querySelectorAll(`[${LINK_ATTR}]`)) {
+      const addr = parseAddress(el.getAttribute(LINK_ATTR))
+      const res = resolveTarget(notebooks, addr)
+      if (res.ok) {
+        el.removeAttribute(DANGLING_ATTR)
+        el.setAttribute('title', 'Go to this block')
+      } else {
+        el.setAttribute(DANGLING_ATTR, res.reason)
+        el.setAttribute('title', DANGLING_MESSAGE[res.reason] || 'This link no longer resolves.')
+      }
+    }
+    /* `notebooks` is read above but deliberately not a dependency — linkScope
+       is its resolution-relevant projection, and that is the whole point. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkScope, initialContent, linkPicker])
 
   /* ── Commands ───────────────────────────────────────────── */
 
@@ -413,7 +529,17 @@ export default function TextBlockContent({
     }
     if (e.target.tagName === 'A' && e.target.href && (e.ctrlKey || e.metaKey)) {
       e.preventDefault()
-      window.open(e.target.href, '_blank')
+      /* Two problems lived on this line. `javascript:` in the href executed
+         here — the link prompt now refuses those, but content predating that
+         check is already in IndexedDB, and pasted HTML never went through the
+         prompt at all, so the href still cannot be trusted at click time.
+
+         And `window.open(url, '_blank')` does NOT imply noopener the way
+         `<a target="_blank">` does; without it the opened page gets a live
+         `window.opener` and can navigate this tab somewhere else while the
+         user is looking at the one they just opened. */
+      const safe = safeLinkUrl(e.target.href)
+      if (safe) window.open(safe, '_blank', 'noopener,noreferrer')
     }
   }
 
@@ -503,6 +629,12 @@ export default function TextBlockContent({
           data-ds-text=""
           contentEditable
           suppressContentEditableWarning
+          /* Capture phase. A teleport link sits inside an editable region, so
+             the default click would place a caret inside the link text before
+             anything else ran — leaving the user editing the label of a link
+             they meant to follow. Intercepting on the way down means the
+             caret never lands there. */
+          onClickCapture={handleLinkClick}
           onFocus={() => onEditStart?.()}
           onBlur={e => {
             if (menuPos || slashMenu) return
@@ -531,6 +663,20 @@ export default function TextBlockContent({
           }}
         />
       </div>
+
+      {/* Screen-centred rather than anchored to the caret. It portals itself
+          out to <body>, so no positioned wrapper here — and it needs to,
+          because the canvas is inside a CSS transform that would scale it with
+          the zoom level. */}
+      {linkPicker && colors && (
+        <BlockPicker
+          notebooks={notebooks}
+          currentBlockId={blockId}
+          colors={colors}
+          onPick={insertLink}
+          onCancel={cancelLink}
+        />
+      )}
 
       {slashMenu && colors && (
         <SlashMenu

@@ -1,4 +1,5 @@
 'use client'
+import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 
@@ -322,7 +323,15 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     })
   }, [])
 
+  /* Set the moment an edit is abandoned, cleared by the next commit attempt.
+     cancelEdit() unmounts the input, and some engines (Firefox reliably) fire
+     a blur on the way out — which lands in onBlur → commitEdit and writes back
+     the value Escape just discarded. `editing` doesn't protect against it: the
+     onBlur closure was built on the previous render, where it was still set. */
+  const cancelledRef = useRef(false)
+
   function commitEdit(value, move) {
+    if (cancelledRef.current) { cancelledRef.current = false; return }
     if (!editing) return
     const { r, c } = editing
     if (cellAt(r, c) !== value || r >= nRows || c >= nCols) {
@@ -334,6 +343,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   }
 
   function cancelEdit() {
+    cancelledRef.current = true
     setEditing(null)
     refocus()
   }
@@ -432,7 +442,25 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       case 'PageUp':     e.preventDefault(); moveTo(r - Math.floor(viewport.h / ROW_H), c, ext); return
       case 'Delete':
       case 'Backspace':  e.preventDefault(); clearSelection(); return
-      case 'Escape':     cancelEdit(); setRanges([]); return
+      /* Escape backs out one level at a time, the way Excel does. This branch
+         only ever runs with no cell open — line 400 returns early while
+         `editing` is set, so the editor's own handler owns that level.
+
+         Level 2: a range is selected → collapse it to the active cell.
+         Level 3: nothing left here → DON'T claim the key. The canvas listener
+         then takes focus back, which is the only way out of the grid.
+
+         Claiming it unconditionally is the obvious-looking version and it's
+         wrong: Escape dead-ends inside the sheet forever, because the canvas
+         handler sees the flag and bails every time. */
+      case 'Escape': {
+        const hasRange = ranges.length > 0 || sel.r1 !== sel.r2 || sel.c1 !== sel.c2
+        if (!hasRange) return
+        e.nativeEvent.__dsConsumed = true
+        setRanges([])
+        setSel(p => ({ r1: p.r2, c1: p.c2, r2: p.r2, c2: p.c2 }))
+        return
+      }
       default: break
     }
     if (!meta && !e.altKey && e.key.length === 1) { e.preventDefault(); beginEdit(r, c, e.key, 'type') }
@@ -443,6 +471,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
      mode is entered with F2 or a double-click: arrows move the caret inside
      the text. Conflating the two is why arrow keys felt wrong mid-entry. */
   function beginEdit(r, c, initial, kind = 'edit') {
+    cancelledRef.current = false
     setDraft(initial)
     setEditing({ r, c, kind })
   }
@@ -766,7 +795,9 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                       const m = ev.ctrlKey || ev.metaKey
                       if (ev.key === 'Enter') { ev.preventDefault(); commitEdit(draft, { dr: ev.shiftKey ? -1 : 1, dc: 0 }) }
                       else if (ev.key === 'Tab') { ev.preventDefault(); commitEdit(draft, { dr: 0, dc: ev.shiftKey ? -1 : 1 }) }
-                      else if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit() }
+                      /* Always claimed here — there IS an edit to back out of,
+                         so the canvas must not also act on this press. */
+                      else if (ev.key === 'Escape') { ev.preventDefault(); ev.nativeEvent.__dsConsumed = true; cancelEdit() }
                       // Undo mid-edit abandons the edit rather than typing into it.
                       else if (m && ev.key.toLowerCase() === 'z') { ev.preventDefault(); cancelEdit() }
                       // In type mode the arrows are still navigation, as in Excel.
@@ -836,8 +867,20 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
         )}
       </div>
 
-      {/* context menu */}
-      {menu && (
+      {/* Context menu.
+
+          PORTALLED to <body>, and it has to be — this is not a preference.
+          The canvas renders every block inside `transform: scale()`, and a
+          transformed element becomes the containing block for `position:
+          fixed` descendants. So `fixed; left: e.clientX` inside the canvas is
+          positioned against the CANVAS rather than the viewport, and then
+          scaled on top: the menu appears somewhere near the cursor at 100%
+          zoom and progressively further away at any other.
+
+          No arithmetic fixes it. The element has to leave the transformed
+          subtree, which is what a portal does. Same reason BlockPicker and the
+          slash menu portal. See lib/canvasgeom.js. */}
+      {menu && typeof document !== 'undefined' && createPortal(
         <div style={{
           position: 'fixed', top: menu.y, left: menu.x, zIndex: 10000,
           background: surface, border: `1px solid ${border}`, borderRadius: 8,
@@ -862,7 +905,8 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                 {it.label}
               </button>
             ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

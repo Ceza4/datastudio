@@ -1,17 +1,33 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import TextBlockContent from './TextBlockContent'
 import ResizeHandle from './ResizeHandle'
 import BlockHandle from './BlockHandle'
 import KanbanBlock from './KanbanBlock'
 import SheetGrid from './SheetGrid'
 import ImageBlock from './ImageBlock'
+import PdfBlock from './PdfBlock'
+import TaskBlock from './TaskBlock'
+import CalendarBlock from './CalendarBlock'
+import DatabaseBlock from './DatabaseBlock'
 import ExportPanel from '../tools/ExportPanel'
 import SheetToolbar from '../tools/SheetToolbar'
 import CurveFitPanel from '../tools/CurveFitPanel'
 import ImageToolbar from '../tools/ImageToolbar'
+import PdfToolbar from '../tools/PdfToolbar'
+import TaskToolbar from '../tools/TaskToolbar'
+import CalendarToolbar from '../tools/CalendarToolbar'
 import Icon from '../ui/Icon'
+import { useToast } from '../ui/Toast'
+import BlockErrorBoundary from './BlockErrorBoundary'
+import {
+  ADD_ITEMS, TYPE_BY_KEY, getType as getBlockType, isContainer, railFor,
+  blockDims as registryDims, blockHasContent as registryHasContent,
+  clonepatch, cloneArgs,
+} from './blockRegistry'
 import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
+import { LINK_COLOR, LINK_LABEL, LINK_KINDS, wouldCycle, rollup } from '../../lib/tasks'
+import { extractLinks, blockLabel } from '../../lib/teleport'
 
 /* The freeform infinite-canvas notebook view. Hosts text/table/kanban blocks
    that the user drags around on a dot-grid background. Right-click drag pans.
@@ -57,15 +73,11 @@ import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
 /* Add-menu items. Labels only — the icon column was an empty string rendered
    into a 20px span (a hole in front of every label), and the T/B/K/S hints
    advertised shortcuts that were never bound to anything. */
-const ADD_ITEMS = [
-  { type: 'text',    label: 'Text Block' },
-  { type: 'table',   label: 'Table Block' },
-  { type: 'kanban',  label: 'Kanban Board' },
-  { type: 'section', label: 'Section' },
-  { type: 'image',   label: 'Image' },
-]
-
 const EMPTY_BLOCKS = []
+/* Frozen, unlike EMPTY_BLOCKS: this one is handed out to six BlockHandles at a
+   time as a prop, and a shared empty that anything could push into is a bug
+   waiting to be written by someone who assumes the array is theirs. */
+const EMPTY_BACKLINKS = Object.freeze([])
 const MOD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl'
 
 const SNAP_RADIUS   = 14   // inside this, lock exactly
@@ -77,13 +89,105 @@ const SPACING_TOL   = 3    // equal-gap detection tolerance
    clear of the neighbour — that's the "couple of pixels next to other blocks"
    position you actually want when laying blocks out side by side. */
 const BLOCK_GAP     = 16
+
+/* The four connection nubs on the edges of a block.
+
+   Module scope for the same reason as TextBlockToolbar's Cell: declared inside
+   NotebookCanvas it was a new component type every render, so React threw all
+   four nubs away and built them again instead of updating them. ESLint doesn't
+   flag this one — it only sees the pattern where a component is defined and
+   used in the same JSX — but the cost is identical, and it lands on precisely
+   the wrong block: ports show on the block that is selected or hovered, which
+   during a drag is the block being re-rendered every frame. The nub hover
+   state is written imperatively below, so a remount also drops the enlarged
+   nub out from under the cursor you are about to drag from. */
+function Ports({ show, blockId, surface, accent, onStartLink }) {
+  if (!show) return null
+  const p = (pos) => ({
+    position: 'absolute', ...pos, width: 9, height: 9, borderRadius: '50%',
+    background: surface, border: `2px solid ${accent}`, zIndex: 30,
+    transition: 'transform 0.15s ease, background 0.15s ease, opacity 0.15s ease',
+    opacity: 0.75, cursor: 'crosshair',
+  })
+  const hov = {
+    onMouseEnter: e => { e.currentTarget.style.transform = 'scale(1.5)'; e.currentTarget.style.background = accent; e.currentTarget.style.opacity = '1' },
+    onMouseLeave: e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.background = surface; e.currentTarget.style.opacity = '0.75' },
+  }
+  const sides = [
+    ['top',    { top: -5, left: '50%', marginLeft: -4.5 }],
+    ['bottom', { bottom: -5, left: '50%', marginLeft: -4.5 }],
+    ['left',   { top: '50%', left: -5, marginTop: -4.5 }],
+    ['right',  { top: '50%', right: -5, marginTop: -4.5 }],
+  ]
+  return (<>
+    {sides.map(([side, pos]) => (
+      <div key={side} style={p(pos)} {...hov} title="Drag to connect"
+        onMouseDown={e => onStartLink(e, blockId, side)} />
+    ))}
+  </>)
+}
+
+/* The cubic between two connected blocks, plus its midpoint.
+   --------------------------------------------------------------------------
+   Lifted out of the connection layer's JSX because there are now TWO callers.
+   React renders the wire from this, and the drag loop repaints the same wire
+   from this while a block is moving and React is deliberately not re-rendering
+   (see startBlockDrag). Two copies of a Bezier would drift the first time
+   either was tuned, and the symptom would be a wire that visibly jumps the
+   moment you let go of the block — the exact bug class this file's comments
+   keep warning about.
+
+   The +3000 matches the connection layer's own `top: -3000, left: -3000`: the
+   SVG is oversized and offset so negative canvas coordinates still land inside
+   its viewport. */
+function connCurve(from, to) {
+  const { w: fw, h: fh } = registryDims(from)
+  const { w: tw, h: th } = registryDims(to)
+  const dx = (to.x + tw / 2) - (from.x + fw / 2)
+  const dy = (to.y + th / 2) - (from.y + fh / 2)
+  const horiz = Math.abs(dx) > Math.abs(dy)
+  const fs = horiz ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top')
+  const ts = horiz ? (dx > 0 ? 'left' : 'right') : (dy > 0 ? 'top' : 'bottom')
+  const port = (b, side, w, h) => {
+    if (side === 'top') return { x: b.x + w / 2, y: b.y }
+    if (side === 'bottom') return { x: b.x + w / 2, y: b.y + h }
+    if (side === 'left') return { x: b.x, y: b.y + h / 2 }
+    return { x: b.x + w, y: b.y + h / 2 }
+  }
+  const p1 = port(from, fs, fw, fh)
+  const p2 = port(to, ts, tw, th)
+  const curve = Math.min(120, Math.max(40, Math.hypot(p2.x - p1.x, p2.y - p1.y) * 0.4))
+  const c1 = { x: p1.x + (fs === 'right' ? curve : fs === 'left' ? -curve : 0), y: p1.y + (fs === 'bottom' ? curve : fs === 'top' ? -curve : 0) }
+  const c2 = { x: p2.x + (ts === 'right' ? curve : ts === 'left' ? -curve : 0), y: p2.y + (ts === 'bottom' ? curve : ts === 'top' ? -curve : 0) }
+  const O = 3000
+  return {
+    d: `M ${p1.x + O} ${p1.y + O} C ${c1.x + O} ${c1.y + O}, ${c2.x + O} ${c2.y + O}, ${p2.x + O} ${p2.y + O}`,
+    // Midpoint of the cubic at t=0.5, for the delete affordance.
+    mid: {
+      x: (p1.x + 3 * c1.x + 3 * c2.x + p2.x) / 8 + O,
+      y: (p1.y + 3 * c1.y + 3 * c2.y + p2.y) / 8 + O,
+    },
+  }
+}
+
 export default function NotebookCanvas({
   nb,
   dark,
   colors,
+  prefs,
+  notebooks,
+  onTeleport,
+  revealRequest,
+  onRevealHandled,
   onAddBlock,
   onUpdateBlock,
   onDeleteBlock,
+  /* Resolves to `{ undo, count }`, or null when nothing was removed —
+     including when a section's "what about the children?" dialog was
+     cancelled. `count` is what actually went, which exceeds what was asked
+     for when a section takes its children with it. Deletes here never ask;
+     they delete and offer the way back. */
+  onDeleteBlocks,
   onRenameNotebook,
   onRenameSheet,
   onDropColumn,
@@ -91,15 +195,27 @@ export default function NotebookCanvas({
   onRemoveTableColumn,
   onAddConnection,
   onDeleteConnection,
+  onUpdateConnection,
   onAddDrawing,
   onDeleteDrawing,
   onClearDrawings,
   onPickImage,
 }) {
   const { surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber } = colors
+  const toast = useToast()
   const containerRef = useRef(null)
   const [pan, setPan] = useState({ x: 60, y: 60 })
   const panRef = useRef({ x: 60, y: 60 })
+  /* Space-to-pan and middle-drag-to-pan. `panCursor` is state because the
+     cursor is the entire affordance — you have to SEE that the canvas is
+     armed before you press, or holding Space is a guess. The two refs are
+     refs because they are read inside pointer handlers that must not go
+     stale, and because arming must not cost a render beyond the cursor. */
+  const [panCursor, setPanCursor] = useState(null)   // null | 'grab' | 'grabbing'
+  const spaceHeldRef = useRef(false)
+  const pointerPanRef = useRef(false)
+  /** True while a pan gesture owns the pointer, or is one press from doing so. */
+  const panOwnsPointer = () => spaceHeldRef.current || pointerPanRef.current
   const [renamingNb, setRenamingNb] = useState(false)
   const [nbLabel, setNbLabel] = useState(nb.name)
   const [renamingSheet, setRenamingSheet] = useState(false)
@@ -123,7 +239,15 @@ const [selectedIds, setSelectedIds] = useState(new Set())
   const [ctxMenu, setCtxMenu] = useState(null)
   const [mindMapMode, setMindMapMode] = useState(false)
   const [mindMapMaster, setMindMapMaster] = useState(null)
-  const [snapEnabled, setSnapEnabled] = useState(false)
+  /* Canvas preferences. Defaulted here rather than required, so the component
+     still renders if it's ever mounted without a provider above it (tests,
+     Storybook, a future embed). gridPx is the grid pitch already multiplied by
+     zoom — it appeared four times as a literal 32 before. */
+  const gridAlways = prefs?.gridAlways ?? false
+  const gridSize = prefs?.gridSize ?? 32
+  const gridPx = gridSize * nbZoom
+
+  const [snapEnabled, setSnapEnabled] = useState(prefs?.snapDefault ?? false)
   const snapRef = useRef(false)
   const [snapTargets, setSnapTargets] = useState([])   // block ids we aligned against
   const [spacingTags, setSpacingTags] = useState([])   // equal-gap badges
@@ -231,7 +355,7 @@ const drawPanelRef = useRef(null)
     const cy = (viewSize.h / 2 - panRef.current.y) / z
     let best = null, bd = Infinity
     for (const b of blocks) {
-      if (b.type === 'section') continue
+      if (isContainer(b)) continue
       const d = blockDims(b)
       const dist = Math.hypot(b.x + d.w / 2 - cx, b.y + d.h / 2 - cy)
       if (dist < bd) { bd = dist; best = b }
@@ -290,6 +414,80 @@ const drawPanelRef = useRef(null)
   // array on every render whenever the sheet was missing, which made any
   // effect depending on `blocks` re-run forever.
   const blocks = activeSheet?.blocks || EMPTY_BLOCKS
+
+  /* Id → block, for the handful of places that need one block out of the
+     sheet. Each of them used to run its own blocks.find(), which is a linear
+     scan; the connection layer ran two of them per connection on every single
+     render, so the cost of drawing links grew with (connections × blocks). */
+  const byId = useMemo(() => new Map(blocks.map(b => [b.id, b])), [blocks])
+
+  /* A block as it is RIGHT NOW, which is not the same as what the document
+     says while a resize is in flight. startResize keeps the live box in local
+     state and writes it to the document once, on release; everything that
+     renders geometry — the block itself, the wires attached to it, the
+     measurement badge — has to read through here or it spends the whole
+     gesture drawing the size the block used to be. */
+  const liveOf = b => (b && resizing && resizing.id === b.id ? { ...b, ...resizing } : b)
+
+  /* ── Workspace link index ───────────────────────────────────────────────
+     One walk of every block in every notebook per canvas render, feeding
+     everything that needs to know what points at what.
+
+     It used to be a walk PER BLOCK. BlockHandle called findBacklinks itself,
+     six block types render a BlockHandle, and every call re-scanned the whole
+     workspace and re-ran the link regex over every block's HTML. Its useMemo
+     never held for the case that mattered, because dragging a block re-mints
+     `notebooks` on every animation frame — so the real cost was (visible
+     blocks × every block's content length), sixty times a second. Exactly the
+     same scan, done once.
+
+     The records deliberately match what findBacklinks returns, because
+     BlockHandle's popover renders either — keep the two shapes in step.
+
+     `shape` is the second product of the same walk: whether an address still
+     resolves depends only on which notebook/sheet/block ids exist, so a string
+     of them is a dependency that stays EQUAL while a block is merely being
+     moved. TextBlockContent uses it to stop re-marking dangling links on every
+     frame of a drag. */
+  const { backlinks, linkShape } = useMemo(() => {
+    let shape = ''
+    const live = new Set()
+    for (const n of notebooks || [])
+      for (const s of n.sheets || [])
+        for (const b of s.blocks || []) {
+          /* NUL-joined. Ids can't contain one, so two different addresses can
+             never collide onto the same key. */
+          const key = `${n.id}\u0000${s.id}\u0000${b.id}`
+          live.add(key)
+          shape += key + '\n'
+        }
+
+    const index = new Map()
+    for (const n of notebooks || [])
+      for (const s of n.sheets || [])
+        for (const b of s.blocks || [])
+          for (const { addr, label } of extractLinks(b.content)) {
+            if (addr.blockId === b.id) continue   // a block linking to itself isn't a backlink
+            const entry = {
+              from: { notebookId: n.id, sheetId: s.id, blockId: b.id },
+              label,
+              sourceName: blockLabel(b),
+              sheetName: s.name,
+              notebookName: n.name,
+              /* True when the link's stored address no longer matches where
+                 the target actually lives — i.e. the block moved after the
+                 link was written. Following it still works; it's just worth
+                 knowing. */
+              stale: addr.sheetId !== undefined
+                && !live.has(`${addr.notebookId}\u0000${addr.sheetId}\u0000${addr.blockId}`),
+            }
+            const list = index.get(addr.blockId)
+            if (list) list.push(entry)
+            else index.set(addr.blockId, [entry])
+          }
+    return { backlinks: index, linkShape: shape }
+  }, [notebooks])
+
 const drawings = activeSheet?.drawings || []
   /* Pressing on a block that's ALREADY part of a multi-selection must not
      collapse the selection — that's what broke lasso dragging. selectBlock
@@ -334,41 +532,91 @@ const drawings = activeSheet?.drawings || []
     if (!selectedIds.has(blockId)) setSelectedIds(new Set([blockId]))
     setCtxMenu({ x: e.clientX, y: e.clientY })
   }
-  /* Only ask when there's something to lose. Confirming the deletion of an
-     empty block is pure friction — you just made it by mis-clicking. */
+  /* Still the has-content check, but it no longer decides whether to ASK —
+     nothing asks. It decides whether the deletion is worth announcing. An
+     empty block you made by mis-clicking and immediately removed does not
+     need a toast; a table with three hundred rows in it does. */
   function blockHasContent(b) {
-    if (!b) return false
-    if (b.type === 'text') return (b.content || '').replace(/<[^>]*>/g, '').trim().length > 0
-    if (b.type === 'table') return !!b.rows?.some(row => row.some(c => c && String(c).trim()))
-    if (b.type === 'kanban') return !!b.lanes?.some(l => l.cards?.length > 0)
-    if (b.type === 'section') return blocks.some(x => x.parentSectionId === b.id)
-    return false
+    return registryHasContent(b, blocks)
   }
-  function deleteSelected() {
+  async function deleteSelected() {
     if (selectedIds.size === 0) return
-    const doomed = [...selectedIds].map(id => blocks.find(b => b.id === id)).filter(Boolean)
-    const withContent = doomed.filter(blockHasContent).length
-    if (withContent > 0) {
-      const n = selectedIds.size
-      if (!window.confirm(`Delete ${n} block${n > 1 ? 's' : ''}? ${withContent} contain${withContent > 1 ? '' : 's'} data.`)) return
-    }
-    selectedIds.forEach(id => onDeleteBlock(id))
-    setSelectedIds(new Set()); setCtxMenu(null)
+    const ids = [...selectedIds]
+    const withContent = ids.map(id => blocks.find(b => b.id === id)).filter(Boolean).filter(blockHasContent).length
+    setCtxMenu(null)
+    const gone = await onDeleteBlocks(ids)
+    if (!gone) return                    // cancelled at the section dialog; keep the selection
+    setSelectedIds(new Set())
+    if (withContent > 0) toast(`${gone.count} block${gone.count > 1 ? 's' : ''} deleted`, { undo: gone.undo })
   }
+  /* Which fields survive a duplicate is now declared per type in the
+     registry. The hand-written version knew about text and kanban only, so
+     duplicating an image produced an empty one (imageId was never carried)
+     and duplicating a coloured section reset it to indigo. */
+  /* Jump back to the PDF page a block was extracted from.
+
+     Deliberately scoped to THIS sheet. A teleport address would be more
+     general, but the extracted block is always created beside its source, so
+     they're siblings by construction — and searching the whole workspace for
+     a pdfId would find every OTHER block sharing the same document too. */
+  function goToPdfSource(source) {
+    if (!source?.pdfId) return
+    const target = blocks.find(b => b.type === 'pdf' && b.pdfId === source.pdfId)
+    if (!target) return
+    if (source.page) onUpdateBlock(target.id, { pdfPage: source.page })
+    selectAndReveal(target)
+    setArrivedId(target.id)
+  }
+
+  /* A subtask lands below its parent and arrives already linked, because the
+     link is the whole reason you asked for a subtask. Creating an unconnected
+     task and making you draw the line would be the same number of clicks as
+     just adding a task. */
+  function addSubtask(parent) {
+    if (!parent) return
+    const { h } = blockDims(parent)
+    const childId = onAddBlock('task', parent.x, parent.y + h + 24, null, null, parent.w || 260, null, {
+      title: '', priority: parent.priority || 'med',
+    })
+    if (!childId) return
+
+    /* "blocks", pointing child → parent: the subtask has to finish before the
+       parent can. So the parent shows as blocked until the subtask is done,
+       which is the behaviour people expect from a subtask and comes free from
+       the same rule that drives every other dependency. */
+    onAddConnection({
+      id: `conn_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      fromBlockId: childId, toBlockId: parent.id,
+      fromSide: 'top', toSide: 'bottom',
+      kind: 'blocks',
+    })
+  }
+
+  /* A block extracted from a PDF lands to the RIGHT of its source, not on top
+     of it — the whole point is seeing them side by side. */
+  function extractFromPdf(pdfBlock, payload) {
+    if (!payload) return
+    const { w } = blockDims(pdfBlock)
+    const x = pdfBlock.x + w + 40
+    const y = pdfBlock.y
+    const patch = {
+      name: `${payload.sourceName || 'PDF'} · p${payload.source?.page ?? ''}`.trim(),
+      source: payload.source,
+    }
+
+    if (payload.kind === 'table') {
+      onAddBlock('table', x, y, payload.headers, payload.rows, null, null, patch)
+    } else {
+      onAddBlock('text', x, y, null, null, 420, null, { ...patch, content: payload.html })
+    }
+  }
+
   function duplicateSelected() {
     selectedIds.forEach(id => {
       const b = blocks.find(bl => bl.id === id)
       if (!b) return
-      const patch = {}
-      if (b.w) patch.w = b.w
-      if (b.h) patch.h = b.h
-      if (b.name) patch.name = b.name + ' (copy)'
-      if (b.type === 'text' && b.content) patch.content = b.content
-      if (b.type === 'kanban' && b.lanes) patch.lanes = JSON.parse(JSON.stringify(b.lanes))
-      onAddBlock(b.type, b.x + 30, b.y + 30,
-        b.type === 'table' ? [...b.headers] : null,
-        b.type === 'table' ? b.rows.map(r => [...r]) : null,
-        b.w || null, b.h || null, patch)
+      const { headers, rows } = cloneArgs(b)
+      onAddBlock(b.type, b.x + 30, b.y + 30, headers, rows, b.w || null, b.h || null, clonepatch(b))
     })
     setCtxMenu(null)
   }
@@ -381,6 +629,21 @@ const drawings = activeSheet?.drawings || []
     : null
   const soleTableBlock = soleSelected?.type === 'table' ? soleSelected : null
   const soleImageBlock = soleSelected?.type === 'image' ? soleSelected : null
+  const solePdfBlock = soleSelected?.type === 'pdf' ? soleSelected : null
+  const soleTaskBlock = soleSelected?.type === 'task' ? soleSelected : null
+  const soleCalendarBlock = soleSelected?.type === 'calendar' ? soleSelected : null
+  /* Which annotation tool is armed, and what the block reports back about its
+     overlay. Held here because the RAIL needs both and the rail is a sibling
+     of the block, not a child. */
+  const [pdfTool, setPdfTool] = useState('select')
+  const [pdfEditState, setPdfEditState] = useState(null)
+
+  /* Disarm when the selection leaves the PDF. Coming back to a block still
+     holding "white-out" from ten minutes ago means the next click covers
+     something. */
+  useEffect(() => {
+    if (!solePdfBlock) { setPdfTool('select'); setPdfEditState(null) }
+  }, [solePdfBlock])
 
   /* Toolbar traversal is on TAB, not hold-Shift.
      ------------------------------------------------------------------
@@ -464,8 +727,8 @@ const drawings = activeSheet?.drawings || []
   const SECTION_PAD = 18
   const SECTION_HEAD = 38
   function growSectionToFit(sectionId, overrides = {}) {
-    const section = blocks.find(b => b.id === sectionId)
-    if (!section || section.type !== 'section') return
+    const section = byId.get(sectionId)
+    if (!section || !isContainer(section)) return
     const kids = blocks.filter(b => b.parentSectionId === sectionId)
     if (kids.length === 0) return
 
@@ -492,11 +755,7 @@ const drawings = activeSheet?.drawings || []
     if (Object.keys(patch).length) onUpdateBlock(sectionId, patch)
   }
 
-  function blockDims(b) {
-    const w = b.w || (b.type === 'kanban' ? 720 : b.type === 'table' ? 520 : b.type === 'section' ? 500 : 320)
-    const h = b.h || (b.type === 'kanban' ? 280 : b.type === 'table' ? 260 : b.type === 'section' ? 350 : 150)
-    return { w, h }
-  }
+  const blockDims = registryDims
 
   function pickPortSide(fromB, toB) {
     const fc = { x: fromB.x + blockDims(fromB).w/2, y: fromB.y + blockDims(fromB).h/2 }
@@ -508,8 +767,8 @@ const drawings = activeSheet?.drawings || []
   function addConnection(fromId, toId) {
     if (fromId === toId) return
     if (connections.some(c => c.fromBlockId === fromId && c.toBlockId === toId)) return
-    const from = blocks.find(b => b.id === fromId)
-    const to = blocks.find(b => b.id === toId)
+    const from = byId.get(fromId)
+    const to = byId.get(toId)
     if (!from || !to) return
     const conn = {
       id: `conn_${Date.now()}_${Math.random().toString(36).slice(2)}`,
@@ -528,29 +787,33 @@ const drawings = activeSheet?.drawings || []
     return connections.filter(c => c.fromBlockId === blockId || c.toBlockId === blockId)
   }
 
-  /* Wrap delete with content-aware confirmation. We don't ask if the
-     block is empty (no point making the user confirm "delete nothing"),
-     but we do ask if there's actual data they could lose. */
-  function confirmDelete(block) {
-    let hasContent = false
-    if (block.type === 'text') {
-      const stripped = (block.content || '').replace(/<[^>]*>/g, '').trim()
-      hasContent = stripped.length > 0
-    } else if (block.type === 'table') {
-      hasContent = block.rows?.some(row => row.some(c => c && String(c).trim()))
-    } else if (block.type === 'kanban') {
-      hasContent = block.lanes?.some(l => l.cards?.length > 0)
-    }
-    if (hasContent) {
-      const ok = window.confirm(`Delete this ${block.type} block? This cannot be undone.`)
-      if (!ok) return
-    }
+  /* Deletes. It used to ask first, and the confirmation is gone: the block
+     leaves immediately and the toast holds the way back for seven seconds,
+     which is faster for the person who meant it and safer for the person who
+     slipped. See components/ui/Toast.js for the argument in full.
+
+     "This cannot be undone" is not a line we can write any more, and that is
+     the point of the change. */
+  function deleteBlock(block) {
+    /* This used to carry its own copy of the has-content check, which had
+       already drifted: it didn't know about sections, so deleting a section
+       full of blocks skipped the prompt that the multi-delete would have shown
+       for the identical action. One source now — and it decides whether the
+       deletion is worth a toast rather than whether to ask. */
+    const hasContent = registryHasContent(block, blocks)
     // Animate out, then remove
     setDeletingBlockId(block.id)
-    setTimeout(() => {
-      onDeleteBlock(block.id)
+    setTimeout(async () => {
+      const gone = await onDeleteBlocks([block.id])
       setDeletingBlockId(null)
+      if (!gone) return
       if (selectedIds.has(block.id)) setSelectedIds(new Set())
+      /* One block asked for, more than one gone: a section that took its
+         children. Naming the type would be the smaller truth. */
+      if (hasContent) {
+        toast(gone.count > 1 ? `${gone.count} blocks deleted` : `${block.type} block deleted`,
+          { undo: gone.undo })
+      }
     }, 200)
   }
 function addBlockAnimated(type, x, y) {
@@ -669,7 +932,7 @@ function addBlockAnimated(type, x, y) {
     const fc = { x: from.x + fd.w / 2, y: from.y + fd.h / 2 }
     let best = null, bestScore = Infinity
     for (const b of blocks) {
-      if (b.id === from.id || b.type === 'section') continue
+      if (b.id === from.id || isContainer(b)) continue
       const bd = blockDims(b)
       const bc = { x: b.x + bd.w / 2, y: b.y + bd.h / 2 }
       const dx = bc.x - fc.x, dy = bc.y - fc.y
@@ -701,7 +964,7 @@ function addBlockAnimated(type, x, y) {
     const z = nbZoomRef.current
     const { w, h } = blockDims(b)
 
-    const railW = (soleTableBlock || soleImageBlock) ? 160 : 16
+    const railW = railFor(soleSelected) ? 160 : 16
     const usableL = ROW_LEFT, usableR = viewSize.w - railW
     const usableT = TOP_ROW_H, usableB = viewSize.h
     const cx = (usableL + usableR) / 2
@@ -757,31 +1020,57 @@ function addBlockAnimated(type, x, y) {
     containerRef.current?.focus({ preventScroll: true })
   }
 
+  /* Arrival. A teleport moves the camera without the user's hands moving, so
+     something has to say "it's this one" — otherwise you land somewhere and
+     have to work out which block you were sent to. */
+  const [arrivedId, setArrivedId] = useState(null)
+  useEffect(() => {
+    if (!arrivedId) return
+    const t = setTimeout(() => setArrivedId(null), 700)
+    return () => clearTimeout(t)
+  }, [arrivedId])
+
+  /* Handle a reveal requested from outside. Runs on `blocks` as well as the
+     request itself, because a cross-sheet jump arrives BEFORE the new sheet's
+     blocks are mounted: the first pass finds nothing, the render that brings
+     the right sheet in re-runs this, and that pass finds it. Waiting rather
+     than giving up is what makes one code path work for same-sheet,
+     cross-sheet and cross-notebook jumps alike. */
+  useEffect(() => {
+    if (!revealRequest?.blockId) return
+    const target = blocks.find(b => b.id === revealRequest.blockId)
+    if (!target) return
+    selectAndReveal(target)
+    setArrivedId(target.id)
+    onRevealHandled?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealRequest, blocks])
+
   /** Level 1 → 2. Hand focus to whatever inside the block owns the keyboard. */
   function enterBlock(b) {
     if (!b) return
     const host = containerRef.current?.querySelector(`[data-block-id="${b.id}"]`)
     if (!host) return
-    if (b.type === 'table') {
-      host.querySelector('[tabindex]')?.focus()          // SheetGrid scroller
-    } else if (b.type === 'text') {
-      const ed = host.querySelector('[contenteditable]')
-      if (ed) {
-        ed.focus()
-        // Caret to the end, so typing appends rather than overwriting.
-        const r = document.createRange(); r.selectNodeContents(ed); r.collapse(false)
-        const s = window.getSelection(); s.removeAllRanges(); s.addRange(r)
-      }
-    } else if (b.type === 'kanban') {
-      host.querySelector('input,textarea,[contenteditable],button')?.focus()
-    } else if (b.type === 'image') {
-      setSheetTool(null)   // the tools rail is already showing; nothing to type into
+    const def = getBlockType(b.type)
+    if (!def.focusSelector) {
+      /* Nothing to type into — an image or a section. The contextual rail is
+         already on screen, so just make sure no stale tool panel is covering it. */
+      setSheetTool(null)
+      return
+    }
+    const el = host.querySelector(def.focusSelector)
+    if (!el) return
+    el.focus()
+    if (def.caretToEnd) {
+      // Caret to the end, so typing appends rather than overwriting.
+      const r = document.createRange(); r.selectNodeContents(el); r.collapse(false)
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r)
     }
   }
 
   /** Create a block by keyboard: below the selection, or in view if there's none. */
   function createByKeyboard(type) {
-    if (type === 'image') { onPickImage?.(); return }
+    if (getBlockType(type).createOpensPicker) { onPickImage?.(); return }
     const z = nbZoomRef.current
     let x, y
     if (soleSelected) {
@@ -818,6 +1107,17 @@ function addBlockAnimated(type, x, y) {
          focus happens to be. It also blurs whatever is focused, so a second
          press isn't needed to leave a cell. */
       if (e.key === 'Escape') {
+        /* A block's own content gets first refusal. SheetGrid marks the native
+           event when it actually backs out of something (an open cell, or a
+           selected range), and this listener stands down for that press.
+
+           The ordering works because React 19 attaches its handlers to the
+           root container, which sits BELOW document — so the grid's handler
+           has already run by the time this one sees the event. If this were
+           ever changed to a capture-phase listener the flag would arrive too
+           late and the sheet would go back to being un-escapable. */
+        if (e.__dsConsumed) return
+
         // Innermost state first: cancel a grab and put the block back.
         if (kbMode === 'toolbar') { e.preventDefault(); leaveToolbar(); return }
         if (kbMode === 'grab') { e.preventDefault(); endGrab(true); return }
@@ -916,7 +1216,7 @@ function addBlockAnimated(type, x, y) {
 
       // Create. Suppressed while grabbing, so 'n' can't spawn a block mid-move.
       if (kbMode !== 'grab' && plain) {
-        const make = { n: 'text', t: 'table', k: 'kanban', s: 'section', i: 'image' }[e.key.toLowerCase()]
+        const make = TYPE_BY_KEY[e.key.toLowerCase()]
         if (make) { e.preventDefault(); createByKeyboard(make); return }
       }
 
@@ -999,7 +1299,7 @@ function addBlockAnimated(type, x, y) {
         {
           if (!soleSelected) {
             // Nothing selected: enter from the top-left corner of the canvas.
-            const first = blocks.filter(b => b.type !== 'section')
+            const first = blocks.filter(b => !isContainer(b))
               .slice().sort((a, b) => (a.y - b.y) || (a.x - b.x))[0]
             selectAndReveal(first)
             return
@@ -1045,6 +1345,10 @@ function addBlockAnimated(type, x, y) {
 
   function startBlockDrag(e, block) {
     if (e.button !== 0) return
+    // While Space is held the canvas moves, not the block. This handler is
+    // reached from BlockHandle's onMouseDown, which the container's own
+    // guard never sees — startBlockDrag stops propagation before it.
+    if (panOwnsPointer()) return
     e.stopPropagation()
     e.preventDefault()
 
@@ -1103,13 +1407,75 @@ function addBlockAnimated(type, x, y) {
     function startEdgePan() { if (edgeRaf == null) edgeRaf = requestAnimationFrame(edgeTick) }
     function stopEdgePan() { if (edgeRaf != null) { cancelAnimationFrame(edgeRaf); edgeRaf = null } }
 
+    /* ── The drag writes to the DOM; the document is written once ──────────
+       applyPos() used to call onUpdateBlock every frame, for this block and
+       for every block travelling with it. The state write itself is nothing —
+       0.003 ms. The CASCADE is the cost: each one re-mints `notebooks`, so
+       AppPage re-renders, so this canvas re-renders, so every memo keyed on
+       `notebooks` is thrown away. That is what made findBacklinks 8.4 ms a
+       frame before it was indexed, what remounted the text rail's 17 buttons
+       on every frame of a drag, and what kept the 600 ms autosave permanently
+       re-armed for the whole gesture.
+
+       So the gesture moves pixels and nothing else: a `translate` on each
+       moving wrapper, and a repainted `d` on each wire with an end in the
+       air. One onUpdateBlock per moved block, at the moment it lands.
+
+       WHY THE `translate` PROPERTY AND NOT `transform`. The wrapper's
+       transform already carries the lift-scale, and it is transitioned over
+       0.22s so the lift and the landing animate. Putting the drag offset in
+       there would drag the block through that same easing curve — 220ms of
+       lag behind the cursor — and React would fight us for the property every
+       time the scale changed. `translate` is a separate animatable property:
+       React never writes it, nothing transitions it, it composes with the
+       transform (translate first, then scale about the block's centre), and
+       it composites on the GPU exactly like translate3d. */
+    let movers = []       // { id, dx, dy, el } — everything moving, resolved once
+    let wires = []        // connections with at least one end in the air
+    let committed = false
+
+    function armDom() {
+      const host = containerRef.current
+      if (!host) return
+      movers = [{ id: block.id, dx: 0, dy: 0 }, ...childOffsets]
+        .map(m => ({ ...m, el: host.querySelector(`[data-block-id="${m.id}"]`) }))
+        .filter(m => m.el)
+
+      const moving = new Set(movers.map(m => m.id).concat(block.id))
+      wires = connections.map(conn => {
+        const fromMoves = moving.has(conn.fromBlockId)
+        const toMoves = moving.has(conn.toBlockId)
+        if (!fromMoves && !toMoves) return null
+        const from = byId.get(conn.fromBlockId)
+        const to = byId.get(conn.toBlockId)
+        const g = host.querySelector(`[data-conn-id="${conn.id}"]`)
+        if (!from || !to || !g) return null
+        /* The travelling pulse rides <animateMotion path>, and SMIL restarts
+           from t=0 whenever that attribute is rewritten — repainted per frame
+           it would sit pinned at the wire's origin. A decoration that hides
+           for the length of a drag is invisible; one stuck in a corner is a
+           bug report. */
+        const dot = g.querySelector('[data-conn-dot]')
+        if (dot) dot.style.display = 'none'
+        return { from, to, fromMoves, toMoves, curves: [...g.querySelectorAll('[data-conn-curve]')], dot }
+      }).filter(Boolean)
+    }
+
     function tick() {
+      // The backstop timer can commit while the ease is still running; once
+      // the position is folded into left/top, another translate would double it.
+      if (committed) { raf = null; return }
       const dx = target.x - cur.x
       const dy = target.y - cur.y
       if (Math.abs(dx) < 0.15 && Math.abs(dy) < 0.15) {
         cur.x = target.x; cur.y = target.y
         applyPos()
         raf = null
+        /* The gesture ends the first time the ease converges AFTER the button
+           came up. Committing here rather than in onUp is what lets the eased
+           landing survive: the block settles under its own momentum, and the
+           document is written once, when it has actually arrived. */
+        if (releasing) commit()
         return
       }
       cur.x += dx * EASE
@@ -1118,9 +1484,61 @@ function addBlockAnimated(type, x, y) {
       raf = requestAnimationFrame(tick)
     }
     function applyPos() {
-      onUpdateBlock(block.id, { x: cur.x, y: cur.y })
-      // Section children AND the rest of a multi-selection travel together.
-      childOffsets.forEach(c => onUpdateBlock(c.id, { x: cur.x + c.dx, y: cur.y + c.dy }))
+      const dx = cur.x - origX
+      const dy = cur.y - origY
+      // Section children AND the rest of a multi-selection travel together —
+      // same delta for all of them, by construction.
+      const t = `${dx}px ${dy}px 0`
+      for (const m of movers) m.el.style.translate = t
+      for (const w of wires) {
+        const f = w.fromMoves ? { ...w.from, x: w.from.x + dx, y: w.from.y + dy } : w.from
+        const o = w.toMoves ? { ...w.to, x: w.to.x + dx, y: w.to.y + dy } : w.to
+        const d = connCurve(f, o).d
+        for (const c of w.curves) c.setAttribute('d', d)
+      }
+    }
+    function clearDom() {
+      for (const m of movers) m.el.style.translate = ''
+      for (const w of wires) if (w.dot) w.dot.style.display = ''
+    }
+    function commit() {
+      if (committed) return
+      committed = true
+      if (raf != null) { cancelAnimationFrame(raf); raf = null }
+      const fx = target.x, fy = target.y
+
+      const patch = { x: fx, y: fy }
+      let owner = null
+      // Section containment only applies to a single non-section block; a
+      // multi-selection shouldn't silently re-parent everything it passes over.
+      if (!isContainer(block)) {
+        const nextParent = currentHoverSection
+        if (nextParent !== (block.parentSectionId || null)) patch.parentSectionId = nextParent
+        owner = nextParent || block.parentSectionId
+      }
+
+      /* Fold the transform into left/top BEFORE handing the numbers to React.
+         Clearing `translate` and waiting for the re-render would put the block
+         back where it started for one frame — a visible snap-back at the end
+         of every drag. Writing the final position here means React's own
+         write, when it lands, sets the identical value and changes nothing. */
+      for (const m of movers) {
+        m.el.style.left = `${fx + m.dx}px`
+        m.el.style.top = `${fy + m.dy}px`
+        m.el.style.translate = ''
+      }
+      for (const w of wires) if (w.dot) w.dot.style.display = ''
+
+      onUpdateBlock(block.id, patch)
+      childOffsets.forEach(c => onUpdateBlock(c.id, { x: fx + c.dx, y: fy + c.dy }))
+
+      // Resize the owning section around its children once the block has
+      // landed. `target` holds the final position; `block` in this closure
+      // still has the pre-drag one, so pass it through explicitly.
+      if (owner) {
+        const landed = { [block.id]: { x: fx, y: fy } }
+        setTimeout(() => growSectionToFit(owner, landed), 0)
+      }
     }
     function startEase() { if (raf == null) raf = requestAnimationFrame(tick) }
 
@@ -1140,14 +1558,14 @@ function addBlockAnimated(type, x, y) {
       if (c.id === block.id || travellers.has(c.id)) return
       travellers.set(c.id, { id: c.id, dx: c.x - origX, dy: c.y - origY })
     }
-    if (block.type === 'section') {
+    if (isContainer(block)) {
       blocks.filter(b => b.parentSectionId === block.id).forEach(addTraveller)
     }
     if (selectedIds.has(block.id) && selectedIds.size > 1) {
       blocks.forEach(b => {
         if (!selectedIds.has(b.id)) return
         addTraveller(b)
-        if (b.type === 'section') {
+        if (isContainer(b)) {
           blocks.filter(c => c.parentSectionId === b.id).forEach(addTraveller)
         }
       })
@@ -1159,6 +1577,9 @@ function addBlockAnimated(type, x, y) {
         if (Math.abs(ev.clientX - startMX) < 5 && Math.abs(ev.clientY - startMY) < 5) return
         dragging = true
         didDragRef.current = true
+        // Resolve the nodes once the press is definitely a drag, so a plain
+        // click on a block costs no DOM queries at all.
+        armDom()
         setDraggingBlockId(block.id)
       }
       lastPointer.current = { x: ev.clientX, y: ev.clientY }
@@ -1328,7 +1749,7 @@ function addBlockAnimated(type, x, y) {
 
       // Section containment only applies to a single non-section block; a
       // multi-selection shouldn't silently re-parent everything it passes over.
-      if (block.type === 'section' || childOffsets.length > 0) {
+      if (isContainer(block) || childOffsets.length > 0) {
         // travellers follow the eased parent, applied inside the ease loop
       } else {
         // Live containment detection based on CURSOR position (not block center)
@@ -1338,7 +1759,7 @@ function addBlockAnimated(type, x, y) {
         const cy = ((ev.clientY - rect.top) / bzoom - panRef.current.y) / z
         let hit = null
         blocks.forEach(s => {
-          if (s.type !== 'section' || s.id === block.id) return
+          if (!isContainer(s) || s.id === block.id) return
           const { w: sw, h: sh } = blockDims(s)
           if (cx >= s.x && cx <= s.x + sw && cy >= s.y && cy <= s.y + sh) hit = s.id
         })
@@ -1348,7 +1769,9 @@ function addBlockAnimated(type, x, y) {
         }
       }
     }
-    function onUp(ev) {
+    /* Everything that ends the gesture goes through here, so a drag can never
+       leave a listener, a rAF loop or a guide behind. */
+    function detach() {
       stopEdgePan()
       lastSnapSig.current = ''
       lastSpacingSig.current = ''
@@ -1358,33 +1781,51 @@ function addBlockAnimated(type, x, y) {
       setHoverSectionId(null)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('keydown', onEscape, true)
+      window.removeEventListener('pointercancel', onAbort)
+    }
+
+    /* Escape puts everything back. Nothing is committed, so there is nothing
+       to undo — which is the point: a mis-drag should cost a keypress, not an
+       undo step. Capture phase on window, because the canvas's own Escape
+       handler is a bubble listener on document and would otherwise see this
+       press first and drop the selection out from under you. */
+    function onEscape(ev) {
+      if (ev.key !== 'Escape') return
+      ev.preventDefault()
+      ev.stopPropagation()
+      abort()
+    }
+    function onAbort() { abort() }
+    function abort() {
+      if (raf != null) { cancelAnimationFrame(raf); raf = null }
+      clearDom()
+      detach()
+      setDraggingBlockId(null)
+    }
+
+    function onUp() {
+      detach()
+      // A press that never became a drag moved nothing and commits nothing.
+      if (!dragging) { setDraggingBlockId(null); return }
 
       // Let the block settle onto its final position rather than stopping
-      // dead, then drop the "lifted" styling once it's home.
+      // dead, then drop the "lifted" styling once it's home. `releasing` tells
+      // tick() that the next convergence is the end of the gesture.
       releasing = true
       startEase()
       const settle = setInterval(() => {
         if (raf == null) { clearInterval(settle); setDraggingBlockId(null) }
       }, 40)
-      setTimeout(() => { clearInterval(settle); setDraggingBlockId(null) }, 600)
-
-      if (dragging && block.type !== 'section') {
-        const nextParent = currentHoverSection
-        if (nextParent !== (block.parentSectionId || null)) {
-          onUpdateBlock(block.id, { parentSectionId: nextParent })
-        }
-        // Resize the owning section around its children once the block has
-        // landed. `target` holds the final position; `block` in this closure
-        // still has the pre-drag one, so pass it through explicitly.
-        const owner = nextParent || block.parentSectionId
-        if (owner) {
-          const landed = { [block.id]: { x: target.x, y: target.y } }
-          setTimeout(() => growSectionToFit(owner, landed), 0)
-        }
-      }
+      // Backstop. rAF does not run in a backgrounded tab; a timer does, and a
+      // drag that ends with the block moved but the document unwritten is the
+      // one failure this rewrite must not introduce.
+      setTimeout(() => { clearInterval(settle); commit(); setDraggingBlockId(null) }, 600)
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+    window.addEventListener('keydown', onEscape, true)
+    window.addEventListener('pointercancel', onAbort)
   }
 
   /* Rubber-band selection. Press on empty canvas and drag a rectangle; every
@@ -1440,19 +1881,27 @@ function addBlockAnimated(type, x, y) {
     window.addEventListener('mouseup', onUp)
   }
 
+  /* The camera move itself, shared by all three ways of starting one.
+     Returns the move handler, so the caller decides which event family feeds
+     it — right-drag is a mouse gesture, Space and middle-drag are pointer
+     gestures. Written once because three copies of `clientX - origin` is
+     exactly the kind of duplication that drifts one pan out of step with the
+     other two and nobody notices for a month. */
+  function panFrom(clientX, clientY) {
+    stopPanAnim()   // a manual gesture always wins over an in-flight camera move
+    const ox = clientX - panRef.current.x
+    const oy = clientY - panRef.current.y
+    return ev => {
+      panRef.current = { x: ev.clientX - ox, y: ev.clientY - oy }
+      setPan({ ...panRef.current })
+    }
+  }
+
   function startPan(e) {
     if (e.button !== 2) return
     if (selectionLockRef.current) return   // frozen while a block is selected
-    stopPanAnim()
     e.preventDefault()
-    const startX = e.clientX - panRef.current.x
-    const startY = e.clientY - panRef.current.y
-    function onMove(ev) {
-      const nx = ev.clientX - startX
-      const ny = ev.clientY - startY
-      panRef.current = { x: nx, y: ny }
-      setPan({ x: nx, y: ny })
-    }
+    const onMove = panFrom(e.clientX, e.clientY)
     function onUp() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -1461,6 +1910,110 @@ function addBlockAnimated(type, x, y) {
     window.addEventListener('mouseup', onUp)
   }
 
+  /* ── Space-to-pan and middle-drag-to-pan ───────────────────────────────
+     The two gestures every canvas tool has trained into people's hands.
+     Both are handled here, in one capture-phase pointerdown on the canvas,
+     because both have to win against everything underneath: a block drag, a
+     marquee, the draw tool, and the selection that a press on a block makes.
+
+     CAPTURE, NOT BUBBLE. The block wrapper has its own onPointerDownCapture
+     (it selects), and BlockHandle starts a drag from onMouseDown. Running on
+     the container in the capture phase puts this ahead of the first, and
+     preventDefault() on a pointerdown suppresses the compatibility mousedown
+     that would have started the second — the same mechanism the PDF text
+     editor already relies on. One handler, not four opt-outs scattered
+     through the file.
+
+     That preventDefault also earns its keep on button 1 specifically: it is
+     what stops Chrome's middle-click autoscroll (the drifting four-way arrow)
+     and X11's middle-click paste, both of which are default actions of the
+     mousedown this call never lets happen.
+
+     The viewport lock is deliberately NOT consulted. It exists so a stray
+     trackpad swipe can't throw the block you're working on off screen; you
+     cannot arrive at either of these gestures by accident, and a Figma user
+     holding Space over a selected block expects the canvas to move, not to
+     silently refuse. Right-drag keeps the lock because a right-drag is one
+     twitch away from a right-click. */
+  function startPointerPan(e) {
+    const id = e.pointerId
+    const el = containerRef.current
+    const onMove = panFrom(e.clientX, e.clientY)
+    pointerPanRef.current = true
+    setPanCursor('grabbing')
+    /* Capture, so the pan survives the cursor leaving the window mid-gesture
+       — releasing outside used to leave the canvas stuck to the mouse. */
+    try { el?.setPointerCapture?.(id) } catch { /* pointer already gone */ }
+
+    function end(ev) {
+      if (ev && ev.pointerId !== id) return
+      window.removeEventListener('pointermove', track)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+      try { el?.releasePointerCapture?.(id) } catch { /* already released */ }
+      pointerPanRef.current = false
+      // Releasing the button while Space is still down leaves you armed for
+      // the next drag, which is what holding a key is for.
+      setPanCursor(spaceHeldRef.current ? 'grab' : null)
+    }
+    function track(ev) {
+      if (ev.pointerId !== id) return
+      onMove(ev)
+    }
+    window.addEventListener('pointermove', track)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+  }
+
+  useEffect(() => {
+    /* Where the key came from decides whether Space is a gesture or a
+       character. The rule is the one every other bare key on this canvas
+       already uses: only keys that arrive with the canvas element itself
+       focused, or with nothing focused, belong to the canvas.
+
+       `closest('input,textarea,[contenteditable]')` is the check you reach
+       for first, and on this canvas it is not enough. SheetGrid's scroller is
+       a plain div with tabIndex=0 that turns any single-character key into a
+       cell edit — Space included. closest() reports "not typing", the space
+       becomes a pan, and a space can never be typed into a table cell again.
+       Asking for the canvas itself covers that, covers every [data-kbd-zone]
+       button (Space activates those), and covers the next block type that
+       owns the keyboard without anyone remembering to add it to a list. */
+    function down(e) {
+      if (e.code !== 'Space' && e.key !== ' ') return
+      const t = e.target
+      if (t !== containerRef.current && t !== document.body) return
+      // Space scrolls the page by default; it must not, for as long as it is
+      // a modifier. Repeats are prevented too, hence this sitting above the
+      // already-held guard.
+      e.preventDefault()
+      if (spaceHeldRef.current) return
+      spaceHeldRef.current = true
+      if (!pointerPanRef.current) setPanCursor('grab')
+    }
+    function up(e) {
+      if (e.code !== 'Space' && e.key !== ' ') return
+      spaceHeldRef.current = false
+      // Let go of Space mid-drag and the drag finishes: the gesture belongs
+      // to the button now. Only the armed state ends here.
+      if (!pointerPanRef.current) setPanCursor(null)
+    }
+    /* A keyup that lands in another window never arrives here, and the canvas
+       would come back armed with nobody holding anything. */
+    function blur() {
+      spaceHeldRef.current = false
+      if (!pointerPanRef.current) setPanCursor(null)
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', blur)
+    }
+  }, [])
+
   const MIN_W = 200, MIN_H = 100
 
   /* Directional resize. `dir` is any combination of n/s/e/w.
@@ -1468,6 +2021,7 @@ function addBlockAnimated(type, x, y) {
      the opposite edge walks across the canvas and the block appears to slide
      while you resize it. */
   function startResize(e, block, dir = 'se') {
+    if (panOwnsPointer()) return   // Space over a resize handle still pans
     e.stopPropagation()
     e.preventDefault()
 
@@ -1475,6 +2029,10 @@ function addBlockAnimated(type, x, y) {
     const startY = e.clientY
     const { w: baseW, h: baseH } = blockDims(block)
     const baseX = block.x, baseY = block.y
+    /* The live size, held here and mirrored into `resizing` for the render.
+       The commit reads THIS, not the state, so a mouseup that arrives between
+       a setResizing and its render still writes the size you let go at. */
+    const live = { id: block.id, w: baseW, h: baseH, x: baseX, y: baseY }
 
     function onMove(ev) {
       const z = nbZoomRef.current
@@ -1487,12 +2045,30 @@ function addBlockAnimated(type, x, y) {
       if (dir.includes('w')) { w = Math.max(MIN_W, baseW - dx); x = baseX + (baseW - w) }
       if (dir.includes('n')) { h = Math.max(MIN_H, baseH - dy); y = baseY + (baseH - h) }
 
-      onUpdateBlock(block.id, { w, h, x, y })
-      setResizing({ id: block.id, w: Math.round(w), h: Math.round(h) })
+      /* The block's own state, not the document's.
+         This used to be onUpdateBlock per mousemove, which paid the same
+         cascade a drag did — a new `notebooks` every frame, AppPage re-render,
+         every notebooks-keyed memo dropped, autosave permanently re-armed.
+         `resizing` is local to this component, so the frame costs one render
+         of the canvas and nothing above it, and the document is written once,
+         on release.
+
+         Deliberately NOT the drag's imperative treatment. A resize has to
+         REFLOW: the sheet grid's viewport, the kanban columns and the text
+         block's minimum height are all derived from block.h and passed down as
+         props. Driving the wrapper's box from a ref would grow the border and
+         leave the contents at their old size until you let go. */
+      Object.assign(live, { w, h, x, y })
+      setResizing({ id: block.id, w, h, x, y })
     }
     function onUp() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      // One write for the whole gesture — and therefore one undo step, and one
+      // autosave 600ms later instead of a continuously re-armed one.
+      if (live.w !== baseW || live.h !== baseH || live.x !== baseX || live.y !== baseY) {
+        onUpdateBlock(block.id, { w: live.w, h: live.h, x: live.x, y: live.y })
+      }
       setResizing(null)
       if (block.parentSectionId) setTimeout(() => growSectionToFit(block.parentSectionId), 0)
     }
@@ -1509,7 +2085,7 @@ function addBlockAnimated(type, x, y) {
     if (!block) return
     const PAD = 22
     const z = nbZoomRef.current
-    const railW = (soleTableBlock || soleImageBlock) ? 160 : 16
+    const railW = railFor(soleSelected) ? 160 : 16
     const leftPx = ROW_LEFT + PAD
     const topPx = TOP_ROW_H + PAD
     const rightPx = viewSize.w - railW - PAD
@@ -1599,54 +2175,56 @@ function addBlockAnimated(type, x, y) {
     window.addEventListener('mouseup', onUp)
   }
 
-  function Ports({ show, blockId }) {
-    if (!show) return null
-    const p = (pos) => ({
-      position: 'absolute', ...pos, width: 9, height: 9, borderRadius: '50%',
-      background: surface, border: `2px solid ${accent}`, zIndex: 30,
-      transition: 'transform 0.15s ease, background 0.15s ease, opacity 0.15s ease',
-      opacity: 0.75, cursor: 'crosshair',
-    })
-    const hov = {
-      onMouseEnter: e => { e.currentTarget.style.transform = 'scale(1.5)'; e.currentTarget.style.background = accent; e.currentTarget.style.opacity = '1' },
-      onMouseLeave: e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.background = surface; e.currentTarget.style.opacity = '0.75' },
-    }
-    const sides = [
-      ['top',    { top: -5, left: '50%', marginLeft: -4.5 }],
-      ['bottom', { bottom: -5, left: '50%', marginLeft: -4.5 }],
-      ['left',   { top: '50%', left: -5, marginTop: -4.5 }],
-      ['right',  { top: '50%', right: -5, marginTop: -4.5 }],
-    ]
-    return (<>
-      {sides.map(([side, pos]) => (
-        <div key={side} style={p(pos)} {...hov} title="Drag to connect"
-          onMouseDown={e => startLink(e, blockId, side)} />
-      ))}
-    </>)
-  }
+  /* Everything Ports needs that isn't per-block, spread at each call site.
+     `startLink` is a function declaration, so referencing it up here is safe —
+     it is initialised on entry to the component body, not at its own line. */
+  const portProps = { surface, accent, onStartLink: startLink }
   /* Walks up from the wheel event target looking for an element that can
      actually scroll in the requested direction. Returns true if one exists,
      in which case the canvas must NOT preventDefault or pan. */
   function canScrollNatively(target, deltaY, deltaX) {
-    let el = target
-    while (el && el !== containerRef.current) {
+    /* Stop at the block. Every scroller that can legitimately eat a wheel
+       event lives inside one — the sheet grid, the PDF page column, the kanban
+       columns, the calendar list, a text block whose content outgrew its box —
+       and nothing between a block and the canvas scrolls at all. Wheeling over
+       empty canvas is the app's primary navigation gesture and it now settles
+       here, in one closest(), instead of climbing the whole tree. */
+    const host = target?.closest?.('[data-block-id]')
+    if (!host) return false
+
+    for (let el = target; el; el = el.parentNode) {
       if (el.nodeType === 1) {
-        const style = window.getComputedStyle(el)
-        const oy = style.overflowY, ox = style.overflowX
-        const scrollableY = (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1
-        const scrollableX = (ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth + 1
-        if (scrollableY && deltaY !== 0) {
-          const atTop = el.scrollTop <= 0
-          const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1
-          if (!(deltaY < 0 && atTop) && !(deltaY > 0 && atBottom)) return true
-        }
-        if (scrollableX && deltaX !== 0) {
-          const atLeft = el.scrollLeft <= 0
-          const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1
-          if (!(deltaX < 0 && atLeft) && !(deltaX > 0 && atRight)) return true
+        /* Geometry first, computed style second, and only for the elements
+           that actually overflow. This runs on every wheel tick AHEAD of the
+           rAF throttle, so a getComputedStyle per ancestor was a forced style
+           recalc per ancestor per tick, mid-gesture, while React is already
+           re-rendering for the pan. Almost nothing in the chain overflows, and
+           the overflow reads are layout the browser owes us anyway.
+
+           The style read stays for the ones that do overflow, because it is
+           what separates "scrolls" from "is clipped": every block wrapper is
+           overflow:hidden, and treating clipped content as scrollable would
+           silently freeze the canvas over any block taller than its box. */
+        const overflowsY = el.scrollHeight > el.clientHeight + 1
+        const overflowsX = el.scrollWidth > el.clientWidth + 1
+        if (overflowsY || overflowsX) {
+          const style = window.getComputedStyle(el)
+          const oy = style.overflowY, ox = style.overflowX
+          const scrollableY = overflowsY && (oy === 'auto' || oy === 'scroll')
+          const scrollableX = overflowsX && (ox === 'auto' || ox === 'scroll')
+          if (scrollableY && deltaY !== 0) {
+            const atTop = el.scrollTop <= 0
+            const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1
+            if (!(deltaY < 0 && atTop) && !(deltaY > 0 && atBottom)) return true
+          }
+          if (scrollableX && deltaX !== 0) {
+            const atLeft = el.scrollLeft <= 0
+            const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1
+            if (!(deltaX < 0 && atLeft) && !(deltaX > 0 && atRight)) return true
+          }
         }
       }
-      el = el.parentNode
+      if (el === host) break
     }
     return false
   }
@@ -1738,7 +2316,12 @@ function addBlockAnimated(type, x, y) {
 
   function clearAllDrawings() {
     if (drawings.length === 0) return
-    if (window.confirm('Clear all drawings?')) onClearDrawings()
+    /* Held by value before the clear, and put back one at a time in the order
+       they were drawn — drawings paint in array order, so replaying them in
+       sequence restores the stacking as well as the strokes. */
+    const cleared = drawings
+    onClearDrawings()
+    toast('Drawings cleared', { undo: () => cleared.forEach(d => onAddDrawing(d)) })
   }
 
   function pointsToPath(points) {
@@ -1833,7 +2416,7 @@ function addBlockAnimated(type, x, y) {
                   // Image goes straight to the file picker. Creating an empty
                   // image block first would leave a placeholder on the canvas
                   // that does nothing until you find another way to fill it.
-                  if (type === 'image') { onPickImage?.(); return }
+                  if (getBlockType(type).createOpensPicker) { onPickImage?.(); return }
                   const z = nbZoomRef.current
                   addBlockAnimated(type, (200 - panRef.current.x) / z + Math.random() * 40, (120 - panRef.current.y) / z + Math.random() * 30)
                 }}
@@ -1950,6 +2533,39 @@ function addBlockAnimated(type, x, y) {
           colors={colors}
           activeTool={sheetTool}
           onOpenTool={id => (id === 'crosscheck' ? onOpenCrosscheck?.() : setSheetTool(id))}
+        />
+      )}
+
+      {soleCalendarBlock && !mindMapMode && !drawMode && (
+        <CalendarToolbar
+          block={soleCalendarBlock}
+          blocks={blocks}
+          dark={dark}
+          colors={colors}
+          onUpdateBlock={onUpdateBlock}
+        />
+      )}
+
+      {soleTaskBlock && !mindMapMode && !drawMode && (
+        <TaskToolbar
+          block={soleTaskBlock}
+          blocks={blocks}
+          connections={connections}
+          dark={dark}
+          colors={colors}
+          onUpdateBlock={onUpdateBlock}
+          onAddSubtask={addSubtask}
+        />
+      )}
+
+      {solePdfBlock && !mindMapMode && !drawMode && (
+        <PdfToolbar
+          block={solePdfBlock}
+          dark={dark}
+          colors={colors}
+          tool={pdfTool}
+          onToolChange={setPdfTool}
+          editState={pdfEditState}
         />
       )}
 
@@ -2117,6 +2733,15 @@ function addBlockAnimated(type, x, y) {
         }
         .ds-guide { animation: dsGuideIn 0.13s ease-out both; }
         .ds-guide line, .ds-guide text { transition: opacity 0.1s linear; }
+        /* Space-to-pan / middle-drag cursors.
+           A descendant selector and !important, which normally means someone
+           lost an argument with specificity — here it is the point. This is a
+           MODE, and while it is on it has to beat every cursor inside the
+           canvas: a block header says grab, a text block says text, eight
+           resize handles say nwse-resize. Miss any one of them and the mode
+           reads as broken precisely where you were about to use it. */
+        [data-ds-pan='grab'], [data-ds-pan='grab'] * { cursor: grab !important; }
+        [data-ds-pan='grabbing'], [data-ds-pan='grabbing'] * { cursor: grabbing !important; }
       `}</style>
       <div ref={containerRef} onClick={handleBgClick}
         /* Focusable, so the canvas can be reached with Tab and can receive
@@ -2127,7 +2752,24 @@ function addBlockAnimated(type, x, y) {
         aria-label="Notebook canvas. Press question mark for keyboard shortcuts."
         onFocus={() => setCanvasFocused(true)}
         onBlur={() => setCanvasFocused(false)}
-        onMouseDown={e => { handleDrawMouseDown(e); startPan(e); startMarquee(e) }}
+        data-ds-pan={panCursor || undefined}
+        onPointerDownCapture={e => {
+          // Space + any button, or the middle button on its own. Both mean
+          // "move the camera", and neither may reach what is underneath.
+          if (!(e.button === 1 || spaceHeldRef.current)) return
+          e.preventDefault()
+          e.stopPropagation()
+          startPointerPan(e)
+        }}
+        onMouseDown={e => {
+          /* Belt to the pointerdown's braces. preventDefault() on a
+             pointerdown suppresses the compatibility mousedown in every
+             browser that implements the spec — but "every browser" is a
+             claim, and the cost of it being wrong here is a block jumping
+             away under a pan, so the pan state is checked directly too. */
+          if (pointerPanRef.current || spaceHeldRef.current || e.button === 1) { e.preventDefault(); return }
+          handleDrawMouseDown(e); startPan(e); startMarquee(e)
+        }}
         onMouseMove={handleDrawMouseMove}
         onMouseUp={handleDrawMouseUp}
         onMouseLeave={handleDrawMouseUp}
@@ -2166,19 +2808,23 @@ function addBlockAnimated(type, x, y) {
             <filter id="nb-dot-soft" x="-50%" y="-50%" width="200%" height="200%">
               <feGaussianBlur stdDeviation={0.55 * nbZoom} />
             </filter>
-            <pattern id="nb-dots" x={pan.x % (32 * nbZoom)} y={pan.y % (32 * nbZoom)} width={32 * nbZoom} height={32 * nbZoom} patternUnits="userSpaceOnUse">
+            <pattern id="nb-dots" x={pan.x % gridPx} y={pan.y % gridPx} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
               <circle cx={nbZoom} cy={nbZoom} r={nbZoom} fill={dark ? '#3a3835' : '#C0BCB2'} filter="url(#nb-dot-soft)" opacity={dark ? 0.45 : 0.4} />
             </pattern>
-            {/* Faint alignment grid, shown only while snap is armed so the
-                canvas stays clean the rest of the time. */}
-            <pattern id="nb-grid" x={pan.x % (32 * nbZoom)} y={pan.y % (32 * nbZoom)} width={32 * nbZoom} height={32 * nbZoom} patternUnits="userSpaceOnUse">
-              <path d={`M ${32 * nbZoom} 0 L 0 0 0 ${32 * nbZoom}`} fill="none"
+            {/* Faint alignment grid. */}
+            <pattern id="nb-grid" x={pan.x % gridPx} y={pan.y % gridPx} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
+              <path d={`M ${gridPx} 0 L 0 0 0 ${gridPx}`} fill="none"
                 stroke={dark ? '#ffffff' : '#000000'} strokeWidth={1} opacity={dark ? 0.045 : 0.05} />
             </pattern>
           </defs>
           <rect width="100%" height="100%" fill="url(#nb-dots)" />
+          {/* The grid used to appear only while Snap was armed, which quietly
+              made them one setting: turning snapping off also took away the
+              thing people were eyeballing alignment against by hand. Settings →
+              Canvas now controls it independently, and Snap still turns it on
+              while it's active because that feedback is genuinely useful. */}
           <rect width="100%" height="100%" fill="url(#nb-grid)"
-            style={{ opacity: snapEnabled ? 1 : 0, transition: 'opacity 0.25s ease' }} />
+            style={{ opacity: (snapEnabled || gridAlways) ? 1 : 0, transition: 'opacity 0.25s ease' }} />
         </svg>
         <div style={{ position: 'absolute', top: 0, left: 0, transform: `translate(${pan.x}px, ${pan.y}px) scale(${nbZoom})`, transformOrigin: '0 0' }}>
           {marquee && (
@@ -2193,7 +2839,7 @@ function addBlockAnimated(type, x, y) {
           {/* Live measurements while resizing. Pinned to the block's
               bottom-right so it never covers the edge being dragged. */}
           {resizing && (() => {
-            const b = blocks.find(x => x.id === resizing.id)
+            const b = liveOf(blocks.find(x => x.id === resizing.id))
             if (!b) return null
             const { w, h } = blockDims(b)
             return (
@@ -2206,7 +2852,7 @@ function addBlockAnimated(type, x, y) {
                 fontFamily: 'var(--ds-font-mono)', whiteSpace: 'nowrap',
                 boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
               }}>
-                {resizing.w} × {resizing.h}
+                {Math.round(resizing.w)} × {Math.round(resizing.h)}
               </div>
             )
           })()}
@@ -2293,58 +2939,93 @@ function addBlockAnimated(type, x, y) {
               </filter>
             </defs>
             {connections.map(conn => {
-              const from = blocks.find(b => b.id === conn.fromBlockId)
-              const to = blocks.find(b => b.id === conn.toBlockId)
+              const from = liveOf(byId.get(conn.fromBlockId))
+              const to = liveOf(byId.get(conn.toBlockId))
               if (!from || !to) return null
-              const { w: fw, h: fh } = blockDims(from)
-              const { w: tw, h: th } = blockDims(to)
-              const fc = { x: from.x + fw/2, y: from.y + fh/2 }
-              const tc = { x: to.x + tw/2, y: to.y + th/2 }
-              const dx = tc.x - fc.x, dy = tc.y - fc.y
-              const fs = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top')
-              const ts = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'left' : 'right') : (dy > 0 ? 'top' : 'bottom')
-              const portPos = (b, side) => {
-                const { w, h } = blockDims(b)
-                if (side === 'top') return { x: b.x + w/2, y: b.y }
-                if (side === 'bottom') return { x: b.x + w/2, y: b.y + h }
-                if (side === 'left') return { x: b.x, y: b.y + h/2 }
-                return { x: b.x + w, y: b.y + h/2 }
-              }
-              const p1 = portPos(from, fs)
-              const p2 = portPos(to, ts)
-              const cdx = p2.x - p1.x, cdy = p2.y - p1.y
-              const curve = Math.min(120, Math.max(40, Math.hypot(cdx, cdy) * 0.4))
-              const c1 = { x: p1.x + (fs === 'right' ? curve : fs === 'left' ? -curve : 0), y: p1.y + (fs === 'bottom' ? curve : fs === 'top' ? -curve : 0) }
-              const c2 = { x: p2.x + (ts === 'right' ? curve : ts === 'left' ? -curve : 0), y: p2.y + (ts === 'bottom' ? curve : ts === 'top' ? -curve : 0) }
-              const path = `M ${p1.x + 3000} ${p1.y + 3000} C ${c1.x + 3000} ${c1.y + 3000}, ${c2.x + 3000} ${c2.y + 3000}, ${p2.x + 3000} ${p2.y + 3000}`
+              const { d: path, mid } = connCurve(from, to)
               const isSel = selectedIds.has(conn.fromBlockId) || selectedIds.has(conn.toBlockId)
               const isHov = hoveredBlockId === conn.fromBlockId || hoveredBlockId === conn.toBlockId || hoveredConnId === conn.id
               const isPicked = selectedConnId === conn.id
+              /* A typed dependency is coloured by what it means, so the shape
+                 of the work is legible from the diagram rather than from
+                 opening each task. Untyped links keep the original accent. */
+              const linkColor = LINK_COLOR[conn.kind] || accent
+              // Typing a link only means something between two tasks.
+              const bothTasks = from.type === 'task' && to.type === 'task'
               const highlight = isSel || isHov || isPicked
-              // Midpoint of the cubic at t=0.5, for the delete affordance.
-              const mid = {
-                x: (p1.x + 3 * c1.x + 3 * c2.x + p2.x) / 8 + 3000,
-                y: (p1.y + 3 * c1.y + 3 * c2.y + p2.y) / 8 + 3000,
-              }
               return (
-                <g key={conn.id}>
+                /* data-conn-* are handles for the drag loop, which repaints
+                   these two curves imperatively while a connected block is
+                   moving. They are not styling hooks — see startBlockDrag. */
+                <g key={conn.id} data-conn-id={conn.id}>
                   {/* Wide invisible hit-area: hover reveals, click selects. */}
-                  <path d={path} fill="none" stroke="transparent" strokeWidth={16}
+                  <path d={path} data-conn-curve fill="none" stroke="transparent" strokeWidth={16}
                     style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
                     onMouseEnter={() => setHoveredConnId(conn.id)}
                     onMouseLeave={() => setHoveredConnId(null)}
                     onMouseDown={e => { e.stopPropagation() }}
                     onClick={e => { e.stopPropagation(); setSelectedConnId(isPicked ? null : conn.id); setSelectedIds(new Set()) }} />
-                  <path d={path} fill="none" stroke={isPicked ? amber : accent}
+                  <path d={path} data-conn-curve fill="none" stroke={isPicked ? amber : linkColor}
                     strokeWidth={isPicked ? 2.6 : highlight ? 2.2 : 1.5}
                     strokeDasharray={highlight ? 'none' : '5 4'}
                     opacity={highlight ? 0.95 : 0.5}
                     filter={isSel || isPicked ? 'url(#nb-line-glow)' : undefined}
                     style={{ transition: 'opacity 0.2s, stroke-width 0.2s', pointerEvents: 'none' }} />
-                  <circle r={highlight ? 3.5 : 3} fill={isPicked ? amber : accent} opacity={highlight ? 1 : 0.85}
+                  {/* The travelling pulse rides an <animateMotion path>, and SMIL
+                      restarts the motion whenever that attribute is rewritten —
+                      so a dot repainted every frame sits pinned at the start of
+                      the wire, which reads as a bug. It hides for the duration
+                      of a drag instead; see hideDot in startBlockDrag. */}
+                  <circle data-conn-dot r={highlight ? 3.5 : 3} fill={isPicked ? amber : linkColor} opacity={highlight ? 1 : 0.85}
                     filter={isSel ? 'url(#nb-line-glow)' : undefined} style={{ pointerEvents: 'none' }}>
                     <animateMotion dur={highlight ? '1.8s' : '2.4s'} repeatCount="indefinite" path={path} />
                   </circle>
+                  {/* Kind picker. Appears on the SELECTED connection only —
+                      showing it on hover would put four buttons under the
+                      cursor every time you crossed a line. */}
+                  {isPicked && bothTasks && (
+                    <foreignObject x={mid.x - 92} y={mid.y - 46} width={184} height={30} style={{ overflow: 'visible' }}>
+                      <div
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={e => e.stopPropagation()}
+                        style={{
+                          display: 'flex', gap: 2, padding: 3,
+                          background: surface, border: `1px solid ${border}`, borderRadius: 8,
+                          boxShadow: '0 6px 18px rgba(0,0,0,0.3)', fontFamily: 'var(--ds-font-body)',
+                        }}>
+                        {LINK_KINDS.map(k => {
+                          const on = (conn.kind || 'related') === k
+                          const cyclic = (k === 'blocks' || k === 'depends') &&
+                            wouldCycle(
+                              k === 'blocks' ? conn.fromBlockId : conn.toBlockId,
+                              k === 'blocks' ? conn.toBlockId : conn.fromBlockId,
+                              connections.filter(c => c.id !== conn.id)
+                            )
+                          return (
+                            <button key={k}
+                              disabled={cyclic}
+                              title={cyclic
+                                ? 'That would make two tasks wait for each other — neither could ever start'
+                                : LINK_LABEL[k]}
+                              onClick={() => onUpdateConnection?.(conn.id, { kind: k })}
+                              style={{
+                                flex: 1, height: 21, borderRadius: 5,
+                                cursor: cyclic ? 'not-allowed' : 'pointer',
+                                border: `1px solid ${on ? LINK_COLOR[k] : 'transparent'}`,
+                                background: on ? `${LINK_COLOR[k]}22` : 'transparent',
+                                color: on ? LINK_COLOR[k] : text3,
+                                opacity: cyclic ? 0.35 : 1,
+                                fontSize: 9, fontFamily: 'var(--ds-font-body)', padding: 0,
+                                whiteSpace: 'nowrap',
+                              }}>
+                              {LINK_LABEL[k].split(' ')[0]}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </foreignObject>
+                  )}
+
                   {(isHov || isPicked) && (
                     <g style={{ cursor: 'pointer', pointerEvents: 'all' }}
                       onMouseEnter={() => setHoveredConnId(conn.id)}
@@ -2413,7 +3094,11 @@ function addBlockAnimated(type, x, y) {
             )}
           </svg>
 
-          {blocks.map((block, bi) => {
+          {blocks.map((stored, bi) => {
+            /* Shadowed once, here, so every `block.w` / `block.x` / blockDims()
+               below this line follows a resize live without eighteen separate
+               call sites having to remember to. */
+            const block = liveOf(stored)
             const isSelected = selectedIds.has(block.id)
             const isHovered = hoveredBlockId === block.id
             const isDeleting = deletingBlockId === block.id
@@ -2422,6 +3107,7 @@ function addBlockAnimated(type, x, y) {
             return (
             <div key={block.id}
               data-block-id={block.id}
+              data-ds-arrived={arrivedId === block.id ? 'true' : undefined}
               onMouseEnter={() => setHoveredBlockId(block.id)}
               onMouseLeave={() => setHoveredBlockId(null)}
               onPointerDownCapture={e => {
@@ -2445,7 +3131,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 const isLinkTarget = linking?.overId === block.id
                 return {
                   position: 'absolute', left: block.x, top: block.y,
-                  zIndex: block.type === 'section'
+                  zIndex: isContainer(block)
                     ? (isSelected ? 3 : 1)
                     : (isDragging ? 40 : isSelected ? 20 : isHovered ? 15 : 10),
                   transition: isDeleting
@@ -2486,6 +3172,21 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                    section is a grouping affordance, not a viewport. */
               })()}>
 
+              {/* One bad block must not white-screen the canvas. The boundary
+                  sits INSIDE the positioned wrapper, so a failed block keeps
+                  its place, its size and its selection handles — you can still
+                  click it, drag it and delete it without its own renderer. */}
+              <BlockErrorBoundary
+                blockId={block.id}
+                blockType={block.type}
+                /* Explicit pixels. The wrapper above is position:absolute with
+                   no width — every block type supplies its own sized element —
+                   so a fallback sized in percentages has nothing to resolve
+                   against and collapses to a narrow column. */
+                width={blockDims(block).w}
+                height={blockDims(block).h}
+                onDelete={() => onDeleteBlock(block.id)}>
+
               {/* TEXT BLOCK */}
               {block.type === 'text' && (
                 <div style={{
@@ -2511,8 +3212,11 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onStartRename={() => setRenamingBlockId(block.id)}
                     onStopRename={() => setRenamingBlockId(null)}
                     onRename={value => onUpdateBlock(block.id, { name: value })}
-                    onDelete={() => confirmDelete(block)}
+                    onDelete={() => deleteBlock(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
                   />
                   <TextBlockContent
                     showRail={isSelected && selectedIds.size === 1 && !mindMapMode && !drawMode}
@@ -2522,6 +3226,17 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     text={text}
                     colors={colors}
                     minHeight={Math.max(80, (block.h || 150) - 30)}
+                    notebooks={notebooks}
+                    linkShape={linkShape}
+                    onFollowLink={onTeleport}
+                    /* "/database" and anything else the slash menu learns to
+                       insert. Placed directly under the paragraph that asked
+                       for it rather than at the viewport origin, so it appears
+                       where you were looking. */
+                    onInsertBlock={type => {
+                      const d = registryDims(block)
+                      addBlockAnimated(type, block.x, block.y + d.h + 24)
+                    }}
                     onEditStart={() => { editingRef.current = true }}
                     onEditEnd={() => {
                       editingRef.current = false
@@ -2530,7 +3245,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                <Ports show={isSelected || isHovered || !!linking} blockId={block.id} />
+                <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
                 </div>
               )}
               {/* TABLE BLOCK — now resizable */}
@@ -2557,8 +3272,11 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onStartRename={() => setRenamingBlockId(block.id)}
                     onStopRename={() => setRenamingBlockId(null)}
                     onRename={value => onUpdateBlock(block.id, { name: value })}
-                    onDelete={() => confirmDelete(block)}
+                    onDelete={() => deleteBlock(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
                   />
                   <SheetGrid
                     block={block}
@@ -2569,7 +3287,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                <Ports show={isSelected || isHovered || !!linking} blockId={block.id} />
+                <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
                 </div>
               )}
               {/* IMAGE BLOCK */}
@@ -2596,8 +3314,11 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onStartRename={() => setRenamingBlockId(block.id)}
                     onStopRename={() => setRenamingBlockId(null)}
                     onRename={value => onUpdateBlock(block.id, { name: value })}
-                    onDelete={() => confirmDelete(block)}
+                    onDelete={() => deleteBlock(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
                   />
                   <div
                     ref={cropping && soleImageBlock?.id === block.id ? cropWrapRef : null}
@@ -2707,7 +3428,194 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* PDF BLOCK */}
+              {block.type === 'pdf' && (
+                <div style={{
+                  width: block.w || 520, height: block.h || 620,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    label="pdf"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  {/* minHeight 0 is load-bearing: without it the flex child
+                      refuses to shrink and the page area overflows the block
+                      instead of scrolling inside it. */}
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <PdfBlock
+                      block={block}
+                      colors={colors}
+                      dark={dark}
+                      isSelected={isSelected}
+                      onUpdateBlock={onUpdateBlock}
+                      /* Only the SELECTED block is armed. Otherwise a tool
+                         would apply to every PDF on the sheet at once. */
+                      tool={solePdfBlock?.id === block.id ? pdfTool : 'select'}
+                      onEditState={solePdfBlock?.id === block.id ? setPdfEditState : undefined}
+                      onExtract={payload => extractFromPdf(block, payload)}
+                    />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* TASK BLOCK */}
+              {block.type === 'task' && (
+                <div style={{
+                  width: block.w || 260, minHeight: block.h || 96,
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 6px 22px ${dark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.10)'}`
+                    : `0 2px 8px ${dark ? 'rgba(0,0,0,0.28)' : 'rgba(0,0,0,0.05)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}
+                  /* The whole card is the drag handle. A task has no title bar
+                     — it's too small to spare 30px — so grabbing anywhere that
+                     isn't an input moves it. */
+                  onMouseDown={e => {
+                    if (e.target.closest('input,textarea,button')) return
+                    startBlockDrag(e, block)
+                  }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
+                  <TaskBlock
+                    block={block}
+                    blocks={blocks}
+                    connections={connections}
+                    colors={colors}
+                    dark={dark}
+                    isSelected={isSelected}
+                    onUpdateBlock={onUpdateBlock}
+                    onTeleport={id => { const t = blocks.find(b => b.id === id); if (t) { selectAndReveal(t); setArrivedId(t.id) } }}
+                  />
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* CALENDAR BLOCK */}
+              {block.type === 'calendar' && (
+                <div style={{
+                  width: block.w || 520, height: block.h || 420,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    label="calendar"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <CalendarBlock
+                      block={block}
+                      blocks={blocks}
+                      colors={colors}
+                      dark={dark}
+                      onUpdateBlock={onUpdateBlock}
+                      /* Events carry a full teleport address, so an event can
+                         point at another sheet once sources reach that far. */
+                      address={{ notebookId: nb.id, sheetId: nb.activeSheetId || nb.sheets?.[0]?.id }}
+                      onTeleport={addr => onTeleport?.(addr)}
+                    />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* DATABASE BLOCK — §9.2 Builder.
+                  A fixed height, not a minHeight: the four views inside it
+                  scroll their own body and the view bar has to stay put while
+                  they do. A table that pushes its own block taller with every
+                  row would make the canvas grow under you as you type. */}
+              {block.type === 'database' && (
+                <div style={{
+                  width: block.w || 620, height: block.h || 380,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    label="database"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <DatabaseBlock
+                      block={block}
+                      colors={colors}
+                      dark={dark}
+                      onUpdateBlock={onUpdateBlock}
+                      /* The canvas stands down while a cell is open — the same
+                         ref SheetGrid holds, for the same reason: 't' in a cell
+                         must be a letter, not a new table block. */
+                      editingRef={editingRef}
+                    />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -2734,13 +3642,52 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     ) : (
                       <span onDoubleClick={e => { e.stopPropagation(); setRenamingBlockId(block.id) }} style={{ flex: 1, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.name || 'Section'}</span>
                     )}
+                    {/* Rollup. Rendered only when the section actually holds
+                        tasks, so a section of tables shows nothing rather than
+                        "0 done" — a count of a thing you aren't tracking is
+                        noise on every section you have. */}
+                    {(() => {
+                      const kids = blocks.filter(b => b.parentSectionId === block.id)
+                      const r = rollup(kids, blocks, connections)
+                      if (!r) return null
+                      return (
+                        <span
+                          title={`${r.done} done · ${r.doing} doing · ${r.todo} to do${r.blocked ? ` · ${r.blocked} blocked` : ''}${r.overdue ? ` · ${r.overdue} overdue` : ''}`}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+                            fontFamily: 'var(--ds-font-mono)', fontSize: 9.5,
+                            color: block.sectionColor || accent,
+                          }}>
+                          {/* A bar, because "7 of 12" is a number you have to
+                              read and a bar is a shape you can see. */}
+                          <span style={{
+                            width: 34, height: 4, borderRadius: 2, overflow: 'hidden',
+                            background: `${block.sectionColor || accent}33`,
+                          }}>
+                            <span style={{
+                              display: 'block', height: '100%', width: `${r.pct}%`,
+                              background: block.sectionColor || accent,
+                              transition: 'width .25s ease',
+                            }} />
+                          </span>
+                          <span>{r.done}/{r.total}</span>
+                          {r.overdue > 0 && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 2, color: red }}>
+                              <Icon name="status-warning" size={9} />
+                              {r.overdue}
+                            </span>
+                          )}
+                        </span>
+                      )
+                    })()}
+
                     <div style={{ display: 'flex', gap: 3 }}>
                       {['#5B5FE8','#1D9E75','#E8B85B','#f87171','#a78bfa','#38bdf8','#fb923c'].map(hex => (
                         <div key={hex} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { sectionColor: hex }) }} onMouseDown={e => e.stopPropagation()}
                           style={{ width: 9, height: 9, borderRadius: '50%', background: hex, cursor: 'pointer', border: hex === (block.sectionColor || accent) ? `2px solid ${text}` : '2px solid transparent' }} />
                       ))}
                     </div>
-                    <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); confirmDelete(block) }} aria-label="Delete section"
+                    <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); deleteBlock(block) }} aria-label="Delete section"
                       style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', padding: '2px 4px', opacity: 0.5, display: 'flex' }}
                       onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = red }}
                       onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = text3 }}>
@@ -2779,8 +3726,11 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onStartRename={() => setRenamingBlockId(block.id)}
                     onStopRename={() => setRenamingBlockId(null)}
                     onRename={value => onUpdateBlock(block.id, { name: value })}
-                    onDelete={() => confirmDelete(block)}
+                    onDelete={() => deleteBlock(block)}
                     onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
                   />
                   <div style={{ overflow: 'auto', maxHeight: Math.max(140, (block.h || 280) - 30) }}>
                     <KanbanBlock
@@ -2793,9 +3743,10 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                 <Ports show={isSelected || isHovered || !!linking} blockId={block.id} />
+                 <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
                 </div>
               )}
+              </BlockErrorBoundary>
             </div>
             )
           })}

@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# pdf.js runtime assets — generated from node_modules by scripts/sync-pdf-worker.mjs
+# on every install. Committing them guarantees they drift from the installed
+# version, which is the exact failure the sync script exists to prevent.
+/public/pdf.worker.min.mjs
+/public/pdf-worker-version.json
+/public/pdf-cmaps/
+/public/pdf-fonts/
+tests/browser/bundle.js

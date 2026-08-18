@@ -1,5 +1,6 @@
 'use client'
 import Icon from '../ui/Icon'
+import { useToast } from '../ui/Toast'
 import { useState } from 'react'
 
 const CARD_COLORS = ['#5B5FE8', '#4ade80', '#E8B85B', '#f87171', '#a78bfa', '#38bdf8', '#fb923c']
@@ -7,7 +8,16 @@ const CARD_COLORS = ['#5B5FE8', '#4ade80', '#E8B85B', '#f87171', '#a78bfa', '#38
 /* Kanban-style block with draggable cards across draggable lanes.
    Used inside notebook blocks of type 'kanban'. */
 export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editingRef }) {
+  /* A board with no `lanes` is not supposed to exist — the registry always
+     creates three. But "not supposed to" is exactly the data that reaches you
+     from an older build, a partial write or a hand-edited export, and reading
+     `.map` off undefined replaced the whole block with an error card. One
+     derived value, used everywhere below, costs nothing and removes the
+     entire class. */
+  const lanes = block?.lanes || []
+
   const { surface, raised, border, text, text3, accent, accentDim, red } = colors
+  const toast = useToast()
   const [addingCard, setAddingCard] = useState({})
   const [newCardTitle, setNewCardTitle] = useState({})
   const [cardDrag, setCardDrag] = useState(null)
@@ -18,7 +28,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
     if (!title) return
     const card = { id: `card_${Date.now()}`, title, tag: '', color: CARD_COLORS[0] }
     onUpdateBlock(block.id, {
-      lanes: block.lanes.map(l => l.id === laneId ? { ...l, cards: [...l.cards, card] } : l)
+      lanes: lanes.map(l => l.id === laneId ? { ...l, cards: [...l.cards, card] } : l)
     })
     setNewCardTitle(p => ({ ...p, [laneId]: '' }))
     setAddingCard(p => ({ ...p, [laneId]: false }))
@@ -27,7 +37,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
   function moveCard(cardId, fromLaneId, toLaneId) {
     if (fromLaneId === toLaneId) return
     let card
-    const newLanes = block.lanes
+    const newLanes = lanes
       .map(l => {
         if (l.id === fromLaneId) {
           card = l.cards.find(c => c.id === cardId)
@@ -42,13 +52,13 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
 
   function deleteCard(laneId, cardId) {
     onUpdateBlock(block.id, {
-      lanes: block.lanes.map(l => l.id === laneId ? { ...l, cards: l.cards.filter(c => c.id !== cardId) } : l)
+      lanes: lanes.map(l => l.id === laneId ? { ...l, cards: l.cards.filter(c => c.id !== cardId) } : l)
     })
   }
 
   function updateCard(laneId, cardId, patch) {
     onUpdateBlock(block.id, {
-      lanes: block.lanes.map(l =>
+      lanes: lanes.map(l =>
         l.id === laneId
           ? { ...l, cards: l.cards.map(c => c.id === cardId ? { ...c, ...patch } : c) }
           : l
@@ -58,7 +68,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
 
   return (
     <div style={{ display: 'flex', gap: 8, padding: 10, alignItems: 'flex-start', overflowX: 'auto', maxWidth: '100%' }}>
-      {block.lanes.map(lane => (
+      {lanes.map(lane => (
         <div
           key={lane.id}
           onDragOver={e => {
@@ -92,7 +102,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
             <input
               value={lane.name}
               onChange={e => onUpdateBlock(block.id, {
-                lanes: block.lanes.map(l => l.id === lane.id ? { ...l, name: e.target.value } : l)
+                lanes: lanes.map(l => l.id === lane.id ? { ...l, name: e.target.value } : l)
               })}
               onMouseDown={e => e.stopPropagation()}
               onClick={e => e.stopPropagation()}
@@ -116,9 +126,14 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
             <button
               onClick={e => {
                 e.stopPropagation()
-                if (window.confirm('Delete lane?')) {
-                  onUpdateBlock(block.id, { lanes: block.lanes.filter(l => l.id !== lane.id) })
-                }
+                /* The whole lanes array is what gets put back, so the lane
+                   returns in its own column rather than tacked on the right —
+                   and the cards it was holding come with it. */
+                const before = lanes
+                onUpdateBlock(block.id, { lanes: lanes.filter(l => l.id !== lane.id) })
+                toast(`Lane "${lane.name}" deleted`, {
+                  undo: () => onUpdateBlock(block.id, { lanes: before }),
+                })
               }}
               style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, flexShrink: 0 }}
               onMouseEnter={e => e.currentTarget.style.color = red}
@@ -297,7 +312,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
         onClick={e => {
           e.stopPropagation()
           onUpdateBlock(block.id, {
-            lanes: [...block.lanes, { id: `lane_${Date.now()}`, name: `Lane ${block.lanes.length + 1}`, cards: [] }]
+            lanes: [...lanes, { id: `lane_${Date.now()}`, name: `Lane ${lanes.length + 1}`, cards: [] }]
           })
         }}
         onMouseDown={e => e.stopPropagation()}

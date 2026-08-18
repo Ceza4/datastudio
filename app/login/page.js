@@ -31,7 +31,7 @@ export default function Login() {
     <div style={{
       minHeight:'100vh', background:t.base,
       display:'flex', alignItems:'center', justifyContent:'center',
-      fontFamily:'var(--font-dm-sans)'
+      fontFamily:'var(--ds-font-body)'
     }}>
 
       {/* TOP LEFT LOGO */}
@@ -45,7 +45,7 @@ export default function Login() {
               <rect x="7.5" y="7.5" width="5.5" height="5.5" rx="1" fill="white" opacity=".3"/>
             </svg>
           </div>
-          <span style={{fontFamily:'var(--font-syne)', fontWeight:700, fontSize:'15px', color:t.text}}>DataStudio</span>
+          <span style={{fontFamily:'var(--ds-font-head)', fontWeight:700, fontSize:'15px', color:t.text}}>DataStudio</span>
         </a>
       </div>
 
@@ -71,7 +71,7 @@ export default function Login() {
         borderRadius:'16px', padding:'40px',
       }}>
         <div style={{textAlign:'center', marginBottom:'32px'}}>
-          <h1 style={{fontFamily:'var(--font-syne)', fontSize:'24px', fontWeight:700, color:t.text, marginBottom:'8px'}}>Welcome back</h1>
+          <h1 style={{fontFamily:'var(--ds-font-head)', fontSize:'24px', fontWeight:700, color:t.text, marginBottom:'8px'}}>Welcome back</h1>
           <p style={{fontSize:'14px', color:t.text2}}>Sign in to your DataStudio account</p>
         </div>
 
@@ -89,7 +89,7 @@ export default function Login() {
                 width:'100%', padding:'10px 14px',
                 background:t.raised, border:`1px solid ${t.border}`,
                 borderRadius:'8px', fontSize:'14px', color:t.text,
-                outline:'none', fontFamily:'var(--font-dm-sans)',
+                outline:'none', fontFamily:'var(--ds-font-body)',
                 boxSizing:'border-box'
               }}
             />
@@ -111,7 +111,7 @@ export default function Login() {
                 width:'100%', padding:'10px 14px',
                 background:t.raised, border:`1px solid ${t.border}`,
                 borderRadius:'8px', fontSize:'14px', color:t.text,
-                outline:'none', fontFamily:'var(--font-dm-sans)',
+                outline:'none', fontFamily:'var(--ds-font-body)',
                 boxSizing:'border-box'
               }}
             />
@@ -128,7 +128,7 @@ export default function Login() {
               border:'none', borderRadius:'8px',
               fontSize:'14px', fontWeight:500,
               cursor: loading ? 'not-allowed' : 'pointer',
-              fontFamily:'var(--font-dm-sans)',
+              fontFamily:'var(--ds-font-body)',
               transition:'background .15s'
             }}>
             {loading ? 'Signing in...' : 'Sign in'}
@@ -147,7 +147,7 @@ export default function Login() {
           width:'100%', padding:'11px',
           background:'none', border:`1px solid ${t.border}`,
           borderRadius:'8px', fontSize:'14px', color:t.text,
-          cursor:'pointer', fontFamily:'var(--font-dm-sans)',
+          cursor:'pointer', fontFamily:'var(--ds-font-body)',
           display:'flex', alignItems:'center', justifyContent:'center', gap:'8px'
         }}>
           <svg viewBox="0 0 16 16" fill="none" width="16" height="16">

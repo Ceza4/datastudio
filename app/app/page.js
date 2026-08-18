@@ -1,14 +1,21 @@
 'use client'
 import Icon from '../../components/ui/Icon'
-import { useState, useRef, useEffect, useMemo } from 'react'
-import { useTheme } from '../providers'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { usePrefs } from '../providers'
+import { useToast } from '../../components/ui/Toast'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
+import SettingsPanel from '../../components/settings/SettingsPanel'
+import BuilderPanel from '../../components/builder/BuilderPanel'
+import { templateAssetIds, TPL_OK } from '../../lib/templatestore'
+import { migratePrefs } from '../../lib/prefs'
+import { processPdfFile, putPdf, newPdfId, prunePdfs, PDF_EXTS } from '../../lib/pdfs'
+import { createBlock } from '../../components/notebook/blockRegistry'
 import * as XLSX from 'xlsx'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckPanel from '../../components/tools/CrosscheckPanel'
 import { saveState, loadState, clearState, debounce, SAVE_OK, storageEstimate, formatBytes } from '../../lib/persistence'
-import { pruneImages, requestPersistence, idbClear, STORE_IMAGES } from '../../lib/idb'
+import { pruneImages, requestPersistence, idbClear, STORE_IMAGES, STORE_PDFS } from '../../lib/idb'
 import { processImageFile, putImage, newImageId, IMAGE_EXTS, MAX_IMAGE_BYTES } from '../../lib/images'
-import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
 
 /* Import formats, in two tiers.
    --------------------------------------------------------------------------
@@ -41,15 +48,58 @@ const ALSO_ACCEPTED = ['.xlt', '.xltx', '.xltm', '.fods', '.xml', '.dbf', '.numb
 
 /* One picker for everything. Images are routed to an image block, spreadsheets
    to the sidebar — the user shouldn't have to know which button to press. */
-const ACCEPT_EXTS = [...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED, ...IMAGE_EXTS].join(',')
+const ACCEPT_EXTS = [...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED, ...IMAGE_EXTS, ...PDF_EXTS].join(',')
 const DATA_EXTS = new Set([...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED])
 const extOf = name => {
   const m = /\.[a-z0-9]+$/i.exec(name || '')
   return m ? m[0].toLowerCase() : ''
 }
 
+/* A Date cell from cellDates:true, flattened to the local calendar day.
+   toISOString() would be wrong here — it converts to UTC first, so a cell read
+   as local midnight in Kiev comes back as the PREVIOUS day. Read the local
+   fields instead. */
+const isoDay = d =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+/* Rows arrive sparse — sheet_to_json omits trailing empties — so map() has to
+   tolerate holes. Only Date cells change; everything else is passed through
+   untouched so number and string columns behave exactly as before. */
+const normaliseRow = row =>
+  Array.isArray(row) ? row.map(c => (c instanceof Date && !Number.isNaN(c.getTime()) ? isoDay(c) : c)) : row
+
 export default function AppPage() {
-  const { dark, setDark } = useTheme()
+  const { dark, setDark, prefs, setPref, hydratePrefs } = usePrefs()
+  const toast = useToast()
+
+  /* One dialog host for the whole page.
+     --------------------------------------------------------------------
+     Almost nothing asks any more — a delete deletes and offers UNDO in a
+     toast. What is left is the handful of decisions undo genuinely cannot
+     reach, and they are rare enough that a second mounted <ConfirmDialog>
+     per site would be more machinery than the decisions are worth.
+
+     `ask()` hands back a promise so a caller reads top to bottom instead of
+     splitting in half around a callback. The resolver lives in a ref rather
+     than in state so `resolveDialog` never changes identity: ConfirmDialog
+     lists it in a dependency array, and this component re-renders on every
+     keystroke in the canvas. */
+  const [dialog, setDialog] = useState(null)
+  const dialogResolve = useRef(null)
+  const ask = spec => new Promise(resolve => {
+    /* A second question raised while one is still up would overwrite the
+       resolver and strand the first promise forever — a caller left awaiting
+       a dialog nobody can see. Settle the old one as "never mind" first. */
+    dialogResolve.current?.(null)
+    dialogResolve.current = resolve
+    setDialog(spec)
+  })
+  const resolveDialog = useCallback(value => {
+    const done = dialogResolve.current
+    dialogResolve.current = null
+    setDialog(null)
+    done?.(value)
+  }, [])
 
   const [files, setFiles] = useState([])
   const [expandedFiles, setExpandedFiles] = useState(new Set())
@@ -91,8 +141,12 @@ export default function AppPage() {
   // null = not asked yet, true = protected from eviction, false = refused
   const [persisted, setPersisted] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [showShortcuts, setShowShortcuts] = useState(false)
   const settingsRef = useRef(null)
+  /* §9.1 Builder. One boolean, and nothing below it reads it — the canvas, the
+     sidebar and every block are rendered identically whether it is true or
+     false. That is the whole compatibility guarantee, and it is why this is a
+     sibling island rather than a mode the workspace is put into. */
+  const [builderOpen, setBuilderOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -109,6 +163,10 @@ export default function AppPage() {
       }
       setNotebooks(initialNotebooks)
       setFolders(initialFolders)
+      /* Prefs come from the same payload. migratePrefs handles the v3 case
+         where the key simply isn't there, falling back to the standalone
+         theme mirror so an existing dark-mode user doesn't get flipped. */
+      hydratePrefs(migratePrefs(saved?.prefs))
       setHydrated(true)
     }).catch(err => {
       if (cancelled) return
@@ -142,18 +200,36 @@ export default function AppPage() {
   }
   useEffect(() => {
     if (!hydrated) return
-    debouncedSaveRef.current({ notebooks, folders }, res => {
+    debouncedSaveRef.current({ notebooks, folders, prefs }, res => {
       setSaveError(res.status === SAVE_OK ? null : res.error)
       if (res.status === SAVE_OK) {
         // Drop image bytes no block references any more, then refresh the meter.
         const live = []
+        const livePdfs = []
         notebooks.forEach(n => n.sheets?.forEach(s => s.blocks?.forEach(b => {
           if (b.type === 'image' && b.imageId) live.push(b.imageId)
+          if (b.type === 'pdf' && b.pdfId) livePdfs.push(b.pdfId)
         })))
-        pruneImages(live).then(() => storageEstimate().then(setUsage))
+        /* §9.1. A saved template owns COPIES of its assets, and no notebook
+           block references them — so the keep-set above, on its own, describes
+           every one of them as garbage. The first autosave after saving a
+           template would delete exactly the bytes that were just copied to
+           make the template self-contained.
+
+           A failed scan skips the prune entirely rather than pruning with what
+           it managed to read. An incomplete keep-set is not a smaller prune,
+           it is a delete, and the cost of the alternative is some orphaned
+           bytes until the next save. */
+        templateAssetIds().then(keep => {
+          if (keep.status !== TPL_OK) { storageEstimate().then(setUsage); return }
+          Promise.all([
+            pruneImages([...live, ...keep.images]),
+            prunePdfs([...livePdfs, ...keep.pdfs]),
+          ]).then(() => storageEstimate().then(setUsage))
+        })
       }
     })
-  }, [notebooks, folders, hydrated])
+  }, [notebooks, folders, prefs, hydrated])
 
   /* Warn before closing only when a save is actually outstanding. The old
      handler fired whenever any block existed, i.e. almost always — training
@@ -205,7 +281,59 @@ export default function AppPage() {
   const amber     = '#E8B85B'
 
   // ── File import ──────────────────────────────────────────────
+  /* ── Teleporting ───────────────────────────────────────────────────
+     Following a link can cross a sheet or a notebook boundary, which means
+     the target block isn't mounted at the moment of the click. So this
+     switches context and leaves a REQUEST; NotebookCanvas picks it up on the
+     render where the block actually exists and does the selecting and
+     centring there.
+
+     The nonce makes a repeat click on the same link re-fire. Without it,
+     clicking a link, panning away, and clicking it again would do nothing —
+     the state wouldn't have changed. */
+  const [revealRequest, setRevealRequest] = useState(null)
+
+  function teleportTo(addr) {
+    if (!addr) return
+    const nb = notebooks.find(n => n.id === addr.notebookId)
+    if (!nb) return                        // dangling; the link renders struck through
+    const sheet = (nb.sheets || []).find(sh => sh.id === addr.sheetId)
+    if (!sheet) return
+
+    if (nb.id !== activeNotebookId) setActiveNotebookId(nb.id)
+    if (sheet.id !== (nb.activeSheetId || nb.sheets?.[0]?.id)) setNotebookActiveSheet(nb.id, sheet.id)
+    setRevealRequest({ blockId: addr.blockId, nonce: Date.now() })
+  }
+
   function handleImportClick() { fileInputRef.current.click() }
+
+  /* Wipes the workspace store AND the image blobs. Two stores, so deleting one
+     used to leave orphaned images occupying quota with nothing referencing
+     them. Reloads rather than resetting state in place, because half the app
+     caches derived values off the notebook tree. */
+  async function deleteAllLocalData() {
+    /* The one delete in the app that keeps a dialog. Everything else here
+       deletes and offers UNDO, but there is nothing to hold the workspace in
+       while a toast counts down — the stores are gone and the page reloads.
+       Cancel takes the focus, not the red button, so an Enter pressed at the
+       wrong moment cannot wipe someone's only copy. */
+    const choice = await ask({
+      title: 'Delete everything in this browser?',
+      tone: 'danger',
+      body: 'Every notebook, folder, image and PDF lives on this device only. '
+          + 'There is no cloud copy and no undo for this one.\n\n'
+          + 'Export anything you want to keep first.',
+      actions: [
+        { label: 'Delete everything', value: 'delete', tone: 'danger' },
+        { label: 'Cancel', value: null, tone: 'quiet', autoFocus: true },
+      ],
+    })
+    if (choice !== 'delete') return
+    await clearState()
+    await idbClear(STORE_IMAGES)
+    await idbClear(STORE_PDFS)
+    window.location.reload()
+  }
 
   /* Import router.
      ------------------------------------------------------------------
@@ -226,11 +354,43 @@ export default function AppPage() {
     const ext = extOf(file.name)
 
     if (IMAGE_EXTS.includes(ext)) return importImage(file)
+    if (PDF_EXTS.includes(ext)) return importPdf(file)
     if (DATA_EXTS.has(ext)) return importWorkbook(file)
 
     setImportError(
-      `"${file.name}" isn't a format DataStudio can read. Spreadsheets: ${[...DATA_EXTS].slice(0, 6).join(' ')}… · Images: ${IMAGE_EXTS.join(' ')}`
+      `"${file.name}" isn't a format DataStudio can read. Spreadsheets: ${[...DATA_EXTS].slice(0, 6).join(' ')}… · Images: ${IMAGE_EXTS.join(' ')} · Documents: .pdf`
     )
+  }
+
+  /* A PDF becomes a block holding an id. The bytes go straight to IndexedDB
+     and are never part of the workspace snapshot — a 20MB document rewritten
+     by the 600ms autosave would make the whole app stutter. */
+  async function importPdf(file) {
+    if (!activeNotebookId) { setImportError('Open a notebook before adding a PDF.'); return }
+    setImporting(true)
+    try {
+      const processed = await processPdfFile(file)
+      const id = newPdfId()
+      await putPdf(id, processed)
+
+      addNotebookBlock(
+        activeNotebookId, 'pdf',
+        200 + Math.random() * 40, 130 + Math.random() * 30,
+        null, null, 520, 620,
+        { pdfId: id, name: processed.name, pdfPage: 1, pdfFit: 'width' }
+      )
+
+      /* Encryption is a hint, not a verdict — /Encrypt can appear inside a
+         stream in a file that isn't actually encrypted. So the block is
+         created either way and this is a warning, not a refusal. */
+      if (processed.encrypted) {
+        setImportError(`"${processed.name}" looks password-protected. If it doesn't open, that's why.`)
+      }
+    } catch (err) {
+      setImportError(err?.message || 'That PDF could not be imported.')
+    } finally {
+      setImporting(false)
+    }
   }
 
   async function importImage(file) {
@@ -276,11 +436,18 @@ export default function AppPage() {
     reader.onload = (evt) => {
       try {
         const data = new Uint8Array(evt.target.result)
-        const workbook = XLSX.read(data, { type: 'array' })
+        /* cellDates matters more than it looks. Without it a date cell arrives
+           as an Excel serial — 46266 — which String()s into "46266" and then
+           parses as the YEAR 46266. The calendar rail still rated such a column
+           "date, confidence 1.0", so turning the source on rendered an empty
+           month with no error. Dates come through as Date objects now and are
+           normalised to YYYY-MM-DD below, which is the one string shape
+           parseDate handles exactly. */
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true })
         if (!workbook.SheetNames?.length) throw new Error('the file contains no sheets')
         const sheets = workbook.SheetNames.map(sheetName => {
           const ws = workbook.Sheets[sheetName]
-          const json = XLSX.utils.sheet_to_json(ws, { header: 1 })
+          const json = XLSX.utils.sheet_to_json(ws, { header: 1 }).map(normaliseRow)
           // A missing header stays blank rather than becoming "Column 3" —
           // the grid shows the column letter, so a placeholder is just clutter.
           const headers = (json[0] || []).map((h, i) => ({ id: `col_${Date.now()}_${i}`, label: h ?? '', index: i, hidden: false }))
@@ -310,11 +477,42 @@ export default function AppPage() {
   function restoreColumn(fileId, sheetName, colId) {
     setFiles(prev => prev.map(f => f.id !== fileId ? f : { ...f, sheets: f.sheets.map(s => s.name !== sheetName ? s : { ...s, headers: s.headers.map(h => h.id === colId ? { ...h, hidden: false } : h) }) }))
   }
+  /* Deletes, then hands back the way to un-delete. Nothing asks first: tables
+     already built from this file survive it regardless, so the worst case is
+     re-importing — and undo makes even that unnecessary.
+
+     Position is part of what gets restored. A file that returns at the bottom
+     of the sidebar, out of the folder it was filed in, has technically come
+     back and practically hasn't. */
   function deleteFile(fileId) {
-    if (!window.confirm('Delete this file? Notebook tables built from it will remain.')) return
+    const index = files.findIndex(f => f.id === fileId)
+    if (index < 0) return null
+    const file = files[index]
+    const wasExpanded = expandedFiles.has(fileId)
+    const filedIn = folders
+      .map(f => ({ folderId: f.id, at: f.itemIds.indexOf(fileId) }))
+      .filter(x => x.at >= 0)
+
     setFiles(prev => prev.filter(f => f.id !== fileId))
     setExpandedFiles(prev => { const next = new Set(prev); next.delete(fileId); return next })
     setFolders(prev => prev.map(f => ({ ...f, itemIds: f.itemIds.filter(id => id !== fileId) })))
+
+    return () => {
+      setFiles(prev => {
+        if (prev.some(f => f.id === fileId)) return prev
+        const next = [...prev]
+        next.splice(Math.min(index, next.length), 0, file)
+        return next
+      })
+      if (wasExpanded) setExpandedFiles(prev => { const next = new Set(prev); next.add(fileId); return next })
+      setFolders(prev => prev.map(f => {
+        const spot = filedIn.find(x => x.folderId === f.id)
+        if (!spot || f.itemIds.includes(fileId)) return f
+        const itemIds = [...f.itemIds]
+        itemIds.splice(Math.min(spot.at, itemIds.length), 0, fileId)
+        return { ...f, itemIds }
+      }))
+    }
   }
 
   // ── Sidebar multi-select ─────────────────────────────────────
@@ -419,39 +617,43 @@ export default function AppPage() {
     setNotebooks(prev => [...prev, nb])
     setActiveNotebookId(nb.id)
   }
+  /* §9.1 Builder hands over a finished notebook — lib/templatestore.js has
+     already allocated every id and copied every asset — so this is the same
+     two lines createNotebook uses, and deliberately not a second code path
+     into the workspace. */
+  function addNotebookFromTemplate(nb) {
+    if (!nb?.id) return
+    setNotebooks(prev => [...prev, nb])
+    setActiveNotebookId(nb.id)
+  }
   function renameNotebook(nbId, name) {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, name }))
   }
   function _getActiveSheetId(n) { return n.activeSheetId || n.sheets?.[0]?.id }
+  /* The block SHAPE now lives in components/notebook/blockRegistry.js. This
+     function keeps only what it was always really about: generating an id and
+     splicing the result into the right sheet.
+
+     tests/registry.equivalence.test.mjs holds the previous constructor
+     verbatim and asserts the registry reproduces it exactly for all five
+     types — including the explicit `w: undefined` on tables, which is load
+     bearing and which JSON.stringify would have hidden. */
   function addNotebookBlock(nbId, type, x, y, customHeaders, customRows, customW, customH, patch) {
     const id = `block_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    let block = type === 'text'
-      ? { id, type: 'text', x, y, w: customW || 280, name: '', content: '' }
-      : type === 'kanban'
-      ? { id, type: 'kanban', x, y, name: '', lanes: [
-          { id: `lane_${Date.now()}_1`, name: 'Lane 1', cards: [] },
-          { id: `lane_${Date.now()}_2`, name: 'Lane 2', cards: [] },
-          { id: `lane_${Date.now()}_3`, name: 'Lane 3', cards: [] },
-        ]}
-      : type === 'section'
-      ? { id, type: 'section', x, y, w: customW || 500, h: customH || 350, name: 'Section', sectionColor: '#5B5FE8' }
-      // Image blocks hold only an id. The bytes live in IndexedDB so autosave
-      // never rewrites pixels — see lib/images.js.
-      : type === 'image'
-      ? { id, type: 'image', x, y, w: customW || 360, h: customH || 260, name: 'Image', imageId: null, alt: '', fit: 'contain', rev: 0 }
-      // Header starts blank. It used to default to the string "Column 1",
-      // which was pure noise: the grid already prints the column letter above
-      // every header, so the cell read "A / Column 1" and the user's first
-      // action was always to delete it.
-      : { id, type: 'table', x, y, w: customW || undefined, name: '',
-          headers: customHeaders || [''],
-          rows: customRows || Array(8).fill(null).map(() => ['']) }
-    if (patch) block = { ...block, ...patch, id }
+    const block = createBlock(type, {
+      id, x, y, w: customW, h: customH,
+      headers: customHeaders, rows: customRows, patch,
+    })
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       const sid = _getActiveSheetId(n)
       return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, blocks: [...s.blocks, block] } : s) }
     }))
+    /* Returned so a caller can act on the new block immediately — connecting
+       a subtask to its parent, say. Without this the only way to find it is to
+       wait a tick and guess which block is newest, which is a race dressed up
+       as a heuristic. */
+    return id
   }
   function updateNotebookBlock(nbId, blockId, patch) {
     if (patch?.__delete) { deleteNotebookBlock(nbId, blockId); return }
@@ -461,29 +663,114 @@ export default function AppPage() {
       return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, blocks: s.blocks.map(b => b.id === blockId ? { ...b, ...patch } : b) } : s) }
     }))
   }
-  function deleteNotebookBlock(nbId, blockId) {
+  /* Puts a removal back exactly where it came from.
+     --------------------------------------------------------------------
+     Blocks render in array order, so a block spliced back at the END returns
+     sitting on top of things it used to sit behind. It has technically been
+     restored and visibly hasn't, which is the fastest way to teach someone
+     that UNDO is not to be trusted. Indices travel with the snapshot.
+
+     Only what was removed comes back. A whole-array snapshot would be less
+     code and would also silently revert anything the user did in the seven
+     seconds the toast was up. */
+  function restoreNotebookBlocks(snap) {
     setNotebooks(prev => prev.map(n => {
-      if (n.id !== nbId) return n
-      const sid = _getActiveSheetId(n)
+      if (n.id !== snap.nbId) return n
       return { ...n, sheets: (n.sheets || []).map(s => {
-        if (s.id !== sid) return s
-        const doomed = s.blocks.find(b => b.id === blockId)
-        let blocks = s.blocks.filter(b => b.id !== blockId)
-        if (doomed?.type === 'section') {
-          const childIds = blocks.filter(b => b.parentSectionId === blockId).map(b => b.id)
-          if (childIds.length > 0) {
-            const msg = `Delete section "${doomed.name || 'Section'}" and its ${childIds.length} block${childIds.length > 1 ? 's' : ''}?`
-            if (window.confirm(`${msg}\n\nOK = Delete all · Cancel = Keep blocks`)) {
-              blocks = blocks.filter(b => b.parentSectionId !== blockId)
-            } else {
-              blocks = blocks.map(b => b.parentSectionId === blockId ? { ...b, parentSectionId: null } : b)
-            }
-          }
-        }
-        const connections = (s.connections || []).filter(c => c.fromBlockId !== blockId && c.toBlockId !== blockId)
+        if (s.id !== snap.sheetId) return s
+        const parentOf = new Map(snap.orphans)
+        const blocks = s.blocks.map(b => parentOf.has(b.id) ? { ...b, parentSectionId: parentOf.get(b.id) } : b)
+        const present = new Set(s.blocks.map(b => b.id))
+        snap.blocks.forEach(([b, at]) => {
+          if (present.has(b.id)) return          // already back; never duplicate a React key
+          blocks.splice(Math.min(at, blocks.length), 0, b)
+        })
+        const connections = [...(s.connections || [])]
+        const haveConn = new Set(connections.map(c => c.id))
+        snap.connections.forEach(([c, at]) => {
+          if (haveConn.has(c.id)) return
+          connections.splice(Math.min(at, connections.length), 0, c)
+        })
         return { ...s, blocks, connections }
       }) }
     }))
+  }
+
+  /* Deletes blocks and reports `{ undo, count }` — or null when nothing went.
+     --------------------------------------------------------------------
+     The CALLER raises the toast, not this function: only the canvas knows
+     whether the block held anything, and announcing the deletion of an empty
+     block you created by mis-clicking is noise dressed up as feedback.
+
+     `count` is what ACTUALLY went, which is not always what was asked for:
+     answering "Delete all" to a section takes its children too. A toast
+     reading "1 block deleted" while six left the canvas is the kind of small
+     lie that costs the toast its credibility for everything else.
+
+     A section is the one block whose delete is a genuine question — its
+     children can go with it or stay on the canvas — so that one still opens a
+     dialog. Not to confirm: to ask. Cancelling any of them abandons the whole
+     operation, because a half-applied multi-delete is not a state anyone
+     asked for. */
+  async function deleteNotebookBlocks(nbId, ids) {
+    const n = notebooks.find(x => x.id === nbId)
+    const sheetId = n && _getActiveSheetId(n)
+    const sheet = n?.sheets?.find(s => s.id === sheetId)
+    if (!sheet) return null
+
+    const doomed = ids.map(id => sheet.blocks.find(b => b.id === id)).filter(Boolean)
+    if (!doomed.length) return null
+
+    const removeIds = new Set(doomed.map(b => b.id))
+    const orphanIds = []
+
+    for (const b of doomed) {
+      if (b.type !== 'section') continue
+      const children = sheet.blocks.filter(c => c.parentSectionId === b.id && !removeIds.has(c.id))
+      if (!children.length) continue
+      const choice = await ask({
+        title: `Delete "${b.name || 'Section'}"?`,
+        body: `It holds ${children.length} block${children.length > 1 ? 's' : ''}. `
+            + 'They can go with the section, or stay on the canvas without it.',
+        actions: [
+          { label: 'Delete all', value: 'all', tone: 'danger' },
+          { label: 'Keep blocks', value: 'keep', autoFocus: true },
+          { label: 'Cancel', value: null, tone: 'quiet' },
+        ],
+      })
+      if (choice === null) return null           // nothing has happened yet
+      if (choice === 'all') children.forEach(c => removeIds.add(c.id))
+      else children.forEach(c => orphanIds.push(c.id))
+    }
+
+    const orphanOf = new Map(orphanIds.map(id => [id, sheet.blocks.find(b => b.id === id)?.parentSectionId ?? null]))
+    const snap = {
+      nbId, sheetId,
+      blocks: sheet.blocks.map((b, at) => [b, at]).filter(([b]) => removeIds.has(b.id)),
+      connections: (sheet.connections || []).map((c, at) => [c, at])
+        .filter(([c]) => removeIds.has(c.fromBlockId) || removeIds.has(c.toBlockId)),
+      orphans: [...orphanOf],
+    }
+
+    setNotebooks(prev => prev.map(nn => {
+      if (nn.id !== nbId) return nn
+      return { ...nn, sheets: (nn.sheets || []).map(s => {
+        if (s.id !== sheetId) return s
+        const blocks = s.blocks
+          .filter(b => !removeIds.has(b.id))
+          .map(b => orphanOf.has(b.id) ? { ...b, parentSectionId: null } : b)
+        const connections = (s.connections || [])
+          .filter(c => !removeIds.has(c.fromBlockId) && !removeIds.has(c.toBlockId))
+        return { ...s, blocks, connections }
+      }) }
+    }))
+
+    return { undo: () => restoreNotebookBlocks(snap), count: removeIds.size }
+  }
+
+  /* The single-block form every existing caller already speaks. */
+  function deleteNotebookBlock(nbId, blockId) {
+    return deleteNotebookBlocks(nbId, [blockId])
   }
   function addNotebookDrawing(nbId, drawing) {
     setNotebooks(prev => prev.map(n => {
@@ -506,6 +793,20 @@ export default function AppPage() {
       return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, drawings: [] } : s) }
     }))
   }
+  /* Change a connection in place — used to say what a dependency MEANS.
+     A separate function rather than delete-and-recreate, so the id survives
+     and the selection doesn't jump. */
+  function updateNotebookConnection(nbId, connId, patch) {
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = _getActiveSheetId(n)
+      return { ...n, sheets: (n.sheets || []).map(s => s.id !== sid ? s : {
+        ...s,
+        connections: (s.connections || []).map(c => c.id === connId ? { ...c, ...patch, id: c.id } : c),
+      }) }
+    }))
+  }
+
   function addNotebookConnection(nbId, conn) {
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
@@ -525,10 +826,27 @@ export default function AppPage() {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, sheets: [...(n.sheets || []), { id, name: `Sheet ${(n.sheets || []).length + 1}`, blocks: [] }], activeSheetId: id }))
   }
   function deleteNotebookSheet(nbId, sheetId) {
+    const nb = notebooks.find(n => n.id === nbId)
+    const at = (nb?.sheets || []).findIndex(s => s.id === sheetId)
+    if (at < 0) return null
+    const sheet = nb.sheets[at]
+    const prevActiveSheetId = nb.activeSheetId
+
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       const newSheets = (n.sheets || []).filter(s => s.id !== sheetId)
       return { ...n, sheets: newSheets, activeSheetId: newSheets[0]?.id || null }
+    }))
+
+    /* Back at its own tab position, and looking at whatever sheet you were
+       looking at before — a sheet that returns last, with the notebook now
+       showing a different tab, does not read as the same sheet coming back. */
+    return () => setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sheets = [...(n.sheets || [])]
+      if (sheets.some(s => s.id === sheetId)) return n
+      sheets.splice(Math.min(at, sheets.length), 0, sheet)
+      return { ...n, sheets, activeSheetId: prevActiveSheetId || n.activeSheetId }
     }))
   }
   function renameNotebookSheet(nbId, sheetId, name) {
@@ -540,15 +858,35 @@ export default function AppPage() {
   // Deleting the only notebook would leave the app with nowhere to render —
   // DataStudio is always the notebook workspace, so a fresh one is created
   // in that case instead of falling back to an empty shell.
+  /* The stand-in and the next-active decision are both made out here rather
+     than inside the updater. A setState updater has to be a pure function of
+     its argument — React is entitled to call it twice — and the old version
+     called setActiveNotebookId from inside one. Undo also needs to know which
+     notebook was the stand-in, so it can take it away again instead of
+     leaving the user with two. */
   function deleteNotebook(nbId) {
+    const at = notebooks.findIndex(n => n.id === nbId)
+    if (at < 0) return null
+    const doomed = notebooks[at]
+    const prevActiveId = activeNotebookId
+    const remaining = notebooks.filter(n => n.id !== nbId)
+    const standIn = remaining.length === 0 ? freshNotebook() : null
+
     setNotebooks(prev => {
       const next = prev.filter(n => n.id !== nbId)
-      if (activeNotebookId !== nbId) return next
-      if (next.length > 0) { setActiveNotebookId(next[0].id); return next }
-      const nb = freshNotebook()
-      setActiveNotebookId(nb.id)
-      return [nb]
+      return next.length > 0 ? next : [standIn]
     })
+    if (activeNotebookId === nbId) setActiveNotebookId(standIn ? standIn.id : remaining[0].id)
+
+    return () => {
+      setNotebooks(prev => {
+        if (prev.some(n => n.id === nbId)) return prev
+        const next = prev.filter(n => n.id !== standIn?.id)
+        next.splice(Math.min(at, next.length), 0, doomed)
+        return next
+      })
+      setActiveNotebookId(prevActiveId)
+    }
   }
 
   function renderNotebookInSidebar(nb, folderId) {
@@ -597,7 +935,7 @@ export default function AppPage() {
                 onMouseEnter={e => e.currentTarget.style.color = accent}
                 onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-move-out" size={11} /></button>
             )}
-            <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${nb.name}"?`)) deleteNotebook(nb.id) }}
+            <button onClick={e => { e.stopPropagation(); const undo = deleteNotebook(nb.id); if (undo) toast(`"${nb.name}" deleted`, { undo }) }}
               style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3 }}
               onMouseEnter={e => e.currentTarget.style.color = red}
               onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-delete" size={11} /></button>
@@ -632,7 +970,7 @@ export default function AppPage() {
                   )}
                   {isActive && !isRenaming && <Icon name="action-check" size={11} style={{ color: accent }} />}
                   {!isRenaming && nb.sheets.length > 1 && (
-                    <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete sheet "${sheet.name}"?`)) deleteNotebookSheet(nb.id, sheet.id) }}
+                    <button onClick={e => { e.stopPropagation(); const undo = deleteNotebookSheet(nb.id, sheet.id); if (undo) toast(`Sheet "${sheet.name}" deleted`, { undo }) }}
                       style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0.35, flexShrink: 0 }}
                       onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
                       onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0.35' }}><Icon name="action-delete" size={10} /></button>
@@ -706,7 +1044,7 @@ export default function AppPage() {
           }}
           style={{ padding: '8px 10px', borderRadius: 7, fontSize: 13, color: text, cursor: 'grab', display: 'flex', alignItems: 'center', gap: 7, fontWeight: 600, background: dragOverFileId === file.id ? accentDim : undefined, border: dragOverFileId === file.id ? `1px solid ${accent}` : '1px solid transparent' }}>
           <span style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-          <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${file.name}"?`)) deleteFile(file.id) }}
+          <button onClick={e => { e.stopPropagation(); const undo = deleteFile(file.id); if (undo) toast('File deleted', { undo }) }}
             style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3, opacity: 0, flexShrink: 0 }}
             className="col-actions"
             onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
@@ -998,91 +1336,66 @@ export default function AppPage() {
           </div>
         </div>
 
-        {/* ── Settings island ──
-            Was a "Free plan" label next to an emoji avatar: two pieces of
-            chrome that did nothing and implied an account system that doesn't
-            exist. Replaced with the one thing that belongs in the corner of a
-            local-first app — where your data lives and what state it's in. */}
-        <div ref={settingsRef} data-kbd-zone style={{ position: 'absolute', top: 16, right: 16, zIndex: 100 }}>
-          <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${settingsOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: settingsOpen ? accent : text2, cursor: 'pointer' }}>
-            <Icon name="settings-gear" size={14} />
-            Settings
-          </button>
+        {/* ── Top-right chrome: Builder, then Settings ──
+            One absolutely-positioned row holding two independent islands.
+            Settings keeps its own wrapper because its outside-click dismissal
+            measures containment against it, and the Builder button has to sit
+            OUTSIDE that box or pressing Builder would leave Settings open
+            behind the panel. */}
+        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 100, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
 
-          {settingsOpen && (
-            <div role="dialog" aria-label="Settings"
-              style={{ position: 'absolute', top: '100%', right: 0, marginTop: 8, width: 268, background: surface, border: `1px solid ${border}`, borderRadius: 12, boxShadow: `0 12px 40px ${dark ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.16)'}`, padding: 12, fontFamily: 'var(--ds-font-body)', animation: 'fadeUp 0.15s ease both' }}>
+          {/* ── Builder ──
+              §9.1. A separate optional mode, deliberately additive: it opens a
+              panel beside the canvas and changes nothing about the canvas, the
+              sidebar or any block. Someone who never presses it is using the
+              same app they were using yesterday.
 
-              <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9, textTransform: 'uppercase', color: text3, marginBottom: 7 }}>Appearance</div>
-              <div style={{ display: 'flex', gap: 5, marginBottom: 14 }}>
-                {[['Light', false], ['Dark', true]].map(([lbl, val]) => (
-                  <button key={lbl} onClick={() => setDark(val)}
-                    style={{ flex: 1, padding: '7px 0', borderRadius: 7, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', border: `1.5px solid ${dark === val ? accent : border}`, background: dark === val ? accentDim : 'transparent', color: dark === val ? accent : text2, fontWeight: dark === val ? 650 : 500 }}>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
+              action-duplicate, of the three names offered, is the only honest
+              one. tool-formula is a summation sigma and Builder computes
+              nothing; nav-sheet is the sheet glyph and would claim this button
+              adds a sheet. Two overlapping frames is what a template IS — a
+              workspace with copies made from it — and it is the panel's
+              primary verb. */}
+          <div data-kbd-zone style={{ position: 'relative' }}>
+            <button onClick={() => setBuilderOpen(o => !o)} aria-label="Builder" aria-expanded={builderOpen}
+              data-ds-builder-button
+              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${builderOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 600, color: builderOpen ? accent : text2, cursor: 'pointer' }}>
+              <Icon name="action-duplicate" size={14} />
+              Builder
+            </button>
 
-              {/* Keyboard reference. Same source as the ? overlay
-                  (lib/shortcuts.js), so the two can't disagree. */}
-              <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9, textTransform: 'uppercase', color: text3, marginBottom: 7 }}>Keyboard</div>
-              <button onClick={() => setShowShortcuts(s => !s)}
-                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '7px 9px', marginBottom: showShortcuts ? 8 : 14, borderRadius: 7, cursor: 'pointer', border: `1px solid ${showShortcuts ? accent : border}`, background: showShortcuts ? accentDim : 'transparent', color: showShortcuts ? accent : text2, fontFamily: 'var(--ds-font-body)', fontSize: 12 }}>
-                <span style={{ flex: 1, textAlign: 'left' }}>Shortcuts</span>
-                {showShortcuts
-                  ? <Icon name="nav-chevron-down" size={11} style={{ opacity: 0.8 }} />
-                  : <span style={{ fontSize: 10, fontFamily: 'var(--ds-font-mono)', opacity: 0.8 }}>?</span>}
-              </button>
-              {showShortcuts && (
-                <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 14, paddingRight: 2 }}>
-                  {SHORTCUT_GROUPS.map(({ title, note, rows }) => (
-                    <div key={title} style={{ marginBottom: 10 }}>
-                      <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.7, textTransform: 'uppercase', color: text3, marginBottom: note ? 2 : 5 }}>{title}</div>
-                      {note && <div style={{ fontSize: 10, color: text3, marginBottom: 5, lineHeight: 1.4 }}>{note}</div>}
-                      {rows.map(([k, d]) => (
-                        <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '2px 0' }}>
-                          <span style={{ flex: '0 0 96px', fontFamily: 'var(--ds-font-mono)', fontSize: 9.5, color: accent, lineHeight: 1.4 }}>{k}</span>
-                          <span style={{ flex: 1, fontSize: 10.5, color: text2, lineHeight: 1.45 }}>{d}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              )}
+            {builderOpen && (
+              <BuilderPanel
+                colors={colors}
+                dark={dark}
+                notebook={notebooks.find(n => n.id === activeNotebookId) || null}
+                onUseTemplate={addNotebookFromTemplate}
+                onClose={() => setBuilderOpen(false)}
+              />
+            )}
+          </div>
 
-              <div style={{ fontSize: 9, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9, textTransform: 'uppercase', color: text3, marginBottom: 7 }}>Storage</div>
-              <div style={{ fontSize: 11.5, color: text2, lineHeight: 1.6, marginBottom: 8 }}>
-                Everything is stored in this browser. Nothing is uploaded.
-              </div>
-              {usage && (
-                <div style={{ fontSize: 11, color: text2, display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontFamily: 'var(--ds-font-mono)' }}>
-                  <span>{formatBytes(usage.usage)} used</span>
-                  <span style={{ color: text3 }}>of ~{formatBytes(usage.quota)}</span>
-                </div>
-              )}
-              <div style={{ fontSize: 11, marginBottom: 10, lineHeight: 1.5, color: persisted === false ? amber : persisted === true ? accent : text3 }}>
-                {persisted === true && 'Protected — the browser has agreed not to evict it.'}
-                {persisted === false && 'Not protected. The browser may clear this if the disk fills up — export anything important.'}
-                {persisted === null && 'Eviction protection is unavailable in this browser.'}
-              </div>
+          {/* ── Settings island ──
+              Was a "Free plan" label next to an emoji avatar: two pieces of
+              chrome that did nothing and implied an account system that doesn't
+              exist. Replaced with the one thing that belongs in the corner of a
+              local-first app — where your data lives and what state it's in. */}
+          <div ref={settingsRef} data-kbd-zone style={{ position: 'relative' }}>
+            <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${settingsOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: settingsOpen ? accent : text2, cursor: 'pointer' }}>
+              <Icon name="settings-gear" size={14} />
+              Settings
+            </button>
 
-              <button
-                onClick={async () => {
-                  if (!window.confirm('Delete every notebook, folder and image stored in this browser?\n\nThis cannot be undone, and there is no cloud copy. Export first if you need anything.')) return
-                  await clearState()
-                  await idbClear(STORE_IMAGES)
-                  window.location.reload()
-                }}
-                style={{ width: '100%', padding: '8px 0', borderRadius: 7, border: `1px solid ${border}`, background: 'transparent', color: red, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
-                Delete all local data
-              </button>
-
-              <div style={{ borderTop: `1px solid ${border}`, marginTop: 12, paddingTop: 9, fontSize: 10, color: text3, lineHeight: 1.6, fontFamily: 'var(--ds-font-mono)' }}>
-                DataStudio · local-first
-              </div>
-            </div>
-          )}
+            {settingsOpen && (
+              <SettingsPanel
+                dark={dark} setDark={setDark}
+                prefs={prefs} setPref={setPref}
+                usage={usage} persisted={persisted} formatBytes={formatBytes}
+                onDeleteAllData={deleteAllLocalData}
+              />
+            )}
+          </div>
         </div>
 
         {/* ── Main: always the notebook workspace ── */}
@@ -1092,11 +1405,21 @@ export default function AppPage() {
               nb={notebooks.find(n => n.id === activeNotebookId)}
               dark={dark}
               colors={colors}
+              prefs={prefs}
+              notebooks={notebooks}
+              onTeleport={teleportTo}
+              revealRequest={revealRequest}
+              onRevealHandled={() => setRevealRequest(null)}
               onAddBlock={(type, x, y, h1, r1, w, h, patch) => addNotebookBlock(activeNotebookId, type, x, y, h1, r1, w, h, patch)}
               onAddConnection={(conn) => addNotebookConnection(activeNotebookId, conn)}
               onDeleteConnection={(connId) => deleteNotebookConnection(activeNotebookId, connId)}
+              onUpdateConnection={(connId, patch) => updateNotebookConnection(activeNotebookId, connId, patch)}
               onUpdateBlock={(blockId, patch) => updateNotebookBlock(activeNotebookId, blockId, patch)}
               onDeleteBlock={(blockId) => deleteNotebookBlock(activeNotebookId, blockId)}
+              /* Resolves to the undo, or null if nothing went. The canvas
+                 raises the toast because it is the one that knows whether the
+                 block held anything worth announcing. */
+              onDeleteBlocks={(ids) => deleteNotebookBlocks(activeNotebookId, ids)}
               onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
               onRenameSheet={(sheetId, name) => renameNotebookSheet(activeNotebookId, sheetId, name)}
               onOpenCrosscheck={() => setShowCCWizard(true)}
@@ -1140,6 +1463,17 @@ export default function AppPage() {
         onClose={() => setShowCCWizard(false)}
         sourceColumns={getCrosscheckSourceColumns()}
         onAddToNotebook={handleCCAddToNotebook}
+      />
+
+      {/* Last in the tree and portalled out of it, so it is never inside
+          anything that could clip or transform it. */}
+      <ConfirmDialog
+        open={!!dialog}
+        title={dialog?.title}
+        body={dialog?.body}
+        tone={dialog?.tone}
+        actions={dialog?.actions}
+        onResolve={resolveDialog}
       />
     </div>
   )

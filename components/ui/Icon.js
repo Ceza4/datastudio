@@ -65,6 +65,7 @@ export const ICON_GROUPS = (() => {
     ['Image tools', /^img-/],
     ['Sheet tools', /^tool-/],
     ['Sidebar', /^(app-logo|nav-|settings-|storage-)/],
+    ['Settings', /^theme-/],
     ['Sizing', /^size-/],
     ['Grid actions', /^grid-/],
     ['Text', /^text-/],

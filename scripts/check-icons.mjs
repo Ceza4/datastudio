@@ -29,8 +29,25 @@ const NAMES = new Set([...SRC.matchAll(/^ {2}'([^']+)':/gm)].map(m => m[1]))
    CSS values, class names — and the noise would make the check useless. */
 const ICON_ID = new RegExp(
   '^(action|app|auth|block|cc|draw|format|grid|handle|history|img|nav|plan' +
-  '|settings|share|size|state|status|storage|sync|text|tool|view)-[a-z0-9-]+$'
+  '|settings|share|size|state|status|storage|sync|text|theme|tool|view)-[a-z0-9-]+$'
 )
+
+/* THE ONE COLLISION BETWEEN TWO NAMESPACES
+   -------------------------------------------------------------------------
+   Design tokens are kebab-case too, and six of them share the `text-` prefix
+   with the text icons: `--ds-text-2` and `--ds-text-3` are colours, and
+   lib/database.js stores OPTION_COLORS as token NAMES so an option can never
+   hold a hex that is invisible in one theme. The heuristic above read those
+   strings as icon ids and reported four failures that were not failures.
+
+   Skipping them is derived, not listed by hand: a candidate is exempt only if
+   globals.css genuinely declares `--ds-<name>`. A typo'd icon is not a
+   declared token, so nothing real can hide here — and the count is printed
+   below, so the exemption can never be silent. */
+const TOKENS = new Set(
+  [...readFileSync(join(ROOT, 'app/globals.css'), 'utf8').matchAll(/--ds-([a-z0-9-]+)\s*:/g)].map(m => m[1])
+)
+const isDesignToken = s => !NAMES.has(s) && TOKENS.has(s)
 
 const files = []
 ;(function walk(d) {
@@ -45,6 +62,7 @@ const files = []
 const unresolved = []
 const noImport = []
 const used = new Set()
+const tokenHits = new Set()
 let sites = 0
 
 for (const f of files) {
@@ -58,6 +76,7 @@ for (const f of files) {
 
   for (const m of s.matchAll(/'([a-z][a-z0-9]*-[a-z0-9-]+)'/g)) {
     if (!ICON_ID.test(m[1])) continue
+    if (isDesignToken(m[1])) { tokenHits.add(m[1]); continue }
     used.add(m[1])
     if (!NAMES.has(m[1])) unresolved.push(`${rel}  →  ${m[1]}`)
   }
@@ -72,7 +91,11 @@ const brushOk = brushes[0] < brushes[1] && brushes[1] < brushes[2]
 
 console.log(`\n  ${NAMES.size} icons in the set`)
 console.log(`  ${sites} <Icon> render sites across ${files.length} files`)
-console.log(`  ${used.size} distinct icons referenced\n`)
+console.log(`  ${used.size} distinct icons referenced`)
+if (tokenHits.size) {
+  console.log(`  ${tokenHits.size} kebab-case string(s) skipped as design tokens: ${[...tokenHits].sort().join(', ')}`)
+}
+console.log('')
 
 let failed = false
 if (unresolved.length) {

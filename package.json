@@ -7,11 +7,20 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "node tests/run.mjs",
+    "pdf:worker": "node scripts/sync-pdf-worker.mjs",
+    "postinstall": "node scripts/sync-pdf-worker.mjs",
     "icons": "node scripts/build-icons.mjs ../../icons",
-    "icons:check": "node scripts/check-icons.mjs"
+    "icons:check": "node scripts/check-icons.mjs",
+    "check:geom": "node scripts/check-canvas-geom.mjs",
+    "check:hooks": "node scripts/check-hook-order.mjs",
+    "check": "node scripts/check-icons.mjs && node scripts/check-canvas-geom.mjs && node scripts/check-hook-order.mjs",
+    "test:browser": "node tests/browser/run.mjs"
   },
   "dependencies": {
     "next": "16.1.7",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "5.4.149",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-window": "^2.2.7",
@@ -19,6 +28,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "esbuild": "^0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.1.7",
     "tailwindcss": "^4"

@@ -39,6 +39,18 @@ export const COMMANDS = [
   { id: 'quote',     label: 'Quote',       desc: 'Indented quotation',          icon: 'text-quote',    keywords: 'quote blockquote cite' },
   { id: 'divider',   label: 'Divider',     desc: 'Horizontal separator line',   icon: 'text-divider',    keywords: 'divider line separator rule hr' },
   { id: 'code',      label: 'Code block',  desc: 'Monospaced code snippet',     icon: 'text-code',  keywords: 'code snippet pre monospace' },
+  /* Not a formatting command — it opens a picker and then inserts a span. The
+     slash menu is still the right home for it: it's where people already look
+     for "insert something here", and putting it in the format rail would
+     imply it styles the selection. */
+  { id: 'link',      label: 'Link to a block', desc: 'Jump to another block, sheet or notebook', icon: 'share-link', keywords: 'link teleport jump reference goto connect mention' },
+  /* Also not a formatting command: it puts a BLOCK on the canvas rather than
+     markup in this paragraph. It belongs here because the note asks for the
+     slash menu to become "the central way of inserting these modular
+     components" — and because it is already where people look for "insert
+     something". The parent hands it to the canvas; see onInsertBlock in
+     TextBlockContent. */
+  { id: 'database',  label: 'Database',        desc: 'Table, board, calendar and cards over one set of rows', icon: 'block-table', keywords: 'database table board kanban calendar gallery cards notion crm rows properties collection' },
 ]
 
 /* Shared by the menu and by its parent, so the parent can clamp the active

@@ -54,6 +54,8 @@
      headings can diverge later without touching every component again. */
   --ds-font-head:  var(--font-inter, 'Inter'), system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --ds-font-body:  var(--font-inter, 'Inter'), system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  /* share-link, inlined for .ds-teleport::before (a CSS mask can't import JS) */
+  --ds-teleport-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none' stroke='%23000' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M28 36a10 10 0 0 0 15 1l8-8a10 10 0 0 0-14-14l-5 4'/%3E%3Cpath d='M36 28a10 10 0 0 0-15-1l-8 8a10 10 0 0 0 14 14l5-4'/%3E%3C/svg%3E");
   --ds-font-mono:  var(--font-dm-mono, 'DM Mono'), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
   --ds-fs-xs:      10px;
@@ -380,3 +382,81 @@ h1, h2, h3, h4 {
 html, body, button, input, textarea, select {
   font-family: var(--ds-font-body);
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Teleport links
+   ══════════════════════════════════════════════════════════════════════
+   Deliberately NOT styled like a web link. Underlined blue means "this
+   leaves the app"; these stay inside it, so they read as a chip instead —
+   accent text on a tinted ground with a small link glyph in front. The
+   difference has to be legible at a glance or people won't trust either. */
+.ds-teleport {
+  display: inline;
+  color: var(--ds-accent);
+  background: var(--ds-accent-dim);
+  border-radius: 4px;
+  padding: 0.5px 5px 0.5px 4px;
+  cursor: pointer;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;   /* keeps the chip intact across a line wrap */
+  transition: background var(--ds-transition), color var(--ds-transition);
+}
+.ds-teleport::before {
+  content: '';
+  display: inline-block;
+  width: 0.72em;
+  height: 0.72em;
+  margin-right: 0.28em;
+  vertical-align: -0.04em;
+  background: currentColor;
+  /* The share-link glyph, inlined as a mask so it inherits colour and needs
+     no React on a node that lives inside contenteditable HTML. */
+  -webkit-mask: var(--ds-teleport-glyph) center / contain no-repeat;
+  mask: var(--ds-teleport-glyph) center / contain no-repeat;
+}
+.ds-teleport:hover {
+  background: var(--ds-accent);
+  color: #fff;
+}
+
+/* Target deleted. Never auto-removed — the text is the user's, and quietly
+   editing what someone wrote because a link broke is worse than showing them
+   a broken link. */
+.ds-teleport[data-ds-dangling] {
+  color: var(--ds-text-3);
+  background: transparent;
+  border: 1px dashed var(--ds-border);
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+.ds-teleport[data-ds-dangling]:hover {
+  background: transparent;
+  color: var(--ds-text-3);
+}
+
+/* Arrival pulse. Same curve and duration as dsBlockAppear so a block you
+   teleported to and a block you just created announce themselves identically. */
+@keyframes dsTeleportArrive {
+  0%   { box-shadow: 0 0 0 0 var(--ds-accent); }
+  55%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+[data-ds-arrived='true'] {
+  animation: dsTeleportArrive 0.62s cubic-bezier(0.34, 1.56, 0.64, 1);
+  border-radius: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-ds-arrived='true'] { animation: none; }
+}
+
+/* Toasts and dialogs. Both enter with a slight overshoot — the same curve the
+   contextual rails use, so new chrome arrives the same way everywhere. */
+@keyframes dsToastIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes dsDialogIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes dsScrimIn { from { opacity: 0 } to { opacity: 1 } }
