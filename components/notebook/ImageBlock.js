@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, memo } from 'react'
 import { imageUrl, releaseImageUrl } from '../../lib/images'
 
 /* ImageBlock
@@ -18,7 +18,17 @@ import { imageUrl, releaseImageUrl } from '../../lib/images'
    is a notebook you can't navigate.
    -------------------------------------------------------------------------- */
 
-export default function ImageBlock({ block, colors, maxHeight, onUpdateBlock }) {
+
+/* memo, because this component is a child of NotebookCanvas and NotebookCanvas
+   re-renders on every frame of a pan or a zoom. Without it, dragging the canvas
+   re-rendered every block on screen sixty times a second; with it, React bails
+   out at this boundary and the frame costs nothing but the transform.
+
+   A plain shallow compare is enough because every prop it receives is stable by
+   construction: `colors` is one of two frozen module objects (lib/theme.js),
+   handlers are cached per block id by blockCb() in NotebookCanvas, and `block`
+   only changes identity when the block actually changes. */
+function ImageBlockInner({ block, colors, maxHeight, onUpdateBlock }) {
   const { text2, text3, border, raised, red } = colors
   const [url, setUrl] = useState(null)
   const [state, setState] = useState('loading')   // loading | ready | missing
@@ -63,7 +73,7 @@ export default function ImageBlock({ block, colors, maxHeight, onUpdateBlock }) 
     return (
       <div style={{ ...boxStyle, flexDirection: 'column', gap: 6, padding: 16, textAlign: 'center' }}>
         <span style={{ color: red, fontSize: 12, fontWeight: 600 }}>Image data not found</span>
-        <span style={{ color: text3, fontSize: 11, lineHeight: 1.5 }}>
+        <span style={{ color: text2, fontSize: 11, lineHeight: 1.5 }}>
           The file is missing from local storage. It may have been cleared by the
           browser, or the notebook was opened on another device.
         </span>
@@ -99,3 +109,5 @@ export default function ImageBlock({ block, colors, maxHeight, onUpdateBlock }) 
     </div>
   )
 }
+
+export default memo(ImageBlockInner)

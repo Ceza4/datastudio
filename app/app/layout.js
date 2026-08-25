@@ -1,23 +1,21 @@
 'use client'
 import { useEffect } from 'react'
 import { useTheme } from '../providers'
+import { makeColors } from '../../lib/theme'
 
 export default function AppLayout({ children }) {
   const { dark } = useTheme()
 
-  const surface  = dark ? '#201F1C' : '#EDEAE3'
-  const border   = dark ? '#2E2D29' : '#D5D1C7'
-  const text     = dark ? '#E8E6E1' : '#1A1917'
-  const text2    = dark ? '#9A9790' : '#6B6860'
-  const text3    = dark ? '#5A5955' : '#A09D97'
-  const accent   = dark ? '#5B5FE8' : '#1D9E75'
-  const raised   = dark ? '#262522' : '#E4E1D8'
+  /* One palette, from lib/theme.js. This file used to rebuild seven of these
+     from hex literals by hand — one of six copies across the app, three of
+     which had drifted to values that appear nowhere in globals.css. */
+  const c = makeColors(dark)
 
   // Sync body bg with theme so no dark bleed-through in light mode
   useEffect(() => {
-    document.body.style.background = dark ? '#1A1917' : '#F5F3EE'
-    document.body.style.color      = dark ? '#E8E6E1' : '#1A1917'
-  }, [dark])
+    document.body.style.background = c.base
+    document.body.style.color      = c.text
+  }, [c])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'var(--ds-font-body)', overflow: 'hidden' }}>

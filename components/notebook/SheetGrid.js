@@ -2,6 +2,8 @@
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { Z } from '../../lib/theme'
+import { tsvCell } from '../../lib/csv'
 
 /* SheetGrid — the spreadsheet inside a notebook table block.
    --------------------------------------------------------------------------
@@ -100,7 +102,7 @@ const inR = (r, row, col) => {
 }
 
 function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef }) {
-  const { border, text, text2, text3, accent, accentDim, raised, surface } = colors
+  const { border, text, text2, text3, accent, accentText, accentDim, raised, surface } = colors
 
   const rows = block.rows || EMPTY_ROWS
   const headers = block.headers || EMPTY_HEADERS
@@ -496,7 +498,11 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const out = []
     for (let r = n.r1; r <= n.r2; r++) {
       const line = []
-      for (let c = n.c1; c <= n.c2; c++) line.push(cellAt(r, c))
+      /* Escaped on the way OUT, the same as a CSV export. A copy from here is
+         usually a paste into Excel, and a cell beginning = + - @ evaluates
+         there. Neutralising at the boundary the data leaves through is the
+         only place it can be done once. */
+      for (let c = n.c1; c <= n.c2; c++) line.push(tsvCell(cellAt(r, c)))
       out.push(line.join('\t'))
     }
     e.preventDefault()
@@ -583,19 +589,43 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) setExtraRows(n => n + AHEAD_ROWS)
   }, [])
 
-  let firstRow = 0
-  while (firstRow < displayRows - 1 && rowOff[firstRow + 1] <= scroll.top) firstRow++
-  firstRow = Math.max(0, firstRow - OVERSCAN_R)
-  let lastRow = firstRow
-  while (lastRow < displayRows && rowOff[lastRow] < scroll.top + viewport.h + 40) lastRow++
-  lastRow = Math.min(displayRows, lastRow + OVERSCAN_R)
+  /* BINARY SEARCH, NOT A WALK FROM ZERO.
 
-  let firstCol = 0
-  while (firstCol < displayCols - 1 && colOff[firstCol + 1] <= scroll.left) firstCol++
-  firstCol = Math.max(0, firstCol - OVERSCAN_C)
-  let lastCol = firstCol
-  while (lastCol < displayCols && colOff[lastCol] < scroll.left + viewport.w + 40) lastCol++
-  lastCol = Math.min(displayCols, lastCol + OVERSCAN_C)
+     These four loops used to be linear scans starting at index 0, running in
+     the component body — so on every render. rowOff and colOff are prefix
+     sums, i.e. already sorted, so this was a binary search wearing a while
+     loop. Scrolled to the bottom of a 200,000-row import that is 200,000
+     iterations per scroll frame, and (before the memo work on the canvas) per
+     PAN frame as well, since panning re-rendered every block.
+
+     O(log n) removes the scale ceiling entirely: the same four lines cost 18
+     steps at 200k rows and 8 at 200. */
+  const firstAtOrAfter = (offsets, count, target) => {
+    let lo = 0, hi = count - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (offsets[mid] <= target) lo = mid
+      else hi = mid - 1
+    }
+    return lo
+  }
+
+  let firstRow = Math.max(0, firstAtOrAfter(rowOff, displayRows, scroll.top) - OVERSCAN_R)
+  /* The END of the window is found the same way, from the far edge of the
+     viewport, then nudged out by the overscan. +1 because the index found is
+     the last row that STARTS before the edge, and that row is visible. */
+  let lastRow = Math.min(
+    displayRows,
+    firstAtOrAfter(rowOff, displayRows, scroll.top + viewport.h + 40) + 1 + OVERSCAN_R,
+  )
+  if (lastRow <= firstRow) lastRow = Math.min(displayRows, firstRow + 1)
+
+  let firstCol = Math.max(0, firstAtOrAfter(colOff, displayCols, scroll.left) - OVERSCAN_C)
+  let lastCol = Math.min(
+    displayCols,
+    firstAtOrAfter(colOff, displayCols, scroll.left + viewport.w + 40) + 1 + OVERSCAN_C,
+  )
+  if (lastCol <= firstCol) lastCol = Math.min(displayCols, firstCol + 1)
 
   const visRows = []; for (let r = firstRow; r < lastRow; r++) visRows.push(r)
   const visCols = []; for (let c = firstCol; c < lastCol; c++) visCols.push(c)
@@ -695,6 +725,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
         onPaste={onPaste}
         onMouseDown={e => e.stopPropagation()}
         onMouseUp={() => { dragSel.current = false }}
+        data-ds-grid-scroll
         style={{ flex: 1, minHeight: 0, overflow: 'auto', outline: 'none', position: 'relative', cursor: 'cell' }}>
 
         <div style={{ width: GUTTER_W + totalW, height: HEAD_H + totalH, position: 'relative' }}>
@@ -785,7 +816,8 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
 
               if (isEditing) {
                 return (
-                  <input key={`${r}:${c}`}
+                  <input
+                      data-ds-cell-editor key={`${r}:${c}`}
                     ref={editorRef}
                     value={draft}
                     onChange={ev => setDraft(ev.target.value)}
@@ -852,7 +884,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
         fontFamily: 'var(--ds-font-body)', fontSize: 10.5,
         fontVariantNumeric: 'tabular-nums', color: text3, userSelect: 'none',
       }}>
-        <span style={{ color: accent, fontWeight: 700, minWidth: 34 }}>{colName(cur.c)}{cur.r + 1}</span>
+        <span style={{ color: accentText, fontWeight: 700, minWidth: 34 }}>{colName(cur.c)}{cur.r + 1}</span>
         <span>{nRows.toLocaleString()} rows</span>
         <span>{nCols} cols</span>
         {stats.cells > 1 && <span>{stats.cells.toLocaleString()} selected</span>}
@@ -882,7 +914,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
           slash menu portal. See lib/canvasgeom.js. */}
       {menu && typeof document !== 'undefined' && createPortal(
         <div style={{
-          position: 'fixed', top: menu.y, left: menu.x, zIndex: 10000,
+          position: 'fixed', top: menu.y, left: menu.x, zIndex: Z.popover,
           background: surface, border: `1px solid ${border}`, borderRadius: 8,
           boxShadow: 'var(--ds-shadow-lg)', overflow: 'hidden', minWidth: 180,
           fontFamily: 'var(--ds-font-body)', padding: '4px 0',

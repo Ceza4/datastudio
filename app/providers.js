@@ -68,6 +68,24 @@ export function ThemeProvider({ children }) {
     document.documentElement.setAttribute('data-theme', prefs.dark ? 'dark' : 'light')
   }, [prefs.dark])
 
+  /* THE reduceMotion PREFERENCE NOW DOES SOMETHING.
+
+     It was in DEFAULT_PREFS, it was normalised, it was migrated, and
+     shouldReduceMotion() had zero importers — a setting that was stored and
+     never read. Stamping it on <html> lets globals.css express the rule once,
+     in CSS, where it can reach :hover states and pseudo-elements that a JS
+     branch never could.
+
+     Only stamped when the user has explicitly asked for it. Left off, the
+     @media (prefers-reduced-motion) rules still apply, so the OS setting is
+     honoured either way and an explicit choice can override it in both
+     directions. */
+  useEffect(() => {
+    const root = document.documentElement
+    if (prefs.reduceMotion === true) root.setAttribute('data-reduce-motion', 'true')
+    else root.removeAttribute('data-reduce-motion')
+  }, [prefs.reduceMotion])
+
   const setPref = useCallback((key, value) => {
     setPrefs(prev => {
       const next = normalizePrefs({ ...prev, [key]: typeof value === 'function' ? value(prev[key]) : value })

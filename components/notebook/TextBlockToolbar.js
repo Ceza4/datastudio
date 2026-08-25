@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { safeLinkUrl } from '../../lib/urls'
+import { Z } from '../../lib/theme'
 
 /* TextBlockToolbar — docked formatting rail.
    --------------------------------------------------------------------------
@@ -218,7 +219,7 @@ export default function TextBlockToolbar({ colors, onClose }) {
          same Tab-to-toolbar path as every other rail. */
       style={{
         position: 'fixed', right: 16, top: '50%', transform: 'translateY(-50%)',
-        zIndex: 99999, width: 168,
+        zIndex: Z.popover, width: 168,
         background: `${surface}f2`,
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
         border: `1px solid ${border}`, borderRadius: 12,
@@ -228,15 +229,6 @@ export default function TextBlockToolbar({ colors, onClose }) {
         animation: 'dsRailIn 0.18s cubic-bezier(.34,1.3,.64,1)',
       }}
     >
-      <style>{`
-        @keyframes dsRailIn {
-          from { opacity: 0; transform: translateY(-50%) translateX(8px); }
-          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          [data-island-rail] { animation: none !important; }
-        }
-      `}</style>
 
       <div style={{
         fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
@@ -317,7 +309,7 @@ export default function TextBlockToolbar({ colors, onClose }) {
                 {linkError}
               </div>
             ) : (
-              <div style={{ marginTop: 6, fontSize: 10, color: text3 }}>Enter to add · Esc to cancel</div>
+              <div style={{ marginTop: 6, fontSize: 10, color: text2 }}>Enter to add · Esc to cancel</div>
             )}
           </div>
         )}

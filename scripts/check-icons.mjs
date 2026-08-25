@@ -74,6 +74,28 @@ for (const f of files) {
   sites += n
   if (n > 0 && !/import Icon from/.test(s)) noImport.push(rel)
 
+  /* ONLY FILES THAT ARE ABOUT ICONS ARE SCANNED FOR ICON NAMES.
+
+     The prefix heuristic reads any kebab-case string as a candidate, which is
+     fine in a component and wrong elsewhere: lib/sanitize.js holds an
+     allowlist of CSS properties, and 'text-decoration' and 'text-align' were
+     being reported as missing icons.
+
+     The first attempt at this skipped any file with no <Icon> in it, and that
+     was WRONG in a way worth recording: blockRegistry.js, lib/database.js and
+     lib/files.js all name real icons in data tables without rendering one, so
+     the rule quietly dropped 8 names — including every block-type icon in the
+     registry — out of the check. A guard that stops checking the thing it
+     exists to check is worse than no guard.
+
+     So the test is whether the file refers to icons IN CODE — an `icon:` key,
+     an iconFor/iconName helper, or the Icon component itself. A prose mention
+     does not count: sanitize.js says "broken-image icon" in a comment, which
+     was enough to defeat the first version of this rule. Derived rather than a
+     list of exempt files, because a list grows until it covers the file with
+     the real typo in it. */
+  if (n === 0 && !/icon\s*:|iconFor|iconName|\bIcon\b/.test(s)) continue
+
   for (const m of s.matchAll(/'([a-z][a-z0-9]*-[a-z0-9-]+)'/g)) {
     if (!ICON_ID.test(m[1])) continue
     if (isDesignToken(m[1])) { tokenHits.add(m[1]); continue }

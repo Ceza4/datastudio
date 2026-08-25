@@ -14,16 +14,18 @@
     "icons:check": "node scripts/check-icons.mjs",
     "check:geom": "node scripts/check-canvas-geom.mjs",
     "check:hooks": "node scripts/check-hook-order.mjs",
-    "check": "node scripts/check-icons.mjs && node scripts/check-canvas-geom.mjs && node scripts/check-hook-order.mjs",
+    "check": "node scripts/check-icons.mjs && node scripts/check-canvas-geom.mjs && node scripts/check-hook-order.mjs && node scripts/check-tokens.mjs",
+    "check:tokens": "node scripts/check-tokens.mjs",
+    "check:supabase": "node scripts/check-supabase.mjs",
     "test:browser": "node tests/browser/run.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
     "next": "16.1.7",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "5.4.149",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "react-window": "^2.2.7",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

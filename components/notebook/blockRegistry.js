@@ -51,6 +51,17 @@ import { createDatabase } from '../../lib/database.js'
 /** Strip HTML and see if anything's left. Shared by text-ish types. */
 const hasText = html => (html || '').replace(/<[^>]*>/g, '').trim().length > 0
 
+/* A NEW BLOCK IS BORN WITH NO NAME.
+
+   Several types used to be created with their own type as their name —
+   'Image', 'PDF', 'Calendar', 'File'. That is real text sitting in the title
+   field, so renaming meant selecting and deleting the word 'Image' before you
+   could type anything, every single time. The header shows 'Untitled' as a
+   PLACEHOLDER instead, which costs nothing and disappears the moment there is
+   a real name.
+
+   Imports are unaffected: importPdf and importAttachment pass the actual
+   filename in their patch, which is a name worth having. */
 export const BLOCK_TYPES = {
   text: {
     label: 'Text Block',
@@ -161,7 +172,7 @@ export const BLOCK_TYPES = {
       /* Holds an id, never bytes. The image itself lives in IndexedDB so
          autosave doesn't rewrite pixels every 600ms — see lib/images.js. */
       id, type: 'image', x, y, w: w || 360, h: h || 260,
-      name: 'Image', imageId: null, alt: '', fit: 'contain', rev: 0,
+      name: '', imageId: null, alt: '', fit: 'contain', rev: 0,
     }),
     dims: { w: 320, h: 150 },
     /* An image with bytes always counts. It's the one type whose content
@@ -191,7 +202,7 @@ export const BLOCK_TYPES = {
       /* Holds an id and the view state, never bytes — a 20MB document must not
          be rewritten by the 600ms autosave. See lib/pdfs.js. */
       id, type: 'pdf', x, y, w: w || 520, h: h || 620,
-      name: 'PDF', pdfId: null, pdfPage: 1, pdfFit: 'width',
+      name: '', pdfId: null, pdfPage: 1, pdfFit: 'width',
     }),
     dims: { w: 520, h: 620 },
     hasContent: b => !!b.pdfId,
@@ -243,7 +254,7 @@ export const BLOCK_TYPES = {
     focusSelector: null,
     create: ({ id, x, y, w, h }) => ({
       id, type: 'calendar', x, y, w: w || 520, h: h || 420,
-      name: 'Calendar',
+      name: '',
       view: 'month',
       /* Reads task deadlines by default, because that's the source that needs
          no configuration — a calendar that shows nothing until you set it up
@@ -284,7 +295,7 @@ export const BLOCK_TYPES = {
          split at the top of this file is history the legacy types carry, not a
          pattern to copy). */
       id, type: 'database', x, y, w: w || 620, h: h || 380,
-      name: 'Database',
+      name: '',
       /* The whole model in one key. It carries its own dbVersion, so a
          document written by a newer build is identifiable rather than merely
          confusing — see lib/database.js. */
@@ -301,6 +312,38 @@ export const BLOCK_TYPES = {
        the original — the kanban `lanes` bug, one level deeper. */
     cloneFields: ['db'],
   },
+
+  /* §8 — the attachment of last resort. Everything with a live block of its
+     own (spreadsheet, pdf, image, markdown) is routed before this; a file
+     block is what .docx, .zip, .mp4 and .pptx become. */
+  file: {
+    label: 'File',
+    icon: 'block-text',
+    order: 10,
+    /* Not in the Add menu, and no single-key shortcut. An empty file block is
+       not a placeholder you fill in later, it is a chip with no file —
+       attachments arrive by drop or through the import picker. Offering a way
+       to create an empty one only creates a way to be confused by one. */
+    hiddenFromAddMenu: true,
+    key: null,
+    resizable: 'horizontal',
+    rail: null,
+    exportAs: ['*'],
+    focusSelector: null,
+    create: ({ id, x, y, w }) => ({
+      /* An id, never bytes — same rule as image and pdf, and for the same
+         reason: a 40MB attachment rewritten by the 600ms autosave is a frozen
+         main thread. See lib/files.js. */
+      id, type: 'file', x, y, w: w || 300, h: 74,
+      name: '', fileId: null, size: 0, mime: '',
+    }),
+    dims: { w: 300, h: 74 },
+    hasContent: b => !!b.fileId,
+    /* fileId is SHARED on duplicate, not copied — the same decision pdf made.
+       Two chips pointing at one blob is what you want, and pruneFiles only
+       reclaims bytes once no block references them at all. */
+    cloneFields: ['fileId', 'size', 'mime'],
+  },
 }
 
 /* ── derived lookups ──────────────────────────────────────────────────── */
@@ -309,7 +352,14 @@ export const BLOCK_TYPE_IDS = Object.keys(BLOCK_TYPES)
   .sort((a, b) => BLOCK_TYPES[a].order - BLOCK_TYPES[b].order)
 
 /** The Add menu, in declared order. */
-export const ADD_ITEMS = BLOCK_TYPE_IDS.map(type => ({
+/* Some types exist only as the RESULT of something — a file block comes from
+   dropping a file, never from choosing "File" and then wondering what to do
+   with the empty one. They stay out of the Add menu without leaving the
+   registry, so everything else (dims, clone, export, the render branch) still
+   works exactly as it does for every other type. */
+export const ADD_ITEMS = BLOCK_TYPE_IDS
+  .filter(type => !BLOCK_TYPES[type].hiddenFromAddMenu)
+  .map(type => ({
   type,
   label: BLOCK_TYPES[type].label,
   icon: BLOCK_TYPES[type].icon,

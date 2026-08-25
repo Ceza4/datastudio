@@ -1,11 +1,12 @@
 'use client'
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import TextBlockContent from './TextBlockContent'
 import ResizeHandle from './ResizeHandle'
 import BlockHandle from './BlockHandle'
 import KanbanBlock from './KanbanBlock'
 import SheetGrid from './SheetGrid'
 import ImageBlock from './ImageBlock'
+import FileBlock from './FileBlock'
 import PdfBlock from './PdfBlock'
 import TaskBlock from './TaskBlock'
 import CalendarBlock from './CalendarBlock'
@@ -25,9 +26,24 @@ import {
   blockDims as registryDims, blockHasContent as registryHasContent,
   clonepatch, cloneArgs,
 } from './blockRegistry'
+import ShapeLayer from './ShapeLayer'
+import {
+  pickShape, hitTolerance, resizeShape, snapAngle, normaliseAngle,
+  centreOf, shapeBounds, isLinear, createInk, inkPath, inkPoints,
+} from '../../lib/shapes'
+import { recognise, tryArrowGroup } from '../../lib/recognise'
 import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
+import { serializeSelection, parseClipboard, materialise, splitCopyable } from '../../lib/clipboard'
+
+/* Frozen and module-level. `activeSheet?.shapes || []` allocates a new array
+   on every render of a sheet that has no shapes yet, which hands ShapeLayer a
+   fresh prop identity every time and defeats the memo that is the entire
+   performance argument for the layer. Frozen so a stray push fails loudly
+   instead of quietly becoming everyone's shapes. */
+const EMPTY_SHAPES = Object.freeze([])
 import { LINK_COLOR, LINK_LABEL, LINK_KINDS, wouldCycle, rollup } from '../../lib/tasks'
 import { extractLinks, blockLabel } from '../../lib/teleport'
+import { Z } from '../../lib/theme'
 
 /* The freeform infinite-canvas notebook view. Hosts text/table/kanban blocks
    that the user drags around on a dot-grid background. Right-click drag pans.
@@ -105,7 +121,7 @@ function Ports({ show, blockId, surface, accent, onStartLink }) {
   if (!show) return null
   const p = (pos) => ({
     position: 'absolute', ...pos, width: 9, height: 9, borderRadius: '50%',
-    background: surface, border: `2px solid ${accent}`, zIndex: 30,
+    background: surface, border: `2px solid ${accent}`, zIndex: Z.blockPort,
     transition: 'transform 0.15s ease, background 0.15s ease, opacity 0.15s ease',
     opacity: 0.75, cursor: 'crosshair',
   })
@@ -191,6 +207,10 @@ export default function NotebookCanvas({
   onRenameNotebook,
   onRenameSheet,
   onDropColumn,
+  onDropFiles,
+  onAddShape,
+  onUpdateShape,
+  onDeleteShapes,
   onOpenCrosscheck,
   onRemoveTableColumn,
   onAddConnection,
@@ -200,8 +220,16 @@ export default function NotebookCanvas({
   onDeleteDrawing,
   onClearDrawings,
   onPickImage,
+  /* The workspace undo stack, owned by AppPage. Each returns the label of what
+     it reversed, or null when there was nothing — so the canvas can say
+     "Undid move" rather than leaving a keypress with no feedback at all. */
+  onUndo,
+  onRedo,
+  /* Appends already-built blocks and shapes to the active sheet. Returns how
+     many landed, so paste can report itself. */
+  onPasteBlocks,
 }) {
-  const { surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber } = colors
+  const { surface, raised, border, borderDim, text, text2, text3, accent, accentText, accentDim, red, base, green, amber } = colors
   const toast = useToast()
   const containerRef = useRef(null)
   const [pan, setPan] = useState({ x: 60, y: 60 })
@@ -236,6 +264,42 @@ export default function NotebookCanvas({
   const [isPresentation, setIsPresentation] = useState(false)
   const outerRef = useRef(null)
 const [selectedIds, setSelectedIds] = useState(new Set())
+  /* Shapes have their OWN selection, kept separate from blocks rather than
+     merged into selectedIds. They are different objects with different verbs
+     — a shape rotates and has no content; a block has content and cannot
+     rotate — and every consumer of selectedIds (the rails, duplicate, the
+     inspector, blockDims) assumes it holds block ids. Merging the two sets
+     would mean auditing all of them, and the first one missed fails silently.
+     Selecting in one clears the other, so only one kind is ever live. */
+  const [selectedShapeIds, setSelectedShapeIds] = useState(new Set())
+  /* The in-flight drag/resize, as id -> shape. Never written to the notebook
+     until pointerup: a pointermove that goes through setNotebooks would put
+     every intermediate frame through the 600ms autosave and into undo. Same
+     reason blocks have liveOf(). */
+  const [liveShapes, setLiveShapes] = useState(null)
+  /* Smart pen: the recogniser turns strokes into shapes. Off means the ink
+     stays exactly as drawn. */
+  const [smartPen, setSmartPen] = useState(true)
+  /* What the last stroke committed, for arrow grouping — a short stroke
+     landing on the head of a line that was just drawn turns it into an arrow.
+     A ref, not state: nothing renders from it and it must not cause one. */
+  const lastShapeRef = useRef(null)
+  /* What the pen has produced this session, oldest first, for Ctrl+Z.
+
+     A ref rather than state: nothing renders from it. Ids only, because the
+     shape itself may have been moved or resized since, and undo should remove
+     whatever it is NOW rather than restore a stale copy of it.
+
+     Entries are skipped rather than trusted on the way out — a stroke deleted
+     some other way leaves a dead id here, and popping blindly would make one
+     Ctrl+Z appear to do nothing. */
+  const drawHistoryRef = useRef([])
+  const rememberDrawn = shape => { if (shape?.id) drawHistoryRef.current.push(shape.id) }
+  /* The "keep as drawn" escape hatch. The commit model is snap INSTANTLY and
+     make undoing it cheap, rather than pausing to be sure — a 400ms wait on
+     every stroke is a cost you pay always, and a wrong guess is a cost you
+     pay rarely and can reverse. */
+  const [pendingSnap, setPendingSnap] = useState(null)
   const [ctxMenu, setCtxMenu] = useState(null)
   const [mindMapMode, setMindMapMode] = useState(false)
   const [mindMapMaster, setMindMapMaster] = useState(null)
@@ -248,6 +312,25 @@ const [selectedIds, setSelectedIds] = useState(new Set())
   const gridPx = gridSize * nbZoom
 
   const [snapEnabled, setSnapEnabled] = useState(prefs?.snapDefault ?? false)
+  /* DECLARED HERE, AFTER snapEnabled, AND IT HAS TO BE.
+
+     This started life up with the other grid constants, where it read
+     snapEnabled thirty lines before the useState that creates it — a temporal
+     dead zone, so the component threw "Cannot access 'snapEnabled' before
+     initialization" on mount and the app would not boot at all.
+
+     It is the same family as rule 3 in the context doc ("never reference a
+     const in a hook deps array before it is declared") but NOT the same
+     shape, so check:hooks does not see it: that guard inspects dependency
+     arrays, and this is a plain const in the component body. Grouping a
+     derived value with the things it is ABOUT rather than with the things it
+     READS is how it happened, and it will happen again.
+
+     What it is for: one expression for "is the grid on screen", used by both
+     the rendering and the snap targets. They were two separate conditions,
+     which is how you end up snapping to lines nobody can see — or seeing
+     lines that do not pull. */
+  const gridOn = gridAlways || snapEnabled
   const snapRef = useRef(false)
   const [snapTargets, setSnapTargets] = useState([])   // block ids we aligned against
   const [spacingTags, setSpacingTags] = useState([])   // equal-gap badges
@@ -268,6 +351,8 @@ const [showDrawPanel, setShowDrawPanel] = useState(false)
 const [currentPath, setCurrentPath] = useState(null)
 const isDrawing = useRef(false)
 const drawPanelRef = useRef(null)
+  /* Pending close for the draw panel — see the hover-bridge note at its JSX. */
+  const drawPanelCloseRef = useRef(null)
   const [hoveredBlockId, setHoveredBlockId] = useState(null)
   const [animatingBlockId, setAnimatingBlockId] = useState(null)
   const [deletingBlockId, setDeletingBlockId] = useState(null)
@@ -489,6 +574,12 @@ const drawPanelRef = useRef(null)
   }, [notebooks])
 
 const drawings = activeSheet?.drawings || []
+/* A module-level constant, not `|| []`. A fresh array literal every render
+   gives ShapeLayer a new prop identity every time and defeats its memo —
+   which is the entire performance argument for the layer. */
+const shapes = activeSheet?.shapes || EMPTY_SHAPES
+const selectedShapeList = shapes.filter(sh => selectedShapeIds.has(sh.id))
+const soleSelectedShape = selectedShapeList.length === 1 ? selectedShapeList[0] : null
   /* Pressing on a block that's ALREADY part of a multi-selection must not
      collapse the selection — that's what broke lasso dragging. selectBlock
      ran on pointerdown and replaced the selection with the single block, so
@@ -549,6 +640,91 @@ const drawings = activeSheet?.drawings || []
     setSelectedIds(new Set())
     if (withContent > 0) toast(`${gone.count} block${gone.count > 1 ? 's' : ''} deleted`, { undo: gone.undo })
   }
+  /* ── Copy, cut and paste ────────────────────────────────────────────────
+     Through the SYSTEM clipboard, not an in-memory one, so a block can be
+     moved between browser tabs and windows. lib/clipboard.js explains the
+     wire format and why ids are reminted on every paste. */
+  async function copySelection({ cut = false } = {}) {
+    const picked = blocks.filter(b => selectedIds.has(b.id))
+    const pickedShapes = shapes.filter(s => selectedShapeIds.has(s.id))
+    const { copyable, skipped } = splitCopyable(picked)
+
+    const text = serializeSelection({ blocks: copyable, shapes: pickedShapes })
+    if (!text) {
+      toast(skipped.length
+        ? 'Images, PDFs and attachments cannot be copied yet — their files live outside the block.'
+        : 'Nothing to copy.')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      /* Refused: an unfocused document, or a browser that has not granted
+         clipboard-write. Saying so beats a keypress that silently did
+         nothing. */
+      toast('Your browser would not let the page write to the clipboard.', { tone: 'warn' })
+      return
+    }
+    const n = copyable.length + pickedShapes.length
+    if (cut) {
+      /* THE DELETE CAN BE REFUSED, AND THEN THIS IS NOT A CUT.
+
+         onDeleteBlocks resolves null when the user cancels the "this section
+         holds N blocks" dialog. Ignoring that returned a cleared selection and
+         a toast saying "Cut 4 items" while all four were still on the canvas —
+         and the clipboard now holds a copy, so the next paste duplicates them.
+
+         The clipboard write has already happened, which is fine: a copy is not
+         destructive, and saying so is more honest than pretending nothing
+         occurred. */
+      let removed = true
+      if (copyable.length) removed = !!(await onDeleteBlocks(copyable.map(b => b.id)))
+      if (!removed) {
+        toast('Copied to the clipboard — nothing was removed.')
+        return
+      }
+      if (pickedShapes.length) onDeleteShapes?.(pickedShapes.map(s => s.id))
+      setSelectedIds(new Set())
+      setSelectedShapeIds(new Set())
+    }
+    const noun = n === 1 ? 'item' : 'items'
+    toast(skipped.length
+      ? `${cut ? 'Cut' : 'Copied'} ${n} ${noun} — ${skipped.length} with attached files left behind.`
+      : `${cut ? 'Cut' : 'Copied'} ${n} ${noun}.`)
+  }
+
+  async function pasteFromClipboard() {
+    let text = ''
+    try {
+      text = await navigator.clipboard.readText()
+    } catch {
+      toast('Your browser would not let the page read the clipboard.', { tone: 'warn' })
+      return
+    }
+    const parsed = parseClipboard(text)
+    if (!parsed) {
+      /* Not ours. Falling through to "make a text block out of it" is the
+         obvious thing to do and is deliberately NOT done here: paste is
+         reachable with anything on the clipboard, and silently creating a
+         block from a copied password is worse than doing nothing. */
+      toast('Nothing from DataStudio on the clipboard.')
+      return
+    }
+    /* Pasted into the middle of what you are looking at, not at the
+       coordinates it was copied from — which on an infinite canvas is
+       routinely somewhere off screen. */
+    const centre = {
+      x: (-panRef.current.x + viewSize.w / 2) / nbZoomRef.current,
+      y: (-panRef.current.y + viewSize.h / 2) / nbZoomRef.current,
+    }
+    const { blocks: nb, shapes: ns } = materialise(parsed, { x: centre.x - 160, y: centre.y - 80 })
+    const n = onPasteBlocks?.({ blocks: nb, shapes: ns }) ?? 0
+    if (!n) return
+    setSelectedIds(new Set(nb.map(b => b.id)))
+    setSelectedShapeIds(new Set(ns.map(s => s.id)))
+    toast(`Pasted ${n} ${n === 1 ? 'item' : 'items'}.`)
+  }
+
   /* Which fields survive a duplicate is now declared per type in the
      registry. The hand-written version knew about text and kanban only, so
      duplicating an image produced an empty one (imageId was never carried)
@@ -757,6 +933,46 @@ const drawings = activeSheet?.drawings || []
 
   const blockDims = registryDims
 
+  /**
+   * The size a block ACTUALLY renders at, measured from the DOM.
+   *
+   * WHY THIS EXISTS — the snap guides were visibly wrong, and this is why.
+   * blockDims() falls back to the registry default whenever a block has no
+   * explicit dimension: `{ w: b.w || def.dims.w, h: b.h || def.dims.h }`. A
+   * text block is created with a width and NO HEIGHT, so every text block on
+   * the canvas was treated as exactly 150px tall no matter how much text was
+   * in it. A block rendering 280px tall had its bottom edge computed 130px
+   * too high, and the guide was drawn against that phantom edge. Tables are
+   * worse: they are created with `w: undefined` on purpose so they size to
+   * content, which means their width was ALWAYS the registry number and never
+   * the real one.
+   *
+   * offsetWidth / offsetHeight, never getBoundingClientRect(): these are
+   * layout pixels and are unaffected by the canvas transform. That is rule 1
+   * in the context doc and the reason lib/canvasgeom.js exists.
+   *
+   * Called ONCE at the start of a gesture, not per frame. Reading offsetHeight
+   * forces a style-and-layout flush, and doing that on every mousemove while
+   * React is already re-rendering for the drag is exactly the stutter this
+   * canvas has been careful to avoid everywhere else.
+   */
+  function measureBlocks() {
+    const out = new Map()
+    const root = containerRef.current
+    if (!root) return out
+    root.querySelectorAll('[data-block-id]').forEach(el => {
+      const id = el.getAttribute('data-block-id')
+      const w = el.offsetWidth, h = el.offsetHeight
+      if (id && w > 0 && h > 0) out.set(id, { w, h })
+    })
+    return out
+  }
+
+  /** Measured size if we have one, the registry's guess if we do not. */
+  function sizeOf(b, measured) {
+    return (measured && measured.get(b.id)) || blockDims(b)
+  }
+
   function pickPortSide(fromB, toB) {
     const fc = { x: fromB.x + blockDims(fromB).w/2, y: fromB.y + blockDims(fromB).h/2 }
     const tc = { x: toB.x + blockDims(toB).w/2, y: toB.y + blockDims(toB).h/2 }
@@ -860,6 +1076,9 @@ function addBlockAnimated(type, x, y) {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [showDrawPanel])
 
+  /* A deferred close must never outlive the component that scheduled it. */
+  useEffect(() => () => clearTimeout(drawPanelCloseRef.current), [])
+
   useEffect(() => {
     if (!ctxMenu) return
     function h(e) { if (ctxMenuRef.current && ctxMenuRef.current.contains(e.target)) return; setCtxMenu(null) }
@@ -905,8 +1124,11 @@ function addBlockAnimated(type, x, y) {
   /* Keep the viewport-lock ref in step with the selection. A block being
      selected freezes pan and zoom — see handleWheel and startPan. */
   useEffect(() => {
-    selectionLockRef.current = selectedIds.size > 0
-  }, [selectedIds])
+    /* Shapes freeze the camera exactly like blocks do. Two selection sets,
+       one rule — if the lock only knew about blocks, selecting a shape would
+       silently behave differently from selecting anything else. */
+    selectionLockRef.current = selectedIds.size > 0 || selectedShapeIds.size > 0
+  }, [selectedIds, selectedShapeIds])
 
   /* ── Keyboard-only navigation ──────────────────────────────────────────
      Three focus levels, and Escape steps out one at a time:
@@ -1106,6 +1328,33 @@ function addBlockAnimated(type, x, y) {
          universal "get me out of this" key; it must never be gated on where
          focus happens to be. It also blurs whatever is focused, so a second
          press isn't needed to leave a cell. */
+      if (e.key === 'Escape' && isDrawing.current) {
+        /* Same as the right-click above. Checked before every other Escape
+           branch because a stroke in flight is the innermost state there is —
+           more inner than a grab, a toolbar or a selection. */
+        e.preventDefault()
+        abandonInk()
+        return
+      }
+
+      /* THE SHORTCUTS DIALOG SWALLOWS EVERYTHING WHILE IT IS OPEN.
+
+         It closed on the scrim and on its × button, and Escape did nothing —
+         but the worse half was that the canvas handler kept running behind it.
+         Reading the list and pressing N to see what N does created a text block
+         you could not see. Every other overlay in the app gets this right.
+
+         Placed above the ordinary Escape branch so it is the innermost thing a
+         press can close, and returning unconditionally so no other binding
+         fires while it is up. */
+      if (shortcutsOpen) {
+        if (e.key === 'Escape' || e.key === '?' || (e.shiftKey && e.key === '/')) {
+          e.preventDefault()
+          setShortcutsOpen(false)
+        }
+        return
+      }
+
       if (e.key === 'Escape') {
         /* A block's own content gets first refusal. SheetGrid marks the native
            event when it actually backs out of something (an open cell, or a
@@ -1243,6 +1492,95 @@ function addBlockAnimated(type, x, y) {
         e.preventDefault(); enterBlock(soleSelected); return
       }
 
+      /* Ctrl+Z / Ctrl+Shift+Z — the workspace undo stack.
+
+         This used to undo DRAWINGS ONLY, and the comment here explained why:
+         "the canvas has no general undo stack, so binding this to whatever
+          changed last would look like a real undo system and quietly delete
+          things nobody meant to remove."
+
+         That reasoning was correct, and the answer to it was to build the
+         stack rather than to keep the binding narrow. It lives in
+         app/app/page.js — captured by watching the workspace, so nothing has
+         to opt in and no future mutator can quietly fail to be undoable.
+
+         Still gated on `onCanvas`: while the caret is inside a contentEditable
+         the browser's own undo is the right behaviour and must not be stolen.
+         A text block's content reaches this stack anyway, on the save
+         debounce, so stepping out of the block and pressing Ctrl+Z gets you
+         back — the two operate at different grains, which is what people
+         expect from every editor they have used. */
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        if (!onCanvas) return
+        e.preventDefault()
+        const label = e.shiftKey ? onRedo?.() : onUndo?.()
+        if (label) toast(e.shiftKey ? `Redid ${label}` : `Undid ${label}`)
+        else toast(e.shiftKey ? 'Nothing to redo' : 'Nothing to undo')
+        return
+      }
+      /* Ctrl+Y is redo on Windows, and costs one line to honour. */
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        if (!onCanvas) return
+        e.preventDefault()
+        const label = onRedo?.()
+        toast(label ? `Redid ${label}` : 'Nothing to redo')
+        return
+      }
+
+      /* ── Clipboard ──────────────────────────────────────────────────────
+         Ctrl+C / X / V / A on the canvas. These worked inside a spreadsheet
+         cell and nowhere else, so there was no way to move a block to another
+         sheet — only Ctrl+D, which duplicates in place.
+
+         Above the shape and selection branches because Ctrl+A has to work with
+         nothing selected, which is exactly when those branches bail out.
+
+         The clipboard write is async and can be refused (an unfocused document,
+         a browser that has not granted permission), so the failure path says so
+         rather than leaving a keypress with no result. */
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const k = e.key.toLowerCase()
+        if (k === 'a') {
+          e.preventDefault()
+          const all = blocks.filter(b => !isContainer(b))
+          setSelectedIds(new Set(all.map(b => b.id)))
+          setSelectedShapeIds(new Set(shapes.map(s => s.id)))
+          return
+        }
+        if (k === 'c' || k === 'x') {
+          if (!selectedIds.size && !selectedShapeIds.size) return
+          e.preventDefault()
+          copySelection({ cut: k === 'x' })
+          return
+        }
+        if (k === 'v') {
+          e.preventDefault()
+          pasteFromClipboard()
+          return
+        }
+      }
+
+      /* Shapes, before the `selectedIds.size === 0` bail below — that early
+         return is the reason a new selectable thing has to be handled ABOVE
+         it rather than added to the block branch. */
+      if (selectedShapeIds.size > 0) {
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault(); deleteSelectedShapes(); return
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault(); setSelectedShapeIds(new Set()); return
+        }
+        /* Nudge, with the same shift-for-coarse convention blocks use. */
+        const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+        if (NUDGE[e.key]) {
+          e.preventDefault()
+          const step = (e.shiftKey ? 10 : 1)
+          const [dx, dy] = NUDGE[e.key]
+          selectedShapeList.forEach(sh => onUpdateShape?.(sh.id, { x: sh.x + dx * step, y: sh.y + dy * step }))
+          return
+        }
+      }
+
       // A picked connection is deletable with the same key as a block.
       if (selectedConnId && (e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault()
@@ -1312,7 +1650,7 @@ function addBlockAnimated(type, x, y) {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIds, blocks, selectedConnId, soleSelected, viewSize, kbMode, toolbarIdx])
+  }, [selectedIds, selectedShapeIds, selectedShapeList, shapes, drawings, blocks, selectedConnId, soleSelected, viewSize, kbMode, toolbarIdx, shortcutsOpen, onUndo, onRedo])
   /* Only create a text block when nothing is being edited */
   function handleBgClick(e) {
     if (e.target !== e.currentTarget) return
@@ -1334,11 +1672,7 @@ function addBlockAnimated(type, x, y) {
 
     setSelectedConnId(null)
 
-    const rect = containerRef.current.getBoundingClientRect()
-    const bzoom = window.visualViewport?.scale || 1
-    const z = nbZoomRef.current
-    const x = ((e.clientX - rect.left) / bzoom - panRef.current.x) / z
-    const y = ((e.clientY - rect.top) / bzoom - panRef.current.y) / z
+    const { x, y } = toCanvas(e.clientX, e.clientY)
     setSelectedIds(new Set())
     addBlockAnimated('text', x - 140, y - 20)
   }
@@ -1356,13 +1690,40 @@ function addBlockAnimated(type, x, y) {
     const startMY = e.clientY
     const origX = block.x
     const origY = block.y
-    const { w: bw, h: bh } = blockDims(block)
+    /* Measured once, here, and used for every frame of this drag. See
+       measureBlocks() for why the registry numbers cannot be trusted. */
+    const measured = measureBlocks()
+    const { w: bw, h: bh } = sizeOf(block, measured)
     let dragging = false
     let currentHoverSection = null
 
-    // Eased follow: the pointer moves `target`, a rAF loop walks the block
-    // toward it. EASE is high enough to feel connected, low enough to smooth.
-    const EASE = 0.42
+    /* Follow rate: the pointer moves `target`, a rAF loop walks the block
+       toward it.
+
+       IT USED TO EASE AT 0.42 THE WHOLE TIME, AND THAT WAS THE BIG SNAP BUG.
+
+       An eased follow lags its target by v * (1 - E) / E per frame. At
+       E = 0.42 that is 1.38x the pointer speed, so a very ordinary 600px/s
+       drag (10px per frame) draws the block FOURTEEN PIXELS behind where the
+       drag maths thinks it is. The snap guide is drawn at the snapped target,
+       because that is where the block comes to rest — so the guide sat about
+       fourteen pixels clear of the block's visible edge for as long as the
+       pointer kept moving, then slid into place ~200ms after it stopped.
+       That is why this looked fine in a screenshot taken at rest and looked
+       broken in the hand, and it dwarfed both of the other errors fixed in
+       this pass (3.3px of drag-scale, 3.5px of outline offset).
+
+       So the drag no longer eases. The block sits under the cursor the way it
+       does in Figma and Miro, and a guide claiming alignment is now telling
+       the truth about the pixels on screen. No feel is lost: the only
+       smoothing that ever mattered is the magnetic lean, and that comes from
+       pull() shaping `target`, not from the follow rate.
+
+       LAND_EASE survives for the settle after release, when there is no
+       pointer left to be faithful to. In practice it now has almost nothing
+       to travel — which is the point. */
+    const LAND_EASE = 0.42
+    const DRAG_EASE = 1
     const target = { x: origX, y: origY }
     const cur = { x: origX, y: origY }
     let raf = null
@@ -1478,8 +1839,9 @@ function addBlockAnimated(type, x, y) {
         if (releasing) commit()
         return
       }
-      cur.x += dx * EASE
-      cur.y += dy * EASE
+      const E = releasing ? LAND_EASE : DRAG_EASE
+      cur.x += dx * E
+      cur.y += dy * E
       applyPos()
       raf = requestAnimationFrame(tick)
     }
@@ -1615,7 +1977,7 @@ function addBlockAnimated(type, x, y) {
         blocks.forEach(b => {
           if (b.id === block.id) return
           if (b.id === block.parentSectionId) return   // don't fight your own section
-          const { w: ow, h: oh } = blockDims(b)
+          const { w: ow, h: oh } = sizeOf(b, measured)
           neighbours.push({ id: b.id, x: b.x, y: b.y, w: ow, h: oh })
 
           // Only consider a block if it actually sits alongside us on the
@@ -1660,6 +2022,40 @@ function addBlockAnimated(type, x, y) {
           }
         })
 
+        /* THE GRID PULLS TOO.
+
+           The gridlines were decoration: you could see them, line a block up
+           against them by eye, and get no help doing it. If the grid is on
+           screen it should be something blocks can hold on to — otherwise it
+           is a picture of a grid rather than a grid.
+
+           Offered as rank 2, so it competes purely on distance and loses to a
+           real block alignment at the same range (rank 0 carries EDGE_BONUS).
+           Aligning to another block is almost always what you meant; the grid
+           is what you fall back to when there is nothing to align with.
+
+           The targets are the block's own edges, not its centre. Snapping a
+           centre to a gridline puts both EDGES off-grid, which is the opposite
+           of what a grid is for. */
+        if (gridOn) {
+          const g = gridSize
+          const line = v => Math.round(v / g) * g
+          const gridTargets = [
+            [nx, 0],            // left edge to the nearest line
+            [nx + bw, -bw],     // right edge
+          ]
+          gridTargets.forEach(([mine, off]) => {
+            const at = line(mine)
+            const d = Math.abs(mine - at)
+            if (d < MAG) candX.push({ d, rank: 2, shift: at + off, guide: at, gap: 0, id: null })
+          })
+          ;[[ny, 0], [ny + bh, -bh]].forEach(([mine, off]) => {
+            const at = line(mine)
+            const d = Math.abs(mine - at)
+            if (d < MAG) candY.push({ d, rank: 2, shift: at + off, guide: at, gap: 0, id: null })
+          })
+        }
+
         /* Rank by distance, with edge-to-edge given a small handicap rather
            than absolute priority. Sorting on rank first (as a naive
            implementation does) means an edge alignment 28px away beats a
@@ -1680,7 +2076,10 @@ function addBlockAnimated(type, x, y) {
           const s = pull(bestX.d)
           if (s > 0) {
             nx = nx + (bestX.shift - nx) * s
-            if (bestX.d <= RAD) { nx = bestX.shift; hitIds.add(bestX.id) }
+            /* A grid target has no neighbour to outline, so its id is null and
+               must not be added — a null in this set would highlight nothing
+               and, worse, matches no block so it silently does nothing. */
+            if (bestX.d <= RAD) { nx = bestX.shift; if (bestX.id) hitIds.add(bestX.id) }
             lines.push({
               key: `v${Math.round(bestX.guide)}`, t: 'v', p: bestX.guide,
               locked: bestX.d <= RAD, strength: s, gap: bestX.gap,
@@ -1693,7 +2092,7 @@ function addBlockAnimated(type, x, y) {
           const s = pull(bestY.d)
           if (s > 0) {
             ny = ny + (bestY.shift - ny) * s
-            if (bestY.d <= RAD) { ny = bestY.shift; hitIds.add(bestY.id) }
+            if (bestY.d <= RAD) { ny = bestY.shift; if (bestY.id) hitIds.add(bestY.id) }
             lines.push({
               key: `h${Math.round(bestY.guide)}`, t: 'h', p: bestY.guide,
               locked: bestY.d <= RAD, strength: s, gap: bestY.gap,
@@ -1753,10 +2152,7 @@ function addBlockAnimated(type, x, y) {
         // travellers follow the eased parent, applied inside the ease loop
       } else {
         // Live containment detection based on CURSOR position (not block center)
-        const rect = containerRef.current.getBoundingClientRect()
-        const bzoom = window.visualViewport?.scale || 1
-        const cx = ((ev.clientX - rect.left) / bzoom - panRef.current.x) / z
-        const cy = ((ev.clientY - rect.top) / bzoom - panRef.current.y) / z
+        const { x: cx, y: cy } = toCanvas(ev.clientX, ev.clientY)
         let hit = null
         blocks.forEach(s => {
           if (!isContainer(s) || s.id === block.id) return
@@ -1844,8 +2240,17 @@ function addBlockAnimated(type, x, y) {
     const origin = getCanvasPoint(e)
     const additive = e.shiftKey
     const base = additive ? new Set(selectedIds) : new Set()
+    /* Shapes and ink are dragged over by the same rubber band as blocks.
+       Without this a scribble could be selected only one stroke at a time,
+       which is useless for the thing people actually want to do with a page
+       of sketching: get rid of all of it. */
+    const shapeBase = additive ? new Set(selectedShapeIds) : new Set()
     let live = false
     marqueeRef.current = { moved: false }
+    /* Measured for the same reason the drag measures: a text block has no
+       stored height, so the registry says 150 and a 280px-tall block could not
+       be caught by a rubber band over its lower half. */
+    const measured = measureBlocks()
 
     function onMove(ev) {
       const p = getCanvasPoint(ev)
@@ -1863,12 +2268,26 @@ function addBlockAnimated(type, x, y) {
 
       const hit = new Set(base)
       blocks.forEach(b => {
-        const { w, h } = blockDims(b)
+        const { w, h } = sizeOf(b, measured)
         const overlaps = b.x < rect.x + rect.w && b.x + w > rect.x &&
                          b.y < rect.y + rect.h && b.y + h > rect.y
         if (overlaps) hit.add(b.id)
       })
       setSelectedIds(hit)
+
+      /* OVERLAP, not containment. Containment is the tidier rule and it is
+         the wrong one here, because blocks already use overlap — two
+         selection rules on one rubber band is a coin toss from the user's
+         side. shapeBounds() is used rather than x/y/w/h so a ROTATED shape is
+         judged by the room it actually occupies. */
+      const shapeHit = new Set(shapeBase)
+      shapes.forEach(sh => {
+        const b = shapeBounds(sh)
+        const overlaps = b.x < rect.x + rect.w && b.x + b.w > rect.x &&
+                         b.y < rect.y + rect.h && b.y + b.h > rect.y
+        if (overlaps) shapeHit.add(sh.id)
+      })
+      setSelectedShapeIds(shapeHit)
     }
     function onUp() {
       window.removeEventListener('mousemove', onMove)
@@ -2126,10 +2545,19 @@ function addBlockAnimated(type, x, y) {
      outerRef put the sidebar outside the fullscreen subtree, so it vanished
      and file-import clicks landed on a non-rendered element. */
   function togglePresentation() {
+    /* The refusal is REPORTED. Both of these were `.catch(() => {})`, so when
+       the browser declined — an iframe without the permission, a gesture that
+       did not count as user activation, an enterprise policy — isPresentation
+       never flipped and the button looked broken. Every other silent catch in
+       this file carries a comment justifying it; these two did not. */
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen?.().then(() => setIsPresentation(true)).catch(() => {})
+      document.documentElement.requestFullscreen?.()
+        .then(() => setIsPresentation(true))
+        .catch(() => toast('Your browser would not allow fullscreen here.', { tone: 'warn' }))
     } else {
-      document.exitFullscreen?.().then(() => setIsPresentation(false)).catch(() => {})
+      document.exitFullscreen?.()
+        .then(() => setIsPresentation(false))
+        .catch(() => toast('Could not leave fullscreen — press Esc.', { tone: 'warn' }))
     }
   }
   function commitSheetRename() {
@@ -2242,22 +2670,46 @@ function addBlockAnimated(type, x, y) {
     }
     function schedule() { if (rafId == null) rafId = requestAnimationFrame(flush) }
     function handleWheel(e) {
+      /* One flag for both zoom routes. A trackpad pinch reaches the page as a
+         wheel event with ctrlKey set — there is no separate pinch event in
+         Chrome — so mouse ctrl+wheel and pinch cannot be told apart here and
+         must not be handled in two places. */
+      const zoomGesture = e.ctrlKey || e.metaKey
       // Let a scrollable region inside a block (e.g. a table's overflow:auto
       // wrapper) consume the scroll before the canvas pans. Without this the
       // canvas swallowed every wheel event and tables could never scroll.
-      if (!e.ctrlKey && !e.metaKey && canScrollNatively(e.target, e.deltaY, e.deltaX)) return
-      // Viewport lock. While a block is selected the canvas is frozen: the
-      // world around what you're working on must not drift, and a stray
-      // trackpad gesture must not throw the block off screen. Deselect (Esc,
-      // or click the background) to move the canvas again.
+      if (!zoomGesture && canScrollNatively(e.target, e.deltaY, e.deltaX)) return
+      /* Everything past this line is the canvas's gesture, so cancel the
+         browser's default FIRST — ahead of the selection-lock return below.
+         The lock means "do not move the camera". It does NOT mean "hand the
+         event back to the browser", and ordering the guard ahead of
+         preventDefault is exactly how ctrl+scroll used to zoom the whole PAGE
+         whenever a block happened to be selected. lib/viewportlock.js now
+         catches that globally as well; this ordering is the local half of the
+         same fix and both should stay. */
+      e.preventDefault()
+      // While a block is selected the canvas is frozen: the world around what
+      // you're working on must not drift, and a stray trackpad gesture must
+      // not throw the block off screen. Deselect (Esc, or click the
+      // background) to move the canvas again.
       if (selectionLockRef.current) return
       stopPanAnim()   // a manual gesture always wins over an in-flight camera move
-      e.preventDefault()
-      if (e.ctrlKey || e.metaKey) {
+      if (zoomGesture) {
         const rect = el.getBoundingClientRect()
         const mx = e.clientX - rect.left, my = e.clientY - rect.top
         const oldZ = nbZoomRef.current
-        const newZ = Math.min(3, Math.max(0.25, oldZ - e.deltaY * 0.002))
+        /* A trackpad pinch and a mouse ctrl+wheel arrive as the SAME event
+           with very different deltas: a wheel notch is coarse and quantised
+           (±100 in Chrome's pixel mode), a pinch is continuous and usually
+           under 10. One gain served neither — a pinch barely moved while one
+           wheel click jumped a fifth of the scale. */
+        const gain = Math.abs(e.deltaY) < 20 ? 0.010 : 0.0015
+        /* Multiplicative, not additive. `oldZ - delta * k` moves the same
+           number of absolute units at every scale, so one notch is 80% of the
+           zoom at 0.25x and 7% of it at 3x: zooming out feels like falling,
+           zooming in feels stuck. A ratio makes a notch the same PROPORTION
+           everywhere, which is what "smooth zoom" actually means. */
+        const newZ = Math.min(3, Math.max(0.25, oldZ * Math.exp(-e.deltaY * gain)))
         const ratio = newZ / oldZ
         panRef.current = { x: mx - (mx - panRef.current.x) * ratio, y: my - (my - panRef.current.y) * ratio }
         nbZoomRef.current = newZ
@@ -2269,14 +2721,149 @@ function addBlockAnimated(type, x, y) {
     el.addEventListener('wheel', handleWheel, { passive: false })
     return () => { el.removeEventListener('wheel', handleWheel); if (rafId) cancelAnimationFrame(rafId) }
   }, [])
-  function getCanvasPoint(e) {
+  /* ONE conversion from screen coordinates to canvas coordinates.
+
+     There were four, and three of them divided by visualViewport.scale while
+     the wheel-zoom handler did not — so four expressions computing the same
+     quantity disagreed with each other. lib/viewportlock.js already flagged
+     the divisor as legacy: it "only exists to compensate for a zoom that
+     should never have happened", and browser zoom has since been locked out
+     app-wide.
+
+     The divisor is gone, and it was the wrong half. Both e.clientX and
+     getBoundingClientRect() report LAYOUT-viewport pixels, and neither changes
+     under a pinch — so dividing by the pinch scale actively introduced an
+     error rather than correcting one. It only ever fired on a touch pinch,
+     where it put ink somewhere the user had not drawn.
+
+     Every call site goes through here now, so a fifth cannot invent a fourth
+     variant. */
+  function toCanvas(clientX, clientY) {
     const rect = containerRef.current.getBoundingClientRect()
-    const bzoom = window.visualViewport?.scale || 1
     const z = nbZoomRef.current
     return {
-      x: ((e.clientX - rect.left) / bzoom - panRef.current.x) / z,
-      y: ((e.clientY - rect.top) / bzoom - panRef.current.y) / z,
+      x: (clientX - rect.left - panRef.current.x) / z,
+      y: (clientY - rect.top - panRef.current.y) / z,
     }
+  }
+  function getCanvasPoint(e) { return toCanvas(e.clientX, e.clientY) }
+
+  /* -- THE IN-FLIGHT STROKE NEVER TOUCHES REACT STATE ---------------------
+
+     It used to. handleDrawMouseMove ran
+
+         setCurrentPath(prev => ({ ...prev, points: [...prev.points, pt] }))
+
+     once per pointermove, and that is two compounding costs stacked on each
+     other. The point array was reallocated and copied IN FULL every time, so a
+     stroke of n points cost O(n^2) allocation. And each call was a setState,
+     so the entire 4,500-line canvas re-rendered -- every block, every shape --
+     once per point. A three-second stroke at 120Hz is roughly 360 full canvas
+     renders and 65,000 point copies.
+
+     That is where the smart pen's lag came from. Not the recogniser, which
+     runs exactly once, on release.
+
+     The points now accumulate in a ref and the in-flight stroke is painted by
+     setting `d` on one path element directly -- the same trick startBlockDrag
+     already uses with `translate`. React learns about the stroke once, when it
+     is committed. rAF-batched, so several pointermoves inside one frame cost
+     one repaint rather than several.
+
+     The minimum-distance filter is not a micro-optimisation: a stationary
+     pointer emits a stream of near-identical points, and the recogniser's own
+     dedupe then has to walk all of them. Dropping sub-pixel movement at the
+     source keeps every downstream cost proportional to the stroke rather than
+     to how long the user held still. */
+  /* ── STABLE PER-BLOCK CALLBACKS ──────────────────────────────────────────
+
+     Every heavy block component is memo()'d so that panning and zooming — which
+     re-render this component on every frame — do not re-render a 1,900-line
+     database or a PDF page along with them. A memo only holds if its props keep
+     their identity, and inline arrows like
+
+         onSave={html => onUpdateBlock(block.id, { content: html })}
+
+     are a fresh function on every render, which defeats it completely.
+
+     So callbacks are cached per block id. The cached function reads the LATEST
+     handler out of a ref rather than closing over the one that existed when it
+     was created — caching the closure itself would trade a performance bug for
+     a staleness bug, which is a much worse trade. */
+  const latestRef = useRef({})
+  /* Written in an EFFECT, not during render.
+
+     `latestRef.current = {...}` in the render body is a mutation during render.
+     React's compiler flags it, and — more to the point — it is what stops the
+     compiler analysing everything below it, which is how eighteen unrelated
+     purity warnings in this file were being hidden rather than fixed.
+
+     An effect is also CORRECT here rather than merely tolerated: every reader
+     is a callback cached by blockCb(), and a cached callback only runs in
+     response to a user event, which is always after the commit that updated
+     this. */
+  useEffect(() => {
+    latestRef.current = { onUpdateBlock, onTeleport, extractFromPdf, addBlockAnimated, byId }
+  })
+
+  /* One object per (notebook, sheet), not one per render — an inline object
+     literal is a new identity every time and would defeat CalendarBlock's memo
+     on its own. */
+  const calendarAddress = useMemo(
+    () => ({ notebookId: nb.id, sheetId: nb.activeSheetId || nb.sheets?.[0]?.id }),
+    [nb.id, nb.activeSheetId, nb.sheets],
+  )
+
+  /* Shared by every editable block: they take no arguments and depend on
+     nothing per-block, so one identity for the whole canvas is correct. */
+  const onBlockEditStart = useCallback(() => { editingRef.current = true }, [])
+  const onBlockEditEnd = useCallback(() => {
+    editingRef.current = false
+    suppressNextBgClickRef.current = true
+  }, [])
+
+  const cbCacheRef = useRef(new Map())
+  function blockCb(id, key, make) {
+    let m = cbCacheRef.current.get(id)
+    if (!m) { m = {}; cbCacheRef.current.set(id, m) }
+    if (!m[key]) m[key] = make()
+    return m[key]
+  }
+
+  /* Blocks come and go; their cache entries must not accumulate forever. */
+  useEffect(() => {
+    const live = new Set(blocks.map(b => b.id))
+    for (const id of cbCacheRef.current.keys()) if (!live.has(id)) cbCacheRef.current.delete(id)
+  }, [blocks])
+
+  const inkRef = useRef(null)          // { id, color, size, points } while drawing
+  const inkPathRef = useRef(null)      // the live <path> element
+  const inkRafRef = useRef(null)
+
+  /* A stroke still in flight when the canvas unmounts would leave a scheduled
+     frame pointing at a detached path element. */
+  useEffect(() => () => {
+    if (inkRafRef.current != null) cancelAnimationFrame(inkRafRef.current)
+  }, [])
+
+  /* Every route out of a stroke goes through here, so a cancelled stroke can
+     never leave points in the ref or a frame scheduled against a path element
+     that has just unmounted. */
+  function abandonInk() {
+    isDrawing.current = false
+    inkRef.current = null
+    if (inkRafRef.current != null) { cancelAnimationFrame(inkRafRef.current); inkRafRef.current = null }
+    setCurrentPath(null)
+  }
+
+  function paintInk() {
+    inkRafRef.current = null
+    const el = inkPathRef.current
+    const p = inkRef.current
+    if (el && p) el.setAttribute('d', pointsToPath(p.points))
+  }
+  function scheduleInkPaint() {
+    if (inkRafRef.current == null) inkRafRef.current = requestAnimationFrame(paintInk)
   }
 
   function handleDrawMouseDown(e) {
@@ -2285,36 +2872,312 @@ function addBlockAnimated(type, x, y) {
     e.stopPropagation()
     isDrawing.current = true
     const pt = getCanvasPoint(e)
-    const newPath = {
+    inkRef.current = {
       id: `draw_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       color: drawColor,
       size: drawSize,
       points: [pt],
     }
-    setCurrentPath(newPath)
+    /* One state write, to mount the live path element with its stroke styling.
+       `points` is deliberately NOT carried in state -- only the identity and
+       the colour, both fixed for the whole stroke. */
+    setCurrentPath({ id: inkRef.current.id, color: drawColor, size: drawSize })
   }
 
   function handleDrawMouseMove(e) {
-    if (!drawMode || !isDrawing.current || !currentPath) return
+    if (!drawMode || !isDrawing.current || !inkRef.current) return
     const pt = getCanvasPoint(e)
-    setCurrentPath(prev => prev ? { ...prev, points: [...prev.points, pt] } : null)
+    const pts = inkRef.current.points
+    const last = pts[pts.length - 1]
+    /* Expressed in world units so the threshold is a constant number of SCREEN
+       pixels at any zoom -- at 4x, a 0.5-unit move is 2px and worth keeping. */
+    const min = 0.6 / nbZoomRef.current
+    if (last && Math.abs(pt.x - last.x) < min && Math.abs(pt.y - last.y) < min) return
+    pts.push(pt)
+    scheduleInkPaint()
+  }
+
+  /* A stroke that stays a stroke is still DATA — it is on the canvas showing
+     something, permanently — so it becomes a shape of kind 'ink' rather than
+     going into a separate `drawings` array with no verbs. That is what gives
+     it select, drag, resize, rotate, marquee and delete-with-undo: all of it
+     already exists for shapes, and none of it existed for drawings.
+
+     Returns the shape so callers can record it for undo. */
+  function commitInk(path) {
+    if (!path || path.points.length < 2) return null
+    try {
+      const ink = createInk({ points: path.points, color: path.color, size: path.size })
+      onAddShape?.(ink)
+      return ink
+    } catch {
+      /* createInk refuses a degenerate stroke (a single point). Dropping it is
+         right — there is nothing to render — and it must not take the pen
+         down with it. */
+      return null
+    }
+  }
+
+  const SHAPE_LABEL = {
+    line: 'Line', arrow: 'Arrow', rect: 'Rectangle',
+    ellipse: 'Ellipse', triangle: 'Triangle', diamond: 'Diamond',
   }
 
   function handleDrawMouseUp() {
     if (!isDrawing.current) return
     isDrawing.current = false
-    if (currentPath && currentPath.points.length > 1) {
-      onAddDrawing(currentPath)
-    }
+    const path = inkRef.current
+    inkRef.current = null
+    if (inkRafRef.current != null) { cancelAnimationFrame(inkRafRef.current); inkRafRef.current = null }
     setCurrentPath(null)
+    if (!path || path.points.length < 2) return
+
+    if (!smartPen) { rememberDrawn(commitInk(path)); return }
+
+    /* 1 — ARROW GROUPING, the only rule that looks across strokes. A short
+       stroke landing on the head of a line drawn moments ago turns that line
+       into an arrow, in place, keeping its id so selection and undo survive.
+
+       Deliberately narrow: the previous shape must be LINEAR, the stroke must
+       be short, and it must land near the head. The case that gets worried
+       about — a circle, then immediately a line — fails the first condition
+       before anything is measured. */
+    const prev = lastShapeRef.current
+    if (prev) {
+      const grouped = tryArrowGroup(prev.shape, path.points, Date.now() - prev.at)
+      if (grouped) {
+        onUpdateShape?.(prev.shape.id, { kind: 'arrow' })
+        lastShapeRef.current = null
+        setPendingSnap({ shapeId: prev.shape.id, ink: null, label: 'Arrow', at: Date.now() })
+        return
+      }
+    }
+
+    /* 2 — recognise this stroke on its own. */
+    const res = recognise(path.points, { color: path.color, size: path.size })
+    if (!res) {
+      /* Refused. The ink stays EXACTLY as drawn — this is the branch that
+         protects handwriting, arcs and anything the recogniser is not sure
+         about, and it must never be "helpfully" narrowed. It is still a real
+         object though: a stroke you can pick up and move like anything else. */
+      rememberDrawn(commitInk(path))
+      lastShapeRef.current = null
+      return
+    }
+
+    onAddShape?.(res.shape)
+    rememberDrawn(res.shape)
+    lastShapeRef.current = { shape: res.shape, at: Date.now() }
+    /* Snap instantly, make undoing it cheap. A 400ms grouping pause would be
+       a cost paid on EVERY stroke; a wrong guess is a cost paid rarely and
+       reversed in one click. */
+    setPendingSnap({ shapeId: res.shape.id, ink: path, label: SHAPE_LABEL[res.kind] || 'Shape', at: Date.now() })
   }
 
+  /** Put the stroke back exactly as drawn and remove the shape it became. */
+  function keepAsDrawn() {
+    if (!pendingSnap) return
+    onDeleteShapes?.([pendingSnap.shapeId])
+    if (pendingSnap.ink) rememberDrawn(commitInk(pendingSnap.ink))
+    lastShapeRef.current = null
+    setPendingSnap(null)
+  }
+
+  /* The chip is an escape hatch, not a notification: it goes away on its own
+     and taking no action means "yes, that was right". Cleared on unmount and
+     on every new snap, so a stale timer cannot dismiss a newer one. */
+  useEffect(() => {
+    if (!pendingSnap) return
+    const t = setTimeout(() => setPendingSnap(null), 3600)
+    return () => clearTimeout(t)
+  }, [pendingSnap])
+
+  /* ══════════════════════════════════════════════════════════════════
+     SHAPE GESTURES
+     ══════════════════════════════════════════════════════════════════
+     Hit testing happens HERE, in JS, not in the DOM. The shape layer takes
+     no pointer events at all — see components/notebook/ShapeLayer.js. If the
+     browser dispatched these clicks the hit area of a diagonal arrow would
+     be its bounding rectangle, roughly 56x the arrow, because a rectangle is
+     the only thing the browser can dispatch on. */
+
+  /** Screen-constant tolerance. At 0.25x a 2px line is half a pixel on
+   *  screen; without scaling this, selecting one while zoomed out is not
+   *  hard, it is impossible. */
+  function shapeTol() { return hitTolerance(nbZoomRef.current) }
+
+  /** @returns true if a shape took the gesture, so the caller skips marquee. */
+  function startShapeGesture(e) {
+    if (drawMode || cropping || mindMapMode) return false
+    if (e.button !== 0) return false
+    /* Bare canvas only. A shape sits UNDER the blocks, so a click that landed
+       on a block is a block's click even if a shape passes beneath it. */
+    if (e.target !== e.currentTarget) return false
+    if (!shapes.length) return false
+
+    const p = getCanvasPoint(e)
+    const hit = pickShape(shapes, p.x, p.y, shapeTol())
+    if (!hit) {
+      if (selectedShapeIds.size) setSelectedShapeIds(new Set())
+      return false
+    }
+
+    e.preventDefault()
+    /* A bare-canvas CLICK creates a text block (handleBgClick), and the shape
+       layer takes no pointer events — so as far as the click handler is
+       concerned, pressing on a shape happened on empty canvas. Without this,
+       clicking a shape selects it AND drops a new text block underneath it.
+
+       The drag path sets this too, but only once the pointer has actually
+       moved; a plain click to select never gets there. */
+    suppressNextBgClickRef.current = true
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    /* Pressing on a shape that is already part of a multi-selection must not
+       collapse it, or dragging a group is impossible — the same bug the block
+       code carries a comment about at startBlockDrag. */
+    let next
+    if (additive) {
+      next = new Set(selectedShapeIds)
+      next.has(hit.id) ? next.delete(hit.id) : next.add(hit.id)
+    } else if (selectedShapeIds.has(hit.id)) {
+      next = new Set(selectedShapeIds)
+    } else {
+      next = new Set([hit.id])
+    }
+    setSelectedShapeIds(next)
+    if (selectedIds.size) setSelectedIds(new Set())   // one kind of thing selected at a time
+    setSelectedConnId(null)
+
+    if (next.size) dragShapes(e, shapes.filter(sh => next.has(sh.id)), p)
+    return true
+  }
+
+  /** Move every selected shape. Writes once, on mouseup. */
+  function dragShapes(e, list, origin) {
+    if (!list.length) return
+    const start = list.map(sh => ({ ...sh }))
+    let moved = false
+    let last = null
+
+    function onMove(ev) {
+      if (!moved) {
+        /* 3px dead zone. Without it a plain click to select nudges the shape
+           by a pixel and writes a history entry for it. */
+        if (Math.abs(ev.clientX - e.clientX) < 3 && Math.abs(ev.clientY - e.clientY) < 3) return
+        moved = true
+      }
+      const p = getCanvasPoint(ev)
+      const dx = p.x - origin.x, dy = p.y - origin.y
+      last = new Map(start.map(sh => [sh.id, { ...sh, x: sh.x + dx, y: sh.y + dy }]))
+      setLiveShapes(last)
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      /* Read from `last`, not from state: this closure captured liveShapes at
+         mousedown and it is stale by definition here. */
+      if (moved && last) last.forEach((sh, id) => onUpdateShape?.(id, { x: sh.x, y: sh.y }))
+      setLiveShapes(null)
+      if (moved) suppressNextBgClickRef.current = true
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  /** Resize or rotate the sole selected shape from one of its handles. */
+  function onShapeHandleDown(e, handle) {
+    e.preventDefault()
+    e.stopPropagation()
+    const target = soleSelectedShape
+    if (!target) return
+    /* Handles are real elements and stop propagation, so they never reach
+       handleBgClick — but a mouseup that lands back on the canvas can, so the
+       suppression is set on the way IN rather than relying on the gesture
+       ending somewhere convenient. */
+    suppressNextBgClickRef.current = true
+    const start = { ...target }
+    let last = null
+
+    function onMove(ev) {
+      const p = getCanvasPoint(ev)
+      let next
+      if (handle === 'rotate') {
+        const c = centreOf(start)
+        /* +90 because the handle stands off the TOP edge, which is -90
+           degrees from the centre when the shape is unrotated. */
+        const deg = Math.atan2(p.y - c.y, p.x - c.x) * 180 / Math.PI + 90
+        next = { ...start, rot: snapAngle(normaliseAngle(deg)) }
+      } else {
+        next = resizeShape(start, handle, p.x, p.y, { min: 8 })
+      }
+      last = new Map([[start.id, next]])
+      setLiveShapes(last)
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      const done = last?.get(start.id)
+      if (done) onUpdateShape?.(start.id, { x: done.x, y: done.y, w: done.w, h: done.h, rot: done.rot })
+      setLiveShapes(null)
+      suppressNextBgClickRef.current = true
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  function deleteSelectedShapes() {
+    const ids = [...selectedShapeIds]
+    if (!ids.length) return
+    const undo = onDeleteShapes?.(ids)
+    setSelectedShapeIds(new Set())
+    if (undo) toast(ids.length === 1 ? 'Shape deleted' : `${ids.length} shapes deleted`, { undo })
+  }
+
+  /* Undo the last thing the pen made — a stroke or a snapped shape, whichever
+     came last. Paint's Ctrl+Z, scoped honestly to drawing.
+
+     It is NOT a general undo stack. The canvas has never had one; block edits
+     are reversed through the toast that offers it. Pretending otherwise by
+     silently removing whatever changed most recently would be worse than not
+     binding the key at all. */
   function undoLastDrawing() {
-    if (drawings.length === 0) return
-    onDeleteDrawing(drawings[drawings.length - 1].id)
+    const hist = drawHistoryRef.current
+    const alive = new Set(shapes.map(sh => sh.id))
+    /* Walk back past ids that are already gone rather than popping one and
+       appearing to do nothing. */
+    while (hist.length && !alive.has(hist[hist.length - 1])) hist.pop()
+    const id = hist.pop()
+
+    if (id) {
+      const gone = shapes.find(sh => sh.id === id)
+      const undo = onDeleteShapes?.([id])
+      setSelectedShapeIds(prev => { const n = new Set(prev); n.delete(id); return n })
+      if (undo) {
+        toast(gone?.kind === 'ink' ? 'Stroke removed' : 'Shape removed', {
+          /* Putting it back must also put it back in the HISTORY, or a second
+             Ctrl+Z would skip over it. */
+          undo: () => { undo(); if (gone?.id) hist.push(gone.id) },
+        })
+      }
+      return
+    }
+
+    /* Nothing left from this session's pen. Fall back to any legacy stroke
+       still in the old `drawings` array — a workspace saved before ink became
+       a shape, opened but not yet migrated. */
+    if (drawings.length) onDeleteDrawing(drawings[drawings.length - 1].id)
   }
 
   function clearAllDrawings() {
+    /* Ink first, since that is where strokes live now. Legacy drawings are
+       cleared by the tail of this function for any workspace not yet
+       migrated. */
+    const inkIds = shapes.filter(sh => sh.kind === 'ink').map(sh => sh.id)
+    if (inkIds.length) {
+      const undo = onDeleteShapes?.(inkIds)
+      setSelectedShapeIds(new Set())
+      if (undo) toast(inkIds.length === 1 ? 'Stroke cleared' : `${inkIds.length} strokes cleared`, { undo })
+    }
     if (drawings.length === 0) return
     /* Held by value before the clear, and put back one at a time in the order
        they were drawn — drawings paint in array order, so replaying them in
@@ -2354,7 +3217,7 @@ function addBlockAnimated(type, x, y) {
           in the space left over after the title island, which drifted right as
           the notebook name got longer. Padding lives inside the outer cells, so
           it clears the sidebar and profile island without shifting the centre. */}
-      <div ref={topRowRef} data-kbd-zone style={{ position: 'absolute', top: 16, left: 0, right: 0, zIndex: 100, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'start', pointerEvents: 'none' }}>
+      <div ref={topRowRef} data-kbd-zone style={{ position: 'absolute', top: 16, left: 0, right: 0, zIndex: Z.chrome, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'start', pointerEvents: 'none' }}>
       <div style={{ minWidth: 0, paddingLeft: ROW_LEFT, paddingRight: 16, display: 'flex', justifyContent: 'flex-start', overflow: 'hidden' }}>
 
       <div style={{ flex: '0 1 auto', minWidth: 0, pointerEvents: 'auto', display: 'flex', gap: 2, height: 46, padding: '0 12px', overflow: 'hidden', background: `${surface}dd`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
@@ -2385,7 +3248,7 @@ function addBlockAnimated(type, x, y) {
             and there'd otherwise be nothing explaining why. */}
         {selectedIds.size > 0 && (
           <span title="Canvas is frozen while a block is selected — press Esc to release"
-            style={{ fontSize: 9, color: accent, background: accentDim, padding: '3px 7px', borderRadius: 4, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6, flexShrink: 0, marginLeft: 6, whiteSpace: 'nowrap' }}>
+            style={{ fontSize: 9, color: accentText, background: accentDim, padding: '3px 7px', borderRadius: 4, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6, flexShrink: 0, marginLeft: 6, whiteSpace: 'nowrap' }}>
             LOCKED
           </span>
         )}
@@ -2409,7 +3272,7 @@ function addBlockAnimated(type, x, y) {
             Add
           </button>
           {addMenuOpen && (
-            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 140, zIndex: 200 }}>
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 140, zIndex: Z.menu }}>
               {ADD_ITEMS.map(({ type, label }) => (
                 <button key={type} onClick={() => {
                   setAddMenuOpen(false)
@@ -2453,9 +3316,33 @@ function addBlockAnimated(type, x, y) {
 
        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
+        {/* THE PANEL MUST NOT VANISH ON THE WAY TO ITS OWN BUTTONS.
+
+            It used to. The panel sat at top:100% with marginTop:6, and that
+            6px was a DEAD ZONE: the wrapper's box is only as big as the Draw
+            button, so while the pointer crossed the gap it was over neither
+            the button nor the panel. mouseleave fired, the panel unmounted,
+            and reaching for Undo closed the thing containing Undo. Every
+            single time — it was not a race, it was geometry.
+
+            Two fixes, because they cover different mistakes:
+
+            1. The gap is now PADDING ON THE PANEL rather than margin above
+               it. The card still sits 6px lower, but those 6px are now part
+               of the panel, so the hover region is continuous and a straight
+               downward move never leaves it.
+            2. Closing is deferred by 140ms and cancelled on re-entry, which
+               forgives cutting the corner diagonally — the other way to fall
+               out of a menu that is narrower than the path your hand takes.
+
+            The delay is cleared on unmount so a pending close cannot fire
+            against a component that is gone. */}
         <div ref={drawPanelRef} style={{ position: 'relative' }}
-          onMouseEnter={() => setShowDrawPanel(true)}
-          onMouseLeave={() => setShowDrawPanel(false)}>
+          onMouseEnter={() => { clearTimeout(drawPanelCloseRef.current); setShowDrawPanel(true) }}
+          onMouseLeave={() => {
+            clearTimeout(drawPanelCloseRef.current)
+            drawPanelCloseRef.current = setTimeout(() => setShowDrawPanel(false), 140)
+          }}>
           <button onClick={() => setDrawMode(v => !v)}
             className={`ds-tbtn${drawMode ? ' is-on' : ''}`}
             title={drawMode ? 'Turn drawing off' : 'Draw on the canvas · hover for options'}>
@@ -2463,7 +3350,41 @@ function addBlockAnimated(type, x, y) {
             Draw
           </button>
           {showDrawPanel && (
-            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px', boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, zIndex: 200, minWidth: 180, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            /* paddingTop carries the 6px offset instead of marginTop, so the
+               visible card is in the same place and the hover area reaches
+               all the way back to the button. Do not "tidy" this into a
+               margin. */
+            <div style={{ position: 'absolute', top: '100%', left: 0, paddingTop: 6, background: 'transparent', border: 'none', boxShadow: 'none', zIndex: Z.menu, minWidth: 180 }}>
+            <div style={{ minWidth: 180, background: surface, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}` }}>
+              {/* First, because it changes what drawing DOES rather than how
+                  it looks, and someone hunting for "why did my circle jump"
+                  should find the switch before the colour swatches. */}
+              <button onClick={() => setSmartPen(v => !v)}
+                title={smartPen
+                  ? 'Strokes snap to clean shapes. Anything it is unsure about stays as drawn.'
+                  : 'Strokes stay exactly as drawn.'}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                  fontFamily: 'var(--ds-font-body)', fontSize: 12, color: text,
+                }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Icon name="tool-draw" size={12} style={{ color: smartPen ? accent : text3 }} />
+                  Smart pen
+                </span>
+                <span style={{
+                  width: 28, height: 16, borderRadius: 9, flexShrink: 0,
+                  background: smartPen ? accent : border,
+                  position: 'relative', transition: 'background 0.15s ease',
+                }}>
+                  <span style={{
+                    position: 'absolute', top: 2, left: smartPen ? 14 : 2,
+                    width: 12, height: 12, borderRadius: '50%', background: '#fff',
+                    transition: 'left 0.15s ease',
+                  }} />
+                </span>
+              </button>
+
               <div>
                 <div style={{ fontSize: 10, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Color</div>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -2504,6 +3425,7 @@ function addBlockAnimated(type, x, y) {
                   <Icon name="draw-exit" size={13} /> Exit
                 </button>
               </div>
+            </div>
             </div>
           )}
         </div>
@@ -2614,10 +3536,10 @@ function addBlockAnimated(type, x, y) {
       {kbMode && (
         <div role="status" aria-live="polite" style={{
           position: 'absolute', bottom: 18, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 150, display: 'flex', alignItems: 'center', gap: 10,
+          zIndex: Z.hint, display: 'flex', alignItems: 'center', gap: 10,
           padding: '7px 14px', borderRadius: 9,
           background: accentDim, border: `1px solid ${accent}`,
-          color: accent, fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 600,
+          color: accentText, fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 600,
           boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`,
         }}>
           <span>
@@ -2636,9 +3558,9 @@ function addBlockAnimated(type, x, y) {
       {shortcutsOpen && (
         <>
           <div onMouseDown={() => setShortcutsOpen(false)}
-            style={{ position: 'fixed', inset: 0, zIndex: 940, background: 'rgba(0,0,0,0.35)' }} />
+            style={{ position: 'fixed', inset: 0, zIndex: Z.modalScrim, background: 'rgba(0,0,0,0.35)' }} />
           <div role="dialog" aria-label="Keyboard shortcuts" className="ds-island"
-            style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: 950, width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflowY: 'auto', padding: 18 }}>
+            style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: Z.modal, width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflowY: 'auto', padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
               <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700, flex: 1 }}>Keyboard shortcuts</span>
               <button onClick={() => setShortcutsOpen(false)} aria-label="Close"
@@ -2650,7 +3572,7 @@ function addBlockAnimated(type, x, y) {
                 {note && <div style={{ fontSize: 10.5, color: text3, marginBottom: 6 }}>{note}</div>}
                 {rows.map(([k, d]) => (
                   <div key={k} style={{ display: 'flex', alignItems: 'baseline', gap: 12, padding: '3px 0', fontSize: 12 }}>
-                    <span style={{ flex: '0 0 148px', fontFamily: 'var(--ds-font-mono)', fontSize: 10.5, color: accent }}>{k}</span>
+                    <span style={{ flex: '0 0 148px', fontFamily: 'var(--ds-font-mono)', fontSize: 10.5, color: accentText }}>{k}</span>
                     <span style={{ color: text2 }}>{d}</span>
                   </div>
                 ))}
@@ -2664,11 +3586,11 @@ function addBlockAnimated(type, x, y) {
       )}
 
       {mindMapMode && (
-        <div style={{ position: 'absolute', top: 120, left: '50%', transform: 'translateX(-50%)', zIndex: 150, padding: '8px 16px', background: accentDim, border: `1px solid ${accent}`, borderRadius: 8, boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: accent, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ position: 'absolute', top: 120, left: '50%', transform: 'translateX(-50%)', zIndex: Z.hint, padding: '8px 16px', background: accentDim, border: `1px solid ${accent}`, borderRadius: 8, boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: accentText, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
           <Icon name="tool-mindmap" size={15} />
           <span>{mindMapMaster ? 'Now click the target block · Esc to finish' : 'Click a source block — or just drag from any block’s port dot'}</span>
           <button onClick={() => { setMindMapMode(false); setMindMapMaster(null) }} aria-label="Exit mind map mode"
-            style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', padding: 0, lineHeight: 1, opacity: 0.7, display: 'flex' }}>
+            style={{ background: 'none', border: 'none', color: accentText, cursor: 'pointer', padding: 0, lineHeight: 1, opacity: 0.7, display: 'flex' }}>
             <Icon name="action-delete" size={13} />
           </button>
         </div>
@@ -2677,7 +3599,7 @@ function addBlockAnimated(type, x, y) {
         const singleBlockId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
         const singleConns = singleBlockId ? getBlockConnections(singleBlockId) : []
         return (
-        <div ref={ctxMenuRef} style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 300, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 170, fontFamily: 'var(--ds-font-body)' }}>
+        <div ref={ctxMenuRef} style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: Z.popover, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 170, fontFamily: 'var(--ds-font-body)' }}>
           {[
             // Sizing acts on one block; with a multi-selection there's no
             // sensible single target, so these drop out.
@@ -2707,7 +3629,7 @@ function addBlockAnimated(type, x, y) {
                   style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
                   onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = red }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = text2 }}>
-                  <span style={{ width: 16, textAlign: 'center', color: accent }}>{arrow}</span>{label}
+                  <span style={{ width: 16, textAlign: 'center', color: accentText }}>{arrow}</span>{label}
                 </button>
               )
             })}
@@ -2752,6 +3674,10 @@ function addBlockAnimated(type, x, y) {
         aria-label="Notebook canvas. Press question mark for keyboard shortcuts."
         onFocus={() => setCanvasFocused(true)}
         onBlur={() => setCanvasFocused(false)}
+        /* The CSS viewport lock hangs off this: overscroll-behavior to
+           refuse the trackpad's back-swipe, touch-action to take pinch away
+           from the browser. See the Viewport lock block in globals.css. */
+        data-ds-canvas=""
         data-ds-pan={panCursor || undefined}
         onPointerDownCapture={e => {
           // Space + any button, or the middle button on its own. Both mean
@@ -2768,6 +3694,11 @@ function addBlockAnimated(type, x, y) {
              claim, and the cost of it being wrong here is a block jumping
              away under a pan, so the pan state is checked directly too. */
           if (pointerPanRef.current || spaceHeldRef.current || e.button === 1) { e.preventDefault(); return }
+          /* Shapes get first refusal. startMarquee only bails when the event
+             landed on a child element, and the shape layer takes no pointer
+             events — so without this, pressing on a shape starts a rubber
+             band across it instead of dragging it. */
+          if (startShapeGesture(e)) return
           handleDrawMouseDown(e); startPan(e); startMarquee(e)
         }}
         onMouseMove={handleDrawMouseMove}
@@ -2775,6 +3706,18 @@ function addBlockAnimated(type, x, y) {
         onMouseLeave={handleDrawMouseUp}
         onContextMenu={e => {
           e.preventDefault()
+          /* A right-click DURING a stroke throws that stroke away, the way it
+             does in Paint. It is the fastest correction there is — you are
+             already holding the pen down and have just watched the line go
+             somewhere you did not want.
+
+             It returns before the deselect below, because cancelling a stroke
+             is a complete action on its own and should not also change what
+             is selected. */
+          if (isDrawing.current) {
+            abandonInk()
+            return
+          }
           // Right-clicking empty canvas releases the selection, so the pan
           // gesture is available again immediately rather than silently
           // doing nothing while the viewport lock is engaged.
@@ -2786,6 +3729,20 @@ function addBlockAnimated(type, x, y) {
         onDragOver={e => e.preventDefault()}
         onDrop={e => {
           e.preventDefault()
+          /* A file off the desktop beats the internal column drag: only one of
+             the two can be in flight, and dataTransfer.files is only non-empty
+             for the former. stopPropagation stops the window-level fallback in
+             app/page.js importing the same file a second time at a default
+             position — you would get two blocks, one under the cursor and one
+             in the corner. */
+          const dropped = e.dataTransfer?.files
+          if (dropped && dropped.length) {
+            if (!onDropFiles) return
+            e.stopPropagation()
+            const p = getCanvasPoint(e)
+            onDropFiles(dropped, p.x, p.y)
+            return
+          }
           if (!onDropColumn) return
           // Must use the same screen->canvas transform as getCanvasPoint().
           // Previously this skipped the zoom divisor, so at any zoom other
@@ -2808,12 +3765,32 @@ function addBlockAnimated(type, x, y) {
             <filter id="nb-dot-soft" x="-50%" y="-50%" width="200%" height="200%">
               <feGaussianBlur stdDeviation={0.55 * nbZoom} />
             </filter>
-            <pattern id="nb-dots" x={pan.x % gridPx} y={pan.y % gridPx} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
+            {/* Same correction, and this one matters more than the lines do.
+
+                The gridlines render at 5% opacity — all but invisible. These
+                dots at 40% are what a user actually reads as "the grid", and
+                they were drawn at tile-local (r, r), i.e. tangent to the
+                lattice point rather than centred on it, putting every visible
+                dot one zoom-unit right and down of the line a block snaps to.
+                Pulling the tile back by r lands the dot centre exactly on the
+                intersection without moving the circle inside its tile, so the
+                blur halo is clipped exactly as before. */}
+            <pattern id="nb-dots" x={pan.x % gridPx - nbZoom} y={pan.y % gridPx - nbZoom} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
               <circle cx={nbZoom} cy={nbZoom} r={nbZoom} fill={dark ? '#3a3835' : '#C0BCB2'} filter="url(#nb-dot-soft)" opacity={dark ? 0.45 : 0.4} />
             </pattern>
             {/* Faint alignment grid. */}
-            <pattern id="nb-grid" x={pan.x % gridPx} y={pan.y % gridPx} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
-              <path d={`M ${gridPx} 0 L 0 0 0 ${gridPx}`} fill="none"
+            {/* THE TILE ORIGIN IS PULLED BACK HALF A PIXEL ON PURPOSE.
+
+                The line used to be drawn on tile-local 0 with a 1px stroke.
+                A stroke straddles its path, so the outer half fell outside
+                the tile and was clipped away: what you saw was the half-pixel
+                band from 0 to 0.5 — half the intended brightness, and biased
+                half a pixel to the right of the gridline blocks actually snap
+                to. Shifting the tile back 0.5 and drawing the path at 0.5
+                puts the whole stroke inside the tile with its centre exactly
+                on the true line. */}
+            <pattern id="nb-grid" x={pan.x % gridPx - 0.5} y={pan.y % gridPx - 0.5} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
+              <path d={`M ${gridPx} 0.5 L 0.5 0.5 0.5 ${gridPx}`} fill="none"
                 stroke={dark ? '#ffffff' : '#000000'} strokeWidth={1} opacity={dark ? 0.045 : 0.05} />
             </pattern>
           </defs>
@@ -2824,15 +3801,55 @@ function addBlockAnimated(type, x, y) {
               Canvas now controls it independently, and Snap still turns it on
               while it's active because that feedback is genuinely useful. */}
           <rect width="100%" height="100%" fill="url(#nb-grid)"
-            style={{ opacity: (snapEnabled || gridAlways) ? 1 : 0, transition: 'opacity 0.25s ease' }} />
+            style={{ opacity: gridOn ? 1 : 0, transition: 'opacity 0.25s ease' }} />
         </svg>
+        {/* The smart pen's escape hatch.
+
+            position:absolute, NOT fixed. This lives inside the canvas
+            container, and `fixed` inside a transformed ancestor positions
+            against the transform rather than the viewport — the canvas
+            geometry guard exists for exactly this and would reject it. The
+            container itself is untransformed (the scale is on the inner div
+            below), so absolute is both correct and safe here.
+
+            It is an escape hatch, not a notification: it expires on its own,
+            and doing nothing means "yes, that was right". */}
+        {pendingSnap && (
+          <div style={{
+            position: 'absolute', bottom: 22, left: '50%', transform: 'translateX(-50%)',
+            zIndex: Z.hint, display: 'flex', alignItems: 'center', gap: 10,
+            padding: '7px 9px 7px 13px',
+            background: `${surface}ee`,
+            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+            border: `1px solid ${border}`, borderRadius: 10,
+            boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
+            fontFamily: 'var(--ds-font-body)', fontSize: 12, color: text2,
+            animation: 'dsToastIn 0.16s ease',
+          }}>
+            <span><b style={{ color: text, fontWeight: 600 }}>{pendingSnap.label}</b> snapped</span>
+            <button onClick={keepAsDrawn}
+              title="Put the stroke back exactly as you drew it"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                background: 'none', border: `1px solid ${border}`, borderRadius: 7,
+                padding: '4px 9px', color: text2, cursor: 'pointer',
+                fontFamily: 'var(--ds-font-body)', fontSize: 11,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = accent }}
+              onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
+              <Icon name="action-undo" size={11} />
+              Keep as drawn
+            </button>
+          </div>
+        )}
+
         <div style={{ position: 'absolute', top: 0, left: 0, transform: `translate(${pan.x}px, ${pan.y}px) scale(${nbZoom})`, transformOrigin: '0 0' }}>
           {marquee && (
             <div style={{
               position: 'absolute', left: marquee.x, top: marquee.y,
               width: marquee.w, height: marquee.h,
               border: `1px solid ${accent}`, background: `${accent}1a`,
-              borderRadius: 2, pointerEvents: 'none', zIndex: 45,
+              borderRadius: 2, pointerEvents: 'none', zIndex: Z.marquee,
             }} />
           )}
 
@@ -2846,7 +3863,7 @@ function addBlockAnimated(type, x, y) {
               <div style={{
                 position: 'absolute', left: b.x + w, top: b.y + h,
                 transform: `scale(${1 / nbZoom})`, transformOrigin: '0 0',
-                marginLeft: 8, marginTop: 6, zIndex: 60, pointerEvents: 'none',
+                marginLeft: 8, marginTop: 6, zIndex: Z.sizeTag, pointerEvents: 'none',
                 background: accent, color: '#fff', borderRadius: 5,
                 padding: '3px 7px', fontSize: 10.5, fontWeight: 600,
                 fontFamily: 'var(--ds-font-mono)', whiteSpace: 'nowrap',
@@ -3080,9 +4097,14 @@ function addBlockAnimated(type, x, y) {
                 style={{ transform: 'translate(3000px, 3000px)' }}
               />
             ))}
+            {/* `d` is written imperatively by paintInk rather than rendered
+                from state -- see handleDrawMouseMove for why. It starts empty
+                and is filled on the first frame after the press. */}
             {currentPath && (
               <path
-                d={pointsToPath(currentPath.points)}
+                key={currentPath.id}
+                ref={inkPathRef}
+                d=""
                 fill="none"
                 stroke={currentPath.color}
                 strokeWidth={currentPath.size}
@@ -3093,6 +4115,18 @@ function addBlockAnimated(type, x, y) {
               />
             )}
           </svg>
+
+          <ShapeLayer
+            shapes={shapes}
+            selectedIds={selectedShapeIds}
+            soleSelected={soleSelectedShape}
+            live={liveShapes}
+            zoom={nbZoom}
+            accent={accent}
+            surface={surface}
+            stroke={text2}
+            onHandleDown={onShapeHandleDown}
+          />
 
           {blocks.map((stored, bi) => {
             /* Shadowed once, here, so every `block.w` / `block.x` / blockDims()
@@ -3138,16 +4172,31 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     ? 'none'
                     : 'transform 0.22s cubic-bezier(0.22,1,0.36,1), box-shadow 0.22s ease, filter 0.22s ease, outline-color 0.15s ease, z-index 0s',
                   transformOrigin: 'center center',
-                  /* Dropping into a section used to shrink the block to 60%,
-                     which read as the block being destroyed. It now lifts
-                     slightly less than a free drag, and the section itself
-                     highlights — the containment cue lives on the container,
-                     not on the thing being moved. */
-                  transform: isDragging && hoverSectionId
-                    ? 'scale(0.985)'
-                    : isDragging
-                    ? 'scale(1.022)'
-                    : 'scale(1)',
+                  /* THE DRAG NO LONGER SCALES THE BLOCK, and that is a snap fix
+                     rather than a taste change.
+
+                     It used to render at scale(1.022) while being dragged. A
+                     transform does not move the layout box, so the block was
+                     drawn 2.2% larger than the position everything else
+                     reasons about — on a 300px block that is 3.3px of overhang
+                     on each edge. The snap guide is drawn at the TRUE edge,
+                     because the true edge is where the block will actually
+                     land. So the guide and the visible edge could not agree,
+                     by construction, and the mismatch grew with the block.
+
+                     That defeats the whole feature: a guide exists so you can
+                     judge alignment by eye, and the thing you were judging was
+                     rendered somewhere the block was not going to be.
+
+                     The lift is still there — it is the drop-shadow below,
+                     which says "picked up" without moving a single edge. A
+                     2.2% scale was nearly invisible as an effect and very
+                     visible as a misalignment; that is a bad trade.
+
+                     Dropping into a section used to shrink the block to 60%,
+                     which read as the block being destroyed. The containment
+                     cue now lives on the container, which highlights. */
+                  transform: 'none',
                   filter: isDragging
                     ? `drop-shadow(0 18px 34px ${dark ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.20)'})`
                     : 'none',
@@ -3157,7 +4206,24 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : isLinkTarget ? `2px solid ${accent}`
                     : isSnapTarget ? `1.5px solid ${accent}`
                     : '1.5px solid transparent',
-                  outlineOffset: (isLinkTarget || (kbMode === 'grab' && soleSelected?.id === block.id)) ? 3 : 2,
+                  /* THE SNAP-TARGET RING SITS ON THE EDGE, offset 0.
+
+                     It was offset 2, so the accent ring around the block you
+                     are aligning against was drawn 2px (plus its own 1.5px
+                     width) OUTSIDE the real edge. That ring is what the eye
+                     reads as "the block", so the guide — correctly drawn at
+                     the true edge — looked 3.5px off. Two separate few-pixel
+                     errors on top of each other is why this read as sloppy
+                     rather than as a bug with one cause.
+
+                     The other two states keep their offset: a link target and
+                     a keyboard grab are about the block as an OBJECT, not
+                     about where its edge is, and a little breathing room reads
+                     better there. */
+                  outlineOffset: isLinkTarget ? 3
+                    : (kbMode === 'grab' && soleSelected?.id === block.id) ? 3
+                    : isSnapTarget ? 0
+                    : 2,
                   borderRadius: 11,
                   cursor: isDragging ? 'grabbing' : undefined,
                   animation: isDeleting ? 'dsBlockDelete 0.2s ease forwards' : isNew ? 'dsBlockAppear 0.3s cubic-bezier(0.34,1.56,0.64,1)' : 'none',
@@ -3192,8 +4258,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 <div style={{
                   width: block.w || 320, minHeight: block.h || 150,
                   background: isSelected ? `linear-gradient(135deg, ${raised}, ${surface})` : surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
-                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 'var(--ds-radius-sm)', overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 2px ${dark ? 'rgba(91,95,232,0.12)' : 'rgba(29,158,117,0.12)'}, 0 8px 32px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
                     : isHovered
@@ -3202,7 +4268,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease',
                 }}>
                   {/* Accent bar */}
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: 'var(--ds-radius-sm) var(--ds-radius-sm) 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -3222,7 +4288,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     showRail={isSelected && selectedIds.size === 1 && !mindMapMode && !drawMode}
                     blockId={block.id}
                     initialContent={block.content}
-                    onSave={html => onUpdateBlock(block.id, { content: html })}
+                    onSave={blockCb(block.id, 'save', () => html => latestRef.current.onUpdateBlock(block.id, { content: html }))}
                     text={text}
                     colors={colors}
                     minHeight={Math.max(80, (block.h || 150) - 30)}
@@ -3233,15 +4299,13 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                        insert. Placed directly under the paragraph that asked
                        for it rather than at the viewport origin, so it appears
                        where you were looking. */
-                    onInsertBlock={type => {
-                      const d = registryDims(block)
-                      addBlockAnimated(type, block.x, block.y + d.h + 24)
-                    }}
-                    onEditStart={() => { editingRef.current = true }}
-                    onEditEnd={() => {
-                      editingRef.current = false
-                      suppressNextBgClickRef.current = true
-                    }}
+                    onInsertBlock={blockCb(block.id, 'insert', () => type => {
+                      const b = latestRef.current.byId.get(block.id) || block
+                      const d = registryDims(b)
+                      latestRef.current.addBlockAnimated(type, b.x, b.y + d.h + 24)
+                    })}
+                    onEditStart={onBlockEditStart}
+                    onEditEnd={onBlockEditEnd}
                   />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
@@ -3253,7 +4317,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 <div style={{
                   width: block.w || 520, minHeight: block.h || 260,
                   background: isSelected ? `linear-gradient(135deg, ${raised}, ${surface})` : surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 2px ${dark ? 'rgba(91,95,232,0.12)' : 'rgba(29,158,117,0.12)'}, 0 8px 32px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
@@ -3295,7 +4359,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 <div style={{
                   width: block.w || 360, minHeight: block.h || 260,
                   background: isSelected ? `linear-gradient(135deg, ${raised}, ${surface})` : surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 2px ${dark ? 'rgba(91,95,232,0.12)' : 'rgba(29,158,117,0.12)'}, 0 8px 32px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
@@ -3438,7 +4502,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   width: block.w || 520, height: block.h || 620,
                   display: 'flex', flexDirection: 'column',
                   background: surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
@@ -3475,9 +4539,41 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                          would apply to every PDF on the sheet at once. */
                       tool={solePdfBlock?.id === block.id ? pdfTool : 'select'}
                       onEditState={solePdfBlock?.id === block.id ? setPdfEditState : undefined}
-                      onExtract={payload => extractFromPdf(block, payload)}
+                      onExtract={blockCb(block.id, 'pdfExtract', () => payload => latestRef.current.extractFromPdf(block, payload))}
                     />
                   </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* FILE BLOCK — the attachment chip.
+
+                  Shaped like a task card rather than a document frame on
+                  purpose: it is a REFERENCE to a file, not a view of one, and
+                  giving it the proportions of a PDF block would promise a
+                  preview that a browser cannot deliver for these formats. */}
+              {block.type === 'file' && (
+                <div style={{
+                  width: block.w || 300, minHeight: 74,
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 6px 22px ${dark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.10)'}`
+                    : `0 2px 8px ${dark ? 'rgba(0,0,0,0.28)' : 'rgba(0,0,0,0.05)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}
+                  /* The whole chip drags, EXCEPT the download button — which
+                     stops propagation itself, so this only has to leave real
+                     controls alone. */
+                  onMouseDown={e => {
+                    if (e.target.closest('button,a,input')) return
+                    startBlockDrag(e, block)
+                  }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
+                  <FileBlock block={block} colors={colors} dark={dark} onUpdateBlock={onUpdateBlock} />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
@@ -3489,7 +4585,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 <div style={{
                   width: block.w || 260, minHeight: block.h || 96,
                   background: surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 3px ${accentDim}, 0 6px 22px ${dark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.10)'}`
@@ -3526,7 +4622,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   width: block.w || 520, height: block.h || 420,
                   display: 'flex', flexDirection: 'column',
                   background: surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
@@ -3558,8 +4654,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onUpdateBlock={onUpdateBlock}
                       /* Events carry a full teleport address, so an event can
                          point at another sheet once sources reach that far. */
-                      address={{ notebookId: nb.id, sheetId: nb.activeSheetId || nb.sheets?.[0]?.id }}
-                      onTeleport={addr => onTeleport?.(addr)}
+                      address={calendarAddress}
+                      onTeleport={blockCb(block.id, 'calTeleport', () => addr => latestRef.current.onTeleport?.(addr))}
                     />
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
@@ -3578,7 +4674,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   width: block.w || 620, height: block.h || 380,
                   display: 'flex', flexDirection: 'column',
                   background: surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
@@ -3707,7 +4803,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 <div style={{
                   width: block.w || 720, minHeight: block.h || 280,
                   background: isSelected ? `linear-gradient(135deg, ${raised}, ${surface})` : surface,
-                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : dark ? '#252420' : '#D5D1C7'}`,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
                   boxShadow: isSelected
                     ? `0 0 0 2px ${dark ? 'rgba(91,95,232,0.12)' : 'rgba(29,158,117,0.12)'}, 0 8px 32px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
@@ -3751,7 +4847,11 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
             )
           })}
         </div>
-        {blocks.length === 0 && (
+        {/* The hint goes when there is ANYTHING on the canvas, not just when
+            there is a block. A page of sketching is content — telling someone
+            who has just drawn on it that it is empty and they should click to
+            write is the app not looking at its own canvas. */}
+        {blocks.length === 0 && shapes.length === 0 && drawings.length === 0 && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
             <div style={{ textAlign: 'center', color: text3, fontFamily: 'var(--ds-font-body)' }}>
               <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14, opacity: 0.55 }}>

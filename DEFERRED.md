@@ -83,3 +83,34 @@ If you want this later, build a clear distinction between "imported file" (read-
 ## 6. Undo/redo for canvas actions
 
 **Why never on the list:** Not requested, but you'll want it eventually. This is hard to retrofit and easy to design wrong. When you're ready, the right pattern is a command history (every state change is a Command object with undo/redo methods), not snapshotting state. Snapshotting works for small apps but explodes memory once your canvases have any size.
+
+## The React Compiler can now see into the two biggest files (Aug 24)
+
+`npm run lint` went from 48 errors to 53 during the audit-fix pass, and the
+increase is not new breakage — it is newly VISIBLE debt.
+
+The `react-hooks/*` rules come from the React Compiler, which stops analysing a
+component as soon as it hits something it cannot reason about. Both
+`app/app/page.js` and `components/notebook/NotebookCanvas.js` assigned a ref
+during render (`historyRef.current = history`, `latestRef.current = {...}`), and
+that was enough to make the compiler bail out early. Removing those two writes
+let it read the rest of both files, at which point it reported everything it
+found there.
+
+Verified line by line: **15 of 16** new `purity` diagnostics in `page.js` and
+**8 of 9** in `NotebookCanvas.js` are byte-identical to lines that exist in the
+pre-audit baseline. The two that were genuinely new have been fixed.
+
+What is left is one real category, worth doing properly rather than silencing:
+
+  · `Date.now()` and `Math.random()` called inside component-scope functions —
+    id generation, random block placement, timestamps. Correct at runtime
+    (they only run from event handlers) but impure by the compiler's rules, so
+    they block optimisation of everything after them. The fix is to hoist them
+    to module scope taking what they need as arguments, the way `_graceAssets`
+    in `app/app/page.js` now does.
+
+  · `set-state-in-effect` in six places in `NotebookCanvas.js` — derived state
+    that should be computed during render instead.
+
+Neither is a defect today. Both are why those two files are hard to optimise.

@@ -2,6 +2,7 @@
 import { createContext, useContext, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from './Icon'
+import { Z } from '../../lib/theme'
 
 /*
   components/ui/Toast.js
@@ -62,8 +63,17 @@ export function ToastProvider({ children }) {
   const toast = useCallback((message, { tone = 'info', undo, duration } = {}) => {
     const id = `t${++seq}`
     const ms = duration ?? (undo ? UNDO_MS : DEFAULT_MS)
-    setToasts(list => [...list, { id, message, tone, undo }].slice(-MAX_VISIBLE))
-    timers.current.set(id, setTimeout(() => dismiss(id), ms))
+    /* A NON-FINITE DURATION MEANS "DO NOT AUTO-DISMISS".
+
+       Callers reach for `duration: Infinity` for a message that must not
+       disappear — "annotations are not being saved" is not something to show
+       for four seconds. Passing that straight to setTimeout does the OPPOSITE
+       of what it looks like: the spec converts a non-finite delay to 0, so the
+       toast would vanish on the next tick. Guarding here means the intent
+       reads correctly at every call site. */
+    const sticky = !Number.isFinite(ms)
+    setToasts(list => [...list, { id, message, tone, undo, sticky }].slice(-MAX_VISIBLE))
+    if (!sticky) timers.current.set(id, setTimeout(() => dismiss(id), ms))
     return id
   }, [dismiss])
 
@@ -102,10 +112,14 @@ function ToastHost({ toasts, onDismiss }) {
     <div
       data-ds-toasts
       role="status"
-      aria-live="polite"
+      /* polite is right for "Copied" and wrong for "your work is not being
+         saved". The stack switches to assertive while anything sticky is in
+         it, because a sticky toast is only ever used for something the user
+         must not miss. */
+      aria-live={toasts.some(t => t.sticky) ? 'assertive' : 'polite'}
       style={{
         position: 'fixed', left: '50%', bottom: 24, transform: 'translateX(-50%)',
-        zIndex: 100000,
+        zIndex: Z.toast,
         display: 'flex', flexDirection: 'column-reverse', alignItems: 'center',
         gap: 'var(--ds-space-2)',
         /* The stack must not eat clicks on the canvas behind it; each toast
@@ -160,6 +174,16 @@ function ToastRow({ toast, onDismiss }) {
         style={{ color: TONE_COLOR[toast.tone] || 'var(--ds-text-2)', flexShrink: 0 }} />
 
       <span style={{ flex: 1, minWidth: 0 }}>{toast.message}</span>
+
+      {/* A toast that never leaves on its own has to say that clicking closes
+          it — the whole row is the target, but a target with no affordance is
+          a target nobody finds. */}
+      {toast.sticky && !toast.undo && (
+        <span style={{
+          flexShrink: 0, fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-xs)',
+          letterSpacing: 0.4, color: 'var(--ds-text-3)', paddingRight: 3,
+        }}>DISMISS</span>
+      )}
 
       {toast.undo && (
         <button

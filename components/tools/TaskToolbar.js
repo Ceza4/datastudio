@@ -4,6 +4,7 @@ import {
   PRIORITIES, PRIORITY_LABEL, PRIORITY_COLOR, DEADLINE_COLOR,
   STATUS_LABEL, deadlineState, effectiveStatus, toDateInput,
 } from '../../lib/tasks'
+import { Z } from '../../lib/theme'
 
 /*
   components/tools/TaskToolbar.js
@@ -54,7 +55,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
       data-kbd-zone
       style={{
         position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
-        zIndex: 96, width: 168,
+        zIndex: Z.rail, width: 168,
         display: 'flex', flexDirection: 'column', gap: 3, padding: 8,
         maxHeight: 'calc(100% - 120px)', overflowY: 'auto',
         background: `${surface}dd`,
@@ -64,12 +65,6 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
         fontFamily: 'var(--ds-font-body)',
         animation: 'dsRailIn 0.18s cubic-bezier(.34,1.3,.64,1)',
       }}>
-      <style>{`
-        @keyframes dsRailIn {
-          from { opacity: 0; transform: translateY(-50%) translateX(8px); }
-          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
-        }
-      `}</style>
 
       <div title={block.title || 'Task'} style={{
         fontSize: 'var(--ds-fs-xs)', fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
@@ -234,7 +229,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
 
       <div style={{
         marginTop: 10, paddingTop: 8, borderTop: `1px solid ${border}`,
-        fontSize: 'var(--ds-fs-xs)', lineHeight: 1.55, color: text3, display: 'flex', gap: 6,
+        fontSize: 'var(--ds-fs-xs)', lineHeight: 1.55, color: text2, display: 'flex', gap: 6,
       }}>
         <Icon name="status-info" size={12} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>Drag a port to another task to link them, then right-click the line to say how.</span>

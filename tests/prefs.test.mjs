@@ -44,7 +44,12 @@ eq(shouldReduceMotion({reduceMotion:null}), false, 'null follows the OS (OS says
 eq(shouldReduceMotion(undefined), false, 'undefined prefs does not throw')
 
 console.log('\n round trip')
-const messy={dark:true,gridAlways:true,snapDefault:true,gridSize:16,reduceMotion:false}
+/* Every pref, listed. Adding one to lib/prefs.js and NOT to this line
+   fails here — which is the point: a pref that does not survive a save/load
+   cycle is a setting that silently forgets itself. The order has to match
+   what normalizePrefs emits, because the comparison is on the serialised
+   form — same reason the save payload is compared this way. */
+const messy={dark:true,gridAlways:true,sidebarCollapsed:true,snapDefault:true,gridSize:16,reduceMotion:false}
 eq(normalizePrefs(JSON.parse(JSON.stringify(normalizePrefs(messy)))), messy, 'survives a JSON save/load cycle unchanged')
 eq(GRID_SIZES.includes(DEFAULT_PREFS.gridSize), true, 'the default gridSize is itself a legal choice')
 

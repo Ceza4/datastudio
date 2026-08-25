@@ -20,6 +20,7 @@ import { useState, useEffect, useMemo } from 'react'
 
 import { formatsFor, runExport, toColumns } from '../../lib/exporters'
 import SendToSheet from './SendToSheet'
+import { Z } from '../../lib/theme'
 
 /* Export format → icon. Keyed on format id rather than extension so an id can
    change file type later without silently falling back to the generic glyph. */
@@ -64,7 +65,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
   const allTables = useMemo(() => blocks.filter(b => b.type === 'table'), [blocks])
   const exportName = scope === 'selection' && selected.length === 1
     ? (selected[0].name || `${selected[0].type} block`)
-    : `${notebookName || 'Notebook'} — ${sheetName || 'Sheet'}`
+    : `${notebookName || 'Project'} — ${sheetName || 'Sheet'}`
 
   if (!open) return null
 
@@ -96,12 +97,12 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
     <>
       {/* Click-away catcher. Deliberately not a dimming overlay: the canvas
           stays legible so you can see what you're about to export. */}
-      <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: 890 }} />
+      <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: Z.panel }} />
 
       <div className="ds-island" role="dialog" aria-label="Export"
         style={{
           position: 'fixed', top: 74, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 900, width: 470, maxWidth: 'calc(100vw - 32px)',
+          zIndex: Z.panel, width: 470, maxWidth: 'calc(100vw - 32px)',
           padding: 16, display: 'flex', flexDirection: 'column', gap: 13,
           maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
         }}>
@@ -143,7 +144,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
             })}
           </div>
           {scope === 'selection' && selected.length === 0 && (
-            <div style={{ fontSize: 11, color: 'var(--ds-text-3)', marginTop: 6 }}>
+            <div style={{ fontSize: 11, color: 'var(--ds-text-2)', marginTop: 6 }}>
               Nothing selected — click a block on the canvas first.
             </div>
           )}
@@ -169,7 +170,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
           {toSheet && (
             <div style={{ marginTop: 9, padding: 11, borderRadius: 8, border: '1px solid var(--ds-border)', background: 'var(--ds-raised)' }}>
               {sourceColumns.length === 0 ? (
-                <div style={{ fontSize: 11, color: 'var(--ds-text-3)', lineHeight: 1.5 }}>
+                <div style={{ fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
                   The current selection has no table columns to send.
                 </div>
               ) : (
@@ -244,7 +245,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
           }}>{error}</div>
         )}
 
-        <div style={{ fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.55, borderTop: '1px solid var(--ds-border)', paddingTop: 10 }}>
+        <div style={{ fontSize: 10.5, color: 'var(--ds-text-2)', lineHeight: 1.55, borderTop: '1px solid var(--ds-border)', paddingTop: 10 }}>
           PDF opens your browser’s print dialog — choose <b style={{ color: 'var(--ds-text-2)' }}>Save as PDF</b>.
           Word and PowerPoint files are real Office documents, not renamed HTML.
         </div>

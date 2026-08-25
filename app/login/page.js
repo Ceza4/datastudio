@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 import { useTheme } from '../providers'
+import { makeColors } from '../../lib/theme'
+import { signIn, AUTH, isSupabaseConfigured } from '../../lib/auth'
 
 export default function Login() {
   const { dark, setDark } = useTheme()
@@ -9,22 +11,40 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const t = {
-    base:      dark ? '#1A1917' : '#F5F3EE',
-    surface:   dark ? '#201F1C' : '#EDEAE3',
-    raised:    dark ? '#262522' : '#E4E1D8',
-    border:    dark ? '#2E2D29' : '#D5D1C7',
-    text:      dark ? '#E8E6E1' : '#1A1917',
-    text2:     dark ? '#9A9790' : '#6B6860',
-    text3:     dark ? '#5A5955' : '#A09D97',
-    accent:    dark ? '#5B5FE8' : '#1D9E75',
-    accentDim: dark ? '#2a2d6e' : '#E1F5EE',
-  }
+  /* The app's palette, not a hand-copy of it. accentDim here used to be
+     '#2a2d6e' / '#E1F5EE' — two values that exist in no token file, so the
+     sign-in page and the app it signs you into were subtly different
+     products. */
+  const t = makeColors(dark)
 
-  const handleLogin = (e) => {
+  const [notice, setNotice] = useState(null)
+
+  /* This was a setTimeout that did nothing for 1500ms and then stopped. It
+     looked exactly like signing in, which made it worse than an empty page —
+     nobody reports a bug against a form that appears to work. */
+  const handleLogin = async (e) => {
     e.preventDefault()
+    if (loading) return
+    setNotice(null)
     setLoading(true)
-    setTimeout(() => setLoading(false), 1500)
+    const res = await signIn(email, password)
+    setLoading(false)
+
+    if (res.status === AUTH.OK) {
+      /* A hard navigation, not a router push. The app reads its whole state
+         on mount, and arriving with a session already established is simpler
+         to reason about than teaching every consumer to react to one
+         appearing underneath it. */
+      window.location.href = '/app'
+      return
+    }
+    setNotice({
+      /* UNCONFIGURED is not a failure. There is no backend on this build, and
+         the app works without one — so it reads as information, not as an
+         error the user did something to cause. */
+      tone: res.status === AUTH.UNCONFIGURED ? 'info' : 'error',
+      message: res.message,
+    })
   }
 
   return (
@@ -95,6 +115,16 @@ export default function Login() {
             />
           </div>
 
+          {notice && (
+            <div role={notice.tone === 'error' ? 'alert' : 'status'} style={{
+              marginBottom:'16px', padding:'10px 12px', borderRadius:'8px',
+              fontSize:'12.5px', lineHeight:1.5,
+              background: notice.tone === 'error' ? 'rgba(248,113,113,0.12)' : t.raised,
+              border:`1px solid ${notice.tone === 'error' ? '#f87171' : t.border}`,
+              color: notice.tone === 'error' ? '#f87171' : t.text2,
+            }}>{notice.message}</div>
+          )}
+
           {/* PASSWORD */}
           <div style={{marginBottom:'24px'}}>
             <div style={{display:'flex', justifyContent:'space-between', marginBottom:'6px'}}>
@@ -142,8 +172,13 @@ export default function Login() {
           <div style={{flex:1, height:'1px', background:t.border}}></div>
         </div>
 
-        {/* GOOGLE */}
-        <button style={{
+        {/* GOOGLE — not wired. It is left visible and DISABLED rather than
+            removed, because the OAuth provider is a Supabase dashboard
+            setting rather than code: the day it is switched on, this button
+            needs one call. A button that silently does nothing is the thing
+            being fixed on this page, so it says so on hover. */}
+        <button disabled title="Google sign-in is not enabled on this build yet" style={{
+          opacity: 0.45, cursor: 'not-allowed',
           width:'100%', padding:'11px',
           background:'none', border:`1px solid ${t.border}`,
           borderRadius:'8px', fontSize:'14px', color:t.text,
@@ -158,6 +193,16 @@ export default function Login() {
           </svg>
           Continue with Google
         </button>
+
+        {/* The point of the whole page, said out loud. An account is for
+            SYNC; it is not the door. Somebody who lands here and does not
+            want one should be able to leave in the right direction. */}
+        <p style={{textAlign:'center', fontSize:'12px', color:t.text3, marginTop:'18px', lineHeight:1.6}}>
+          {isSupabaseConfigured()
+            ? 'You don’t need an account to use DataStudio. '
+            : 'Accounts aren’t set up on this build. '}
+          <a href="/app" style={{color:t.text2, textDecoration:'underline'}}>Open it without one</a>
+        </p>
 
         {/* SIGNUP LINK */}
         <p style={{textAlign:'center', fontSize:'13px', color:t.text2, marginTop:'24px'}}>

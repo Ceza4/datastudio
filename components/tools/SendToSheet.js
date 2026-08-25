@@ -47,7 +47,7 @@ export default function SendToSheet({ tables, columns, onWrite, onDone, compact 
 
   if (!tables.length) {
     return (
-      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', lineHeight: 1.5 }}>
+      <div style={{ fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
         No table blocks on this sheet to write into. Add one first, or use
         “Add results to canvas”.
       </div>

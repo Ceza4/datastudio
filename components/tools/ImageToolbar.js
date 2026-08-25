@@ -2,6 +2,7 @@
 import Icon from '../ui/Icon'
 import { useState, useRef } from 'react'
 import { transformImage, cropImage, processImageFile, putImage, newImageId, IMAGE_EXTS, MAX_IMAGE_BYTES } from '../../lib/images'
+import { Z } from '../../lib/theme'
 
 /* ImageToolbar
    --------------------------------------------------------------------------
@@ -91,7 +92,7 @@ export default function ImageToolbar({
       data-kbd-zone
       style={{
         position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
-        zIndex: 96, width: 128,
+        zIndex: Z.rail, width: 128,
         display: 'flex', flexDirection: 'column', gap: 3, padding: 8,
         background: `${surface}dd`,
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -100,12 +101,6 @@ export default function ImageToolbar({
         fontFamily: 'var(--ds-font-body)',
         animation: 'dsRailIn 0.18s cubic-bezier(.34,1.3,.64,1)',
       }}>
-      <style>{`
-        @keyframes dsRailIn {
-          from { opacity: 0; transform: translateY(-50%) translateX(8px); }
-          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
-        }
-      `}</style>
 
       <div title={block.name || 'Image'} style={{
         fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
@@ -118,7 +113,7 @@ export default function ImageToolbar({
 
       {cropping ? (
         <>
-          <div style={{ fontSize: 10, color: text3, lineHeight: 1.45, padding: '2px 4px 6px' }}>
+          <div style={{ fontSize: 10, color: text2, lineHeight: 1.45, padding: '2px 4px 6px' }}>
             Drag a rectangle on the image.
           </div>
           <button className="ds-tbtn is-on" style={btn}

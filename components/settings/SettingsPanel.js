@@ -1,8 +1,9 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { getSession, signOut, onAuthChange, isSupabaseConfigured } from '../../lib/auth'
 import Icon from '../ui/Icon'
 import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
-import { GRID_SIZES } from '../../lib/prefs'
+import { GRID_SIZES, shouldReduceMotion } from '../../lib/prefs'
 
 /*
   components/settings/SettingsPanel.js
@@ -80,8 +81,42 @@ export default function SettingsPanel({
   prefs, setPref,
   usage, persisted, formatBytes,
   onDeleteAllData,
+  /* Asks about the local workspace before signing out — see
+     signOutAndMaybeWipe in app/app/page.js for why that question exists. */
+  onSignOut,
 }) {
   const [showShortcuts, setShowShortcuts] = useState(false)
+  /* undefined = not looked yet, null = signed out. The three states are kept
+     distinct because "we have not checked" and "there is no account" produce
+     very different copy, and collapsing them shows "Sign in to sync" for a
+     frame to somebody who is already signed in. */
+  const [account, setAccount] = useState(undefined)
+  const [signingOut, setSigningOut] = useState(false)
+
+  useEffect(() => {
+    let live = true
+    getSession().then(r => { if (live) setAccount(r.user || null) })
+    /* Also subscribed, not just read once: supabase-js broadcasts across
+       tabs, so signing out in one window has to empty this one too. */
+    const stop = onAuthChange(({ user }) => { if (live) setAccount(user || null) })
+    return () => { live = false; stop() }
+  }, [])
+
+  async function handleSignOut() {
+    if (signingOut) return
+    /* The question comes FIRST, while the user still has a session and a
+       workspace in front of them. Asking after the token is gone would be
+       asking about something they can no longer see. Cancelling leaves them
+       signed in, which is the only sensible reading of "cancel" here. */
+    if (onSignOut) {
+      const proceed = await onSignOut()
+      if (!proceed) return
+    }
+    setSigningOut(true)
+    await signOut()
+    setAccount(null)
+    setSigningOut(false)
+  }
 
   return (
     <div
@@ -133,6 +168,18 @@ export default function SettingsPanel({
         icon="tool-snap"
         on={prefs.snapDefault}
         onChange={v => setPref('snapDefault', v)}
+      />
+      {/* This preference existed in the stored payload, was normalised, was
+          migrated — and had no toggle and no reader anywhere in the app. It is
+          honoured now (providers.js stamps it on <html>), so it needed a way to
+          be set. `null` means "follow the operating system", which is why the
+          toggle reads the resolved value rather than the raw one. */}
+      <Toggle
+        label="Reduce motion"
+        hint={prefs.reduceMotion === null ? 'Following your system setting' : 'Overrides your system setting'}
+        icon="tool-snap"
+        on={shouldReduceMotion(prefs)}
+        onChange={v => setPref('reduceMotion', v)}
       />
 
       <div style={{ fontSize: 10.5, color: 'var(--ds-text-3)', margin: '10px 0 6px' }}>Grid size</div>
@@ -204,16 +251,19 @@ export default function SettingsPanel({
           <span style={{ color: 'var(--ds-text-3)' }}>of ~{formatBytes(usage.quota)}</span>
         </div>
       )}
+      {/* Stated once, here, where someone came looking — not shouted from the
+          sidebar. Same colour and same icon whatever the answer, because the
+          amber warning triangle was doing the alarming, not the words. */}
       <div style={{
         display: 'flex', gap: 6, alignItems: 'flex-start',
         fontSize: 11, marginBottom: 10, lineHeight: 1.5,
-        color: persisted === false ? 'var(--ds-amber)' : persisted === true ? 'var(--ds-accent)' : 'var(--ds-text-3)',
+        color: 'var(--ds-text-3)',
       }}>
-        <Icon name={persisted === false ? 'status-warning' : persisted === true ? 'status-success' : 'status-info'} size={13} style={{ marginTop: 1 }} />
+        <Icon name="status-info" size={13} style={{ marginTop: 1 }} />
         <span>
-          {persisted === true && 'Protected — the browser has agreed not to evict it.'}
-          {persisted === false && 'Not protected. The browser may clear this if the disk fills up — export anything important.'}
-          {persisted === null && 'Eviction protection is unavailable in this browser.'}
+          {persisted === true && 'This browser has agreed to keep your workspace, so it will not be cleared to reclaim disk space.'}
+          {persisted === false && 'This browser has not guaranteed the storage. Installing the app or bookmarking it usually earns the guarantee; syncing to an account will make it moot.'}
+          {persisted === null && 'This browser does not offer a storage guarantee either way.'}
         </span>
       </div>
 
@@ -229,22 +279,65 @@ export default function SettingsPanel({
       </button>
 
       {/* ── Account ────────────────────────────────────────────────── */}
-      {/* Declared now and honestly empty, rather than left out and inserted
-          later above Storage — which would move Storage the day sync lands. */}
       <div style={{ marginTop: 16 }}>
         <SectionLabel>Account</SectionLabel>
-        <div style={{
-          display: 'flex', gap: 7, alignItems: 'flex-start',
-          padding: '9px 10px', borderRadius: 8,
-          border: '1px dashed var(--ds-border)',
-          fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.5,
-        }}>
-          <Icon name="auth-account" size={13} style={{ marginTop: 1, flexShrink: 0 }} />
-          <span>No account yet. This workspace lives in this browser only — sign-in and sync are not built.</span>
-        </div>
+
+        {account === undefined ? (
+          /* Not a spinner. A one-line placeholder of the same height as the
+             answer, so the panel does not jump when the read lands — the read
+             is usually a local token and takes a frame. */
+          <div style={{ padding: '9px 10px', fontSize: 10.5, color: 'var(--ds-text-3)' }}>Checking…</div>
+        ) : account ? (
+          <div style={{
+            display: 'flex', gap: 8, alignItems: 'center',
+            padding: '9px 10px', borderRadius: 8, border: '1px solid var(--ds-border)',
+          }}>
+            <Icon name="auth-account" size={13} style={{ flexShrink: 0, color: 'var(--ds-accent)' }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontSize: 11, color: 'var(--ds-text)', fontWeight: 600,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }} title={account.email}>{account.email}</div>
+              {/* Says what an account currently DOES, which is not much yet.
+                  Claiming "synced" before sync.js exists would be the exact
+                  lie the login form used to tell. */}
+              <div style={{ fontSize: 10, color: 'var(--ds-text-2)', marginTop: 1 }}>
+                Signed in · this workspace is still stored on this device only
+              </div>
+            </div>
+            <button onClick={handleSignOut} disabled={signingOut}
+              style={{
+                flexShrink: 0, padding: '4px 9px', borderRadius: 6,
+                border: '1px solid var(--ds-border)', background: 'none',
+                color: 'var(--ds-text-2)', fontSize: 10.5, fontFamily: body,
+                cursor: signingOut ? 'default' : 'pointer', opacity: signingOut ? 0.5 : 1,
+              }}>
+              {signingOut ? '…' : 'Sign out'}
+            </button>
+          </div>
+        ) : (
+          <div style={{
+            display: 'flex', gap: 7, alignItems: 'flex-start',
+            padding: '9px 10px', borderRadius: 8,
+            border: '1px dashed var(--ds-border)',
+            fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.5,
+          }}>
+            <Icon name="auth-account" size={13} style={{ marginTop: 1, flexShrink: 0 }} />
+            <span>
+              {isSupabaseConfigured() ? (
+                <>
+                  No account. This workspace lives in this browser only.{' '}
+                  <a href="/login" style={{ color: 'var(--ds-accent)', textDecoration: 'none', fontWeight: 600 }}>Sign in</a>
+                </>
+              ) : (
+                'Accounts are not set up on this build. This workspace lives in this browser only.'
+              )}
+            </span>
+          </div>
+        )}
       </div>
 
-      <div style={{ borderTop: '1px solid var(--ds-border)', marginTop: 14, paddingTop: 9, fontSize: 10, color: 'var(--ds-text-3)', lineHeight: 1.6, fontFamily: mono }}>
+      <div style={{ borderTop: '1px solid var(--ds-border)', marginTop: 14, paddingTop: 9, fontSize: 10, color: 'var(--ds-text-2)', lineHeight: 1.6, fontFamily: mono }}>
         DataStudio · local-first
       </div>
     </div>

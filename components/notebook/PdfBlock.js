@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import Icon from '../ui/Icon'
 import { useToast } from '../ui/Toast'
 import { getPdf, formatPdfSize } from '../../lib/pdfs'
@@ -118,8 +118,18 @@ export function samplePageColor(canvas, viewport, pdfRect) {
   }
 }
 
-export default function PdfBlock({ block, colors, dark, onUpdateBlock, isSelected, tool = 'select', onEditState, onExtract }) {
-  const { surface, raised, border, text, text2, text3, accent, red } = colors
+
+/* memo, because this component is a child of NotebookCanvas and NotebookCanvas
+   re-renders on every frame of a pan or a zoom. Without it, dragging the canvas
+   re-rendered every block on screen sixty times a second; with it, React bails
+   out at this boundary and the frame costs nothing but the transform.
+
+   A plain shallow compare is enough because every prop it receives is stable by
+   construction: `colors` is one of two frozen module objects (lib/theme.js),
+   handlers are cached per block id by blockCb() in NotebookCanvas, and `block`
+   only changes identity when the block actually changes. */
+function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 'select', onEditState, onExtract }) {
+  const { surface, raised, border, text, text2, text3, accent, accentText, red } = colors
   const toast = useToast()
 
   const [status, setStatus] = useState('idle')     // idle | loading | ready | error
@@ -418,13 +428,46 @@ export default function PdfBlock({ block, colors, dark, onUpdateBlock, isSelecte
      Every mutation goes through commit(), so undo is always available and no
      operation has to know how to reverse itself. */
 
+  /* Only complain once per block. A failing store fails on every stroke, and
+     a toast per annotation is a worse experience than the silence it
+     replaces. */
+  const annotWarnedRef = useRef(false)
+
   const persist = useCallback(next => {
     if (!block.pdfId) return
     /* Written straight to the pdfs store, NOT into the workspace snapshot.
        Keeping the overlay next to the bytes means annotating a document
-       doesn't touch the notebook autosave at all. */
-    putPdfEdits(block.pdfId, next).catch(() => {})
-  }, [block.pdfId])
+       doesn't touch the notebook autosave at all.
+
+       WHICH IS ALSO WHY THIS HAS TO REPORT ITS OWN FAILURES.
+
+       This was `.catch(() => {})`. Because annotations bypass the workspace
+       snapshot they never reach saveState, so they never reach the "Not
+       saving" banner either — a full disk or an aborted transaction threw
+       away an afternoon of markup with no toast, no banner and no console
+       line. Meanwhile setHistory updated regardless, so the annotation sat
+       there on screen looking saved.
+
+       This is the exact failure lib/persistence.js was rewritten to kill
+       ("the catch logged a console.warn nobody sees, and the user kept
+       working on a workspace that had stopped saving"), reintroduced in a
+       sibling module.
+
+       putPdfEdits also resolves null when the record is missing, which is its
+       own quiet loss — a resolved promise that saved nothing. Both are
+       reported. */
+    Promise.resolve(putPdfEdits(block.pdfId, next))
+      .then(rev => {
+        if (rev != null || annotWarnedRef.current) return
+        annotWarnedRef.current = true
+        toast('This PDF is no longer in local storage, so annotations are not being saved.', { tone: 'error', duration: Infinity })
+      })
+      .catch(err => {
+        if (annotWarnedRef.current) return
+        annotWarnedRef.current = true
+        toast(`Annotations are not being saved: ${err?.message || 'unknown error'}`, { tone: 'error', duration: Infinity })
+      })
+  }, [block.pdfId, toast])
 
   const applyChange = useCallback(next => {
     setHistory(h => {
@@ -569,7 +612,7 @@ export default function PdfBlock({ block, colors, dark, onUpdateBlock, isSelecte
       <Shell colors={colors}>
         <Icon name="block-pdf" size={30} style={{ opacity: 0.4 }} />
         <div style={{ fontSize: 12.5, color: text2, fontWeight: 600 }}>No document</div>
-        <div style={{ fontSize: 11, color: text3, lineHeight: 1.5, maxWidth: 240 }}>
+        <div style={{ fontSize: 11, color: text2, lineHeight: 1.5, maxWidth: 240 }}>
           Import a PDF from the sidebar, or drop one onto the canvas.
         </div>
       </Shell>
@@ -589,7 +632,7 @@ export default function PdfBlock({ block, colors, dark, onUpdateBlock, isSelecte
   if (status !== 'ready') {
     return (
       <Shell colors={colors}>
-        <Icon name="status-spinner" size={20} style={{ color: accent }} />
+        <Icon name="status-spinner" size={20} style={{ color: accentText }} />
         <div style={{ fontSize: 11.5, color: text3 }}>Opening document…</div>
       </Shell>
     )
@@ -728,7 +771,7 @@ export default function PdfBlock({ block, colors, dark, onUpdateBlock, isSelecte
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
             padding: 24, textAlign: 'center', color: text3, fontFamily: 'var(--ds-font-body)',
           }}>
-            <Icon name="status-spinner" size={18} style={{ color: accent }} />
+            <Icon name="status-spinner" size={18} style={{ color: accentText }} />
             <div style={{ fontSize: 11.5 }}>Rendering page {safePage}…</div>
             <div style={{ fontSize: 10, lineHeight: 1.5, maxWidth: 260, opacity: 0.75 }}>
               If this doesn’t clear, the pdf.js worker isn’t loading.
@@ -774,3 +817,5 @@ const miniBtn = color => ({
   borderRadius: 4, border: '1px solid transparent', background: 'transparent',
   color, cursor: 'pointer', fontFamily: 'var(--ds-font-mono)', fontSize: 12, lineHeight: 1, padding: 0,
 })
+
+export default memo(PdfBlockInner)

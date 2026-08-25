@@ -325,7 +325,7 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
                 already written down is .ds-btn-primary in globals.css. Reusing
                 it beats adding a seventh hardcoded '#fff'. */}
             <button className="ds-btn ds-btn-primary" onClick={commitSave} disabled={busy}>Save</button>
-            <span style={{ fontSize: 10, color: text3 }}>Enter to save · Esc to cancel</span>
+            <span style={{ fontSize: 10, color: text2 }}>Enter to save · Esc to cancel</span>
           </div>
         </div>
       )}

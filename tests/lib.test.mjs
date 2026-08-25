@@ -214,5 +214,45 @@ ok(formatBytes(undefined) !== undefined, 'undefined does not throw')
   ok(calls === 0, 'debounce does not fire synchronously')
 }
 
+/* ── image header dimensions (decompression-bomb guard) ─────────────────── */
+{
+  const { headerDimensions, MAX_PIXELS } = await import('../lib/images.js')
+  const put = (a, i, v) => { a[i] = (v >>> 24) & 255; a[i + 1] = (v >>> 16) & 255; a[i + 2] = (v >>> 8) & 255; a[i + 3] = v & 255 }
+
+  const png = new Uint8Array(32)
+  png.set([0x89, 0x50, 0x4E, 0x47, 13, 10, 26, 10], 0)
+  put(png, 16, 1920); put(png, 20, 1080)
+  const d = headerDimensions(png)
+  ok(d?.width === 1920 && d?.height === 1080, 'headerDimensions reads a PNG IHDR')
+
+  put(png, 16, 30000); put(png, 20, 30000)
+  ok(headerDimensions(png).width * headerDimensions(png).height > MAX_PIXELS,
+    'a 30000x30000 PNG is over the pixel cap — the classic decompression bomb, refused before any decode')
+
+  const gif = new Uint8Array(32)
+  gif.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0)
+  gif[6] = 0x40; gif[7] = 0x9C; gif[8] = 0x40; gif[9] = 0x9C
+  ok(headerDimensions(gif).width === 40000, 'headerDimensions reads a GIF logical screen descriptor (little-endian)')
+
+  const bmp = new Uint8Array(32)
+  bmp.set([0x42, 0x4D], 0)
+  bmp[18] = 0x00; bmp[19] = 0x7D; bmp[22] = 0x00; bmp[23] = 0x7D
+  ok(headerDimensions(bmp).width === 32000, 'headerDimensions reads a BMP DIB header')
+
+  const jpg = new Uint8Array(32); jpg.set([0xFF, 0xD8, 0xFF, 0xE0], 0)
+  ok(headerDimensions(jpg) === null,
+    'JPEG returns null rather than a guess — its SOF marker can sit behind arbitrarily many segments, so it falls through to the post-decode check')
+  ok(headerDimensions(new Uint8Array(4)) === null, 'a truncated header is null, not a crash')
+  ok(headerDimensions(null) === null, 'null input is null, not a crash')
+
+  /* The cap is set by what it must ALLOW. Both ends are asserted, because a
+     cap that only blocks bombs is easy and a cap that also passes real
+     cameras is the actual requirement. */
+  ok(12000 * 9000 < MAX_PIXELS, 'a 108MP phone photograph is allowed through')
+  ok(8000 * 6000 < MAX_PIXELS, 'so is a 48MP one')
+  ok(30000 * 30000 > MAX_PIXELS, 'and a 900MP decompression bomb is not')
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)
+

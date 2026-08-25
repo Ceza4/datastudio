@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { searchBlocks } from '../../lib/teleport'
 import { BLOCK_TYPES } from './blockRegistry'
+import { Z } from '../../lib/theme'
 
 /*
   components/notebook/BlockPicker.js
@@ -64,7 +65,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
     }
   }
 
-  const { surface, raised, border, text, text2, text3, accent, accentDim } = colors
+  const { surface, raised, border, text, text2, text3, accent, accentText, accentDim } = colors
 
   if (typeof document === 'undefined') return null
 
@@ -83,7 +84,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
            text. Fixed positioning inside the transform doesn't escape it
            either; only leaving the subtree does. */
         position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-        zIndex: 99999,
+        zIndex: Z.popover,
         width: 340, maxHeight: 380, display: 'flex', flexDirection: 'column',
         background: surface, border: `1px solid ${border}`, borderRadius: 12,
         boxShadow: '0 20px 60px rgba(0,0,0,0.4)', overflow: 'hidden',
@@ -91,7 +92,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
       }}>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${border}` }}>
-        <Icon name="share-link" size={14} style={{ color: accent, flexShrink: 0 }} />
+        <Icon name="share-link" size={14} style={{ color: accentText, flexShrink: 0 }} />
         <input
           ref={inputRef}
           value={query}
@@ -110,7 +111,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
 
       <div ref={listRef} role="listbox" style={{ overflowY: 'auto', padding: 5 }}>
         {results.length === 0 && (
-          <div style={{ padding: '18px 12px', textAlign: 'center', color: text3, fontSize: 12, lineHeight: 1.6 }}>
+          <div style={{ padding: '18px 12px', textAlign: 'center', color: text2, fontSize: 12, lineHeight: 1.6 }}>
             {query
               ? <>Nothing matches “{query}”.</>
               : <>No other blocks yet.<br />Links point at blocks, so make one first.</>}
@@ -178,7 +179,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
           and a modal with no dismiss target traps anyone reaching for the
           mouse. */}
       <div onMouseDown={onCancel}
-        style={{ position: 'fixed', inset: 0, zIndex: 99998, background: 'transparent' }} />
+        style={{ position: 'fixed', inset: 0, zIndex: Z.modalScrim, background: 'transparent' }} />
       {panel}
     </>,
     document.body

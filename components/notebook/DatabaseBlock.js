@@ -1,5 +1,5 @@
 'use client'
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { useToast } from '../ui/Toast'
@@ -15,6 +15,7 @@ import {
   monthGrid, dayKey, weekdayLabels, monthTitle, addMonths, isToday,
   WEEK_START_MONDAY, msUntilNextLocalMidnight,
 } from '../../lib/calendar'
+import { Z } from '../../lib/theme'
 
 /*
   components/notebook/DatabaseBlock.js
@@ -150,8 +151,18 @@ const openOnPointerDown = handler => e => {
 
 /* ── the block ───────────────────────────────────────────────────────── */
 
-export default function DatabaseBlock({ block, colors, dark, onUpdateBlock, editingRef }) {
-  const { surface, border, text3, accent } = colors
+
+/* memo, because this component is a child of NotebookCanvas and NotebookCanvas
+   re-renders on every frame of a pan or a zoom. Without it, dragging the canvas
+   re-rendered every block on screen sixty times a second; with it, React bails
+   out at this boundary and the frame costs nothing but the transform.
+
+   A plain shallow compare is enough because every prop it receives is stable by
+   construction: `colors` is one of two frozen module objects (lib/theme.js),
+   handlers are cached per block id by blockCb() in NotebookCanvas, and `block`
+   only changes identity when the block actually changes. */
+function DatabaseBlockInner({ block, colors, dark, onUpdateBlock, editingRef }) {
+  const { surface, border, text3, accent, accentText } = colors
   const toast = useToast()
 
   const db = block?.db?.properties?.length ? block.db : FALLBACK_DB
@@ -355,7 +366,7 @@ export default function DatabaseBlock({ block, colors, dark, onUpdateBlock, edit
       }}>
         <span>{describeDatabase(db)}</span>
         {resolved.rows.length !== db.rows.length && (
-          <span style={{ color: accent }}>· {resolved.rows.length} shown</span>
+          <span style={{ color: accentText }}>· {resolved.rows.length} shown</span>
         )}
       </div>
 
@@ -416,7 +427,7 @@ export default function DatabaseBlock({ block, colors, dark, onUpdateBlock, edit
 /* ── view bar ────────────────────────────────────────────────────────── */
 
 function ViewBar({ db, view, colors, onSelect, onOpenMenu, sortCount, filterCount }) {
-  const { raised, border, text3, accent, accentDim } = colors
+  const { raised, border, text3, accent, accentText, accentDim } = colors
   return (
     <div style={{
       flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
@@ -488,7 +499,7 @@ function ViewBar({ db, view, colors, onSelect, onOpenMenu, sortCount, filterCoun
 }
 
 function BarBtn({ label, icon, count, colors, onClick }) {
-  const { raised, text2, accent, accentDim } = colors
+  const { raised, text2, accent, accentText, accentDim } = colors
   const on = count > 0
   return (
     <button
@@ -525,7 +536,7 @@ function TableView({
   onOpenCell, onCloseCell, onDraft, onWrite, openMenu,
   onAddRow, onAddColumn, onDeleteRow,
 }) {
-  const { raised, border, text2, text3, accent, red } = colors
+  const { raised, border, text2, text3, accent, accentText, red } = colors
   const template = `${props.map(p => `${colWidth(p)}px`).join(' ')} ${GUTTER_W}px`
 
   return (
@@ -561,7 +572,7 @@ function TableView({
             </span>
             {view?.sortBy?.propId === p.id && (
               <Icon name={view.sortBy.desc ? 'grid-sort-desc' : 'grid-sort-asc'} size={10}
-                style={{ color: accent, flexShrink: 0, marginLeft: 'auto' }} />
+                style={{ color: accentText, flexShrink: 0, marginLeft: 'auto' }} />
             )}
           </button>
         ))}
@@ -655,7 +666,7 @@ function TableView({
  * touches `row.values`.
  */
 function Cell({ row, prop, colors, editing, onOpen, onClose, onDraft, onWrite }) {
-  const { border, text, text3, accent } = colors
+  const { border, text, text3, accent, accentText } = colors
   const value = row.values[prop.id]
 
   const base = {
@@ -779,7 +790,7 @@ function Cell({ row, prop, colors, editing, onOpen, onClose, onDraft, onWrite })
  * click is on another cell, because that click never blurs this one.
  */
 function TextCellEditor({ initial, numeric, label, colors, onDraft, onClose, height = '100%' }) {
-  const { text, accent, surface } = colors
+  const { text, accent, accentText, surface } = colors
   const [v, setV] = useState(initial)
   /* Escape must not commit, and Escape also blurs — so the blur handler has to
      know which of the two ways out it is being called from. */
@@ -889,7 +900,7 @@ function OptionChip({ option, colors, onRemove }) {
 /* ── board ───────────────────────────────────────────────────────────── */
 
 function BoardView({ db, view, groups, rows, colors, editing, onOpenCell, onCloseCell, onDraft, onWrite, onAddRow }) {
-  const { surface, raised, border, text, text2, text3, accent, accentDim } = colors
+  const { surface, raised, border, text, text2, text3, accent, accentText, accentDim } = colors
   const [drag, setDrag] = useState(null)      // { rowId, fromKey }
   const [over, setOver] = useState(null)      // group key
 
@@ -1013,7 +1024,7 @@ function BoardView({ db, view, groups, rows, colors, editing, onOpenCell, onClos
         )
       })}
       {rows.length === 0 && (
-        <span style={{ padding: '10px 4px', color: text3, fontSize: 'var(--ds-fs-sm)' }}>
+        <span style={{ padding: '10px 4px', color: text2, fontSize: 'var(--ds-fs-sm)' }}>
           No rows yet — add one to any column.
         </span>
       )}
@@ -1043,7 +1054,7 @@ function CardMeta({ db, row, skip, colors, limit = 3 }) {
 }
 
 function MetaValue({ prop, value, colors }) {
-  const { text2, text3, accent } = colors
+  const { text2, text3, accent, accentText } = colors
   const mono = { fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-xs)', fontVariantNumeric: 'tabular-nums' }
 
   if (prop.type === 'select' || prop.type === 'multi') {
@@ -1055,7 +1066,7 @@ function MetaValue({ prop, value, colors }) {
   }
   if (prop.type === 'checkbox') {
     return (
-      <span title={prop.name} style={{ display: 'flex', alignItems: 'center', gap: 3, color: accent, fontSize: 'var(--ds-fs-xs)' }}>
+      <span title={prop.name} style={{ display: 'flex', alignItems: 'center', gap: 3, color: accentText, fontSize: 'var(--ds-fs-xs)' }}>
         <Icon name="action-check" size={9} />{prop.name}
       </span>
     )
@@ -1079,7 +1090,7 @@ function MetaValue({ prop, value, colors }) {
 /* ── gallery ─────────────────────────────────────────────────────────── */
 
 function GalleryView({ db, rows, colors, editing, onOpenCell, onCloseCell, onDraft, onAddRow }) {
-  const { surface, border, text, text3, accent } = colors
+  const { surface, border, text, text3, accent, accentText } = colors
   return (
     <div style={{
       display: 'grid', gap: 8, padding: 10,
@@ -1128,7 +1139,7 @@ function GalleryView({ db, rows, colors, editing, onOpenCell, onCloseCell, onDra
 /* ── calendar ────────────────────────────────────────────────────────── */
 
 function CalendarView({ db, view, rows, colors, dark, editing, onOpenCell, onCloseCell, onDraft }) {
-  const { surface, base, raised, border, text, text2, text3, accent } = colors
+  const { surface, base, raised, border, text, text2, text3, accent, accentText } = colors
 
   /* The month being LOOKED at, which is not the same as today, and is not a
      document property — persisting it would reopen the workspace six months in
@@ -1360,14 +1371,14 @@ function Popover({ at, width = 236, colors, dark, onClose, label, children }) {
           Escape, and a menu with no dismiss target traps anyone reaching for
           the mouse. */}
       <div onMouseDown={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 99998, background: 'transparent' }} />
+        style={{ position: 'fixed', inset: 0, zIndex: Z.modalScrim, background: 'transparent' }} />
       <div
         data-ds-db-menu={label}
         role="dialog"
         aria-label={label}
         onMouseDown={e => e.stopPropagation()}
         style={{
-          position: 'fixed', left, top, zIndex: 99999, width,
+          position: 'fixed', left, top, zIndex: Z.popover, width,
           maxHeight: Math.max(140, vh - top - 12), overflowY: 'auto',
           /* House chrome: frosted island. The same recipe as every rail and
              every toast, so a menu reads as part of the app rather than as
@@ -1396,7 +1407,7 @@ function MenuLabel({ children, colors }) {
 }
 
 function MenuRow({ icon, children, colors, onClick, tone, active, muted, title, ...rest }) {
-  const { raised, text, text2, accent, accentDim, red } = colors
+  const { raised, text, text2, accent, accentText, accentDim, red } = colors
   const fg = tone === 'danger' ? red : active ? accent : text2
   return (
     <button
@@ -1494,7 +1505,7 @@ function PropertyMenu({
           <MenuLabel colors={colors}>Options</MenuLabel>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0 8px 6px' }}>
             {(prop.options || []).length === 0 && (
-              <span style={{ fontSize: 'var(--ds-fs-sm)', color: text3 }}>
+              <span style={{ fontSize: 'var(--ds-fs-sm)', color: text2 }}>
                 None yet — a select with no options can hold nothing.
               </span>
             )}
@@ -1523,7 +1534,7 @@ function PropertyMenu({
 
       <div style={{ height: 1, background: border, margin: '7px 0 5px' }} />
       {isTitle ? (
-        <div style={{ padding: '2px 8px 4px', fontSize: 'var(--ds-fs-sm)', color: text3, lineHeight: 1.5 }}>
+        <div style={{ padding: '2px 8px 4px', fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.5 }}>
           The title column cannot be deleted — a row with no title has no name.
         </div>
       ) : (
@@ -1553,7 +1564,7 @@ function SelectMenu({ db, rowId, propId, at, colors, dark, onClose, onWrite }) {
     <Popover at={at} width={214} colors={colors} dark={dark} onClose={onClose} label={prop.name}>
       <MenuLabel colors={colors}>{prop.name}</MenuLabel>
       {(prop.options || []).length === 0 && (
-        <div style={{ padding: '6px 8px 8px', fontSize: 'var(--ds-fs-sm)', color: text3, lineHeight: 1.5 }}>
+        <div style={{ padding: '6px 8px 8px', fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.5 }}>
           This column has no options yet. Click its header to add some.
         </div>
       )}
@@ -1642,7 +1653,7 @@ function ViewMenu({ db, view, at, colors, dark, onClose, onPatch, onDelete }) {
         <>
           <MenuLabel colors={colors}>Group by</MenuLabel>
           {groupables.length === 0 && (
-            <div style={{ padding: '2px 8px 6px', fontSize: 'var(--ds-fs-sm)', color: text3, lineHeight: 1.5 }}>
+            <div style={{ padding: '2px 8px 6px', fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.5 }}>
               Nothing to group by yet. Add a Select, Multi-select, Checkbox or Person column.
             </div>
           )}
@@ -1661,7 +1672,7 @@ function ViewMenu({ db, view, at, colors, dark, onClose, onPatch, onDelete }) {
         <>
           <MenuLabel colors={colors}>Date</MenuLabel>
           {dates.length === 0 && (
-            <div style={{ padding: '2px 8px 6px', fontSize: 'var(--ds-fs-sm)', color: text3, lineHeight: 1.5 }}>
+            <div style={{ padding: '2px 8px 6px', fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.5 }}>
               No Date column yet. Add one and it appears here.
             </div>
           )}
@@ -1678,7 +1689,7 @@ function ViewMenu({ db, view, at, colors, dark, onClose, onPatch, onDelete }) {
 
       <div style={{ height: 1, background: border, margin: '7px 0 5px' }} />
       {last ? (
-        <div style={{ padding: '2px 8px 4px', fontSize: 'var(--ds-fs-sm)', color: text3, lineHeight: 1.5 }}>
+        <div style={{ padding: '2px 8px 4px', fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.5 }}>
           The last view cannot be deleted — a database has to render something.
         </div>
       ) : (
@@ -1738,7 +1749,7 @@ function FilterMenu({ db, view, at, colors, dark, onClose, onPatch }) {
     <Popover at={at} width={268} colors={colors} dark={dark} onClose={onClose} label="Filter">
       <MenuLabel colors={colors}>Filters</MenuLabel>
       {filters.length === 0 && (
-        <div style={{ padding: '2px 8px 6px', fontSize: 'var(--ds-fs-sm)', color: text3, lineHeight: 1.5 }}>
+        <div style={{ padding: '2px 8px 6px', fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.5 }}>
           No filters. Every row on this view is shown.
         </div>
       )}
@@ -1861,7 +1872,7 @@ function FilterValue({ prop, filter, colors, onChange }) {
 /* ── empty states ────────────────────────────────────────────────────── */
 
 function Empty({ colors, icon, title, body }) {
-  const { text, text3, accent, accentDim } = colors
+  const { text, text3, accent, accentText, accentDim } = colors
   return (
     <div data-ds-db-empty style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
@@ -1870,7 +1881,7 @@ function Empty({ colors, icon, title, body }) {
       <span style={{
         width: 34, height: 34, borderRadius: '50%', flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: accentDim, color: accent,
+        background: accentDim, color: accentText,
       }}>
         <Icon name={icon} size={16} />
       </span>
@@ -1879,3 +1890,5 @@ function Empty({ colors, icon, title, body }) {
     </div>
   )
 }
+
+export default memo(DatabaseBlockInner)

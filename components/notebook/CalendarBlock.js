@@ -1,5 +1,5 @@
 'use client'
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, memo } from 'react'
 import Icon from '../ui/Icon'
 import {
   VIEWS, VIEW_LABEL, WEEK_START_MONDAY,
@@ -33,8 +33,18 @@ import {
   gridline-heavy chrome.
   -------------------------------------------------------------------------- */
 
-export default function CalendarBlock({ block, blocks, colors, dark, onUpdateBlock, onTeleport, address }) {
-  const { surface, raised, border, text, text2, text3, accent, accentDim } = colors
+
+/* memo, because this component is a child of NotebookCanvas and NotebookCanvas
+   re-renders on every frame of a pan or a zoom. Without it, dragging the canvas
+   re-rendered every block on screen sixty times a second; with it, React bails
+   out at this boundary and the frame costs nothing but the transform.
+
+   A plain shallow compare is enough because every prop it receives is stable by
+   construction: `colors` is one of two frozen module objects (lib/theme.js),
+   handlers are cached per block id by blockCb() in NotebookCanvas, and `block`
+   only changes identity when the block actually changes. */
+function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTeleport, address }) {
+  const { surface, raised, border, text, text2, text3, accent, accentText, accentDim } = colors
 
   const [view, setView] = useState(block.view || 'month')
   /* The month being LOOKED at, which is not the same as today. Kept in state
@@ -177,7 +187,7 @@ export default function CalendarBlock({ block, blocks, colors, dark, onUpdateBlo
           padding: '8px 11px', borderTop: `1px solid ${border}`,
           background: raised, flexShrink: 0,
         }}>
-          <Icon name="status-info" size={14} style={{ color: text3, flexShrink: 0, marginTop: 1 }} />
+          <Icon name="status-info" size={14} style={{ color: text2, flexShrink: 0, marginTop: 1 }} />
           <span style={{ fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.5 }}>
             Nothing dated yet. Give a task a deadline, or point this at a table’s
             date column in the rail.
@@ -205,7 +215,7 @@ const PILL_STEP = 19
 const DATE_ROW_H = 29
 
 function Grid({ weeks, buckets, colors, dark, weekStart, compact, onTeleport }) {
-  const { surface, base, raised, border, text2, text3, accent } = colors
+  const { surface, base, raised, border, text2, text3, accent, accentText } = colors
   const labels = weekdayLabels(weekStart)
 
   /* DENSITY FOLLOWS THE BLOCK, NOT THE VIEW
@@ -351,7 +361,7 @@ function Grid({ weeks, buckets, colors, dark, weekStart, compact, onTeleport }) 
 /* ── agenda ──────────────────────────────────────────────────────────── */
 
 function Agenda({ events, colors, onTeleport }) {
-  const { border, text, text2, text3, accent, accentDim } = colors
+  const { border, text, text2, text3, accent, accentText, accentDim } = colors
   const groups = useMemo(() => agendaGroups(events), [events])
 
   /* Agenda genuinely IS empty here — unlike the month grid, which still has a
@@ -366,14 +376,14 @@ function Agenda({ events, colors, onTeleport }) {
         <span style={{
           width: 38, height: 38, borderRadius: '50%',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: accentDim, color: accent, flexShrink: 0,
+          background: accentDim, color: accentText, flexShrink: 0,
         }}>
           <Icon name="status-empty" size={18} />
         </span>
         <span style={{ fontSize: 'var(--ds-fs-md)', fontWeight: 600, color: text, textAlign: 'center' }}>
           Nothing coming up
         </span>
-        <span style={{ fontSize: 'var(--ds-fs-sm)', color: text3, lineHeight: 1.55, textAlign: 'center', maxWidth: 230 }}>
+        <span style={{ fontSize: 'var(--ds-fs-sm)', color: text2, lineHeight: 1.55, textAlign: 'center', maxWidth: 230 }}>
           The next two months are clear. Anything with a deadline shows up here
           the moment it has one.
         </span>
@@ -410,7 +420,7 @@ function Agenda({ events, colors, onTeleport }) {
               {now ? (
                 <span style={{
                   marginLeft: 'auto', padding: '2px 7px', borderRadius: 'var(--ds-radius-sm)',
-                  background: accentDim, color: accent,
+                  background: accentDim, color: accentText,
                   fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-xs)',
                   fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
                 }}>
@@ -516,3 +526,5 @@ function NavBtn({ label, onClick, colors, flip }) {
     </button>
   )
 }
+
+export default memo(CalendarBlockInner)

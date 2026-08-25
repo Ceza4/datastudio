@@ -1,5 +1,5 @@
 'use client'
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { useRef, useEffect, useState, useCallback, memo } from 'react'
 import TextBlockToolbar from './TextBlockToolbar'
 import SlashMenu, { filterCommands } from './SlashMenu'
 import BlockPicker from './BlockPicker'
@@ -8,6 +8,7 @@ import {
   linkHtml, parseAddress, resolveTarget,
 } from '../../lib/teleport'
 import { safeLinkUrl } from '../../lib/urls'
+import { sanitizeEditorHtml } from '../../lib/sanitize'
 
 /* TextBlockContent — SESSION A (FIXED)
    --------------------------------------------------------------------------
@@ -23,7 +24,17 @@ import { safeLinkUrl } from '../../lib/urls'
    4. CODE BLOCKS — more visually distinct with left accent border and label.
    -------------------------------------------------------------------------- */
 
-export default function TextBlockContent({
+
+/* memo, for the same reason every other block component has one: this is a
+   child of NotebookCanvas, which re-renders on every frame of a pan or a zoom.
+
+   The comparator is a plain shallow compare, which only holds because every
+   prop is stable by construction — `colors` is a frozen module object,
+   `onSave`/`onInsertBlock` are cached per block id by blockCb() in the canvas,
+   and onEditStart/onEditEnd are shared useCallbacks. `notebooks` changes
+   identity whenever anything in the workspace changes, which is correct: this
+   component renders backlink labels from it. */
+function TextBlockContentInner({
   blockId,
   initialContent,
   onSave,
@@ -50,6 +61,8 @@ export default function TextBlockContent({
 }) {
   const ref = useRef(null)
   const savedContent = useRef(initialContent || '')
+  /** Pending trailing save from handleInput. Cleared on flush and on unmount. */
+  const inputSaveRef = useRef(null)
   const [menuPos, setMenuPos] = useState(null)
   // { x, y, filter, idx } — idx lives here, not in SlashMenu, because this
   // component owns the caret and therefore has to own the arrow keys too.
@@ -102,18 +115,83 @@ export default function TextBlockContent({
     setIsEmpty(!stripped && !hasStructure)
   }, [])
 
-  /* Load content when the block identity changes. initialContent is
-     deliberately not a dependency: this is an uncontrolled contentEditable, so
-     re-writing innerHTML on every prop change would fight the user's caret
-     mid-typing. Only a genuinely different block should reload. */
+  /* Load content when the block changes, or when its content changes from
+     somewhere other than this editor (an undo, a template, a future sync). */
   useEffect(() => {
     if (ref.current) {
-      ref.current.innerHTML = initialContent || ''
-      savedContent.current = initialContent || ''
+      /* SANITISED ON LOAD, NOT ONLY ON EXPORT.
+
+         sanitizeHtml ran when a notebook was exported and nowhere else, so
+         stored content went straight into innerHTML unchecked. Setting
+         innerHTML does not run <script>, but it does fire <img onerror> and
+         <svg onload>, and today the only thing keeping a payload out of
+         `content` is that browsers strip handlers when pasting into a
+         contentEditable. That is the BROWSER's guarantee, not the app's, and
+         it stops applying the moment content arrives from anywhere else —
+         Supabase sync and shared templates are both on the roadmap.
+
+         Sanitising here also disinfects whatever is ALREADY sitting in a
+         user's IndexedDB, which an onPaste handler alone cannot do.
+
+         sanitizeEditorHtml, NOT sanitizeHtml. The export profile drops
+         `input`, every data-* except data-ds-link, and all inline styles — run
+         it over stored content and every checkbox in every checklist is
+         deleted on load. The two profiles exist because they have opposite
+         jobs; see lib/sanitize.js. */
+      const clean = sanitizeEditorHtml(initialContent || '')
+      /* ADOPT AN EXTERNAL CHANGE, BUT NEVER FIGHT THE CARET.
+
+         initialContent used to be excluded from the deps entirely, with the
+         reasoning that rewriting innerHTML on every prop change would fight the
+         user's typing. That was right about typing and wrong about everything
+         else: with an undo stack, Ctrl+Z now reverts a text block's content in
+         state and the DOM carried on showing the old text, so undo appeared to
+         do nothing to the one block type where people most expect it.
+
+         Two guards make it safe. If the incoming content already matches what
+         we last wrote, this is our OWN save coming back and there is nothing to
+         do. If this element has focus, the user is mid-sentence and their DOM is
+         the truth — an undo aimed at a block you are actively typing in is not
+         a case worth breaking the caret for. */
+      if (clean === savedContent.current) return
+      if (document.activeElement === ref.current) return
+      ref.current.innerHTML = clean
+      savedContent.current = clean
       checkEmpty()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blockId, checkEmpty])
+  }, [blockId, initialContent, checkEmpty])
+
+  /* A pending 300ms save must not be able to outlive the component.
+
+     Switching sheets, closing a notebook or deleting the block unmounts this
+     while a timer is in flight. React does not fire blur when a focused
+     element is removed from the DOM, so without this the last few hundred
+     milliseconds of typing had no route to disk at all. */
+  useEffect(() => {
+    const el = ref.current
+    function flush() {
+      if (inputSaveRef.current) { clearTimeout(inputSaveRef.current); inputSaveRef.current = null }
+      persistContent()
+    }
+    /* pagehide rather than beforeunload: it fires on the bfcache path too, and
+       it is the last point at which a synchronous read of innerHTML is
+       guaranteed to see what the user typed. */
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', flush)
+      /* ref.current is already null by the time a cleanup runs on unmount, so
+         persistContent would no-op. Read the node captured on the way in. */
+      if (inputSaveRef.current) { clearTimeout(inputSaveRef.current); inputSaveRef.current = null }
+      if (el) {
+        const html = el.innerHTML
+        if (html !== savedContent.current) { savedContent.current = html; onSave(html) }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockId])
 
   function persistContent() {
     if (!ref.current) return
@@ -514,9 +592,59 @@ export default function TextBlockContent({
 
   /* ── Input handler ──────────────────────────────────────── */
 
+  /* TYPING NOW SAVES. It did not.
+
+     This function was `checkEmpty(); detectSlash()` and nothing else, and
+     persistContent() was reached only from blur, the format toolbar, slash
+     commands, link insert, checkbox clicks and markdown shortcuts. Plain
+     prose — letters, spaces, Enter — triggered none of them. Type for an hour
+     without clicking away, reload, and the hour was gone: no error, no
+     warning, and no way to get it back, because this is a local-first app and
+     the DOM was the only copy.
+
+     300ms rather than immediately: persistContent walks innerHTML and hands
+     the result up to a setState that re-renders the notebook, and doing that
+     per keystroke is its own performance bug. persistContent is already
+     idempotent — it early-returns when the html has not changed — so a
+     trailing call that lands after the user has stopped is free. */
   function handleInput() {
     checkEmpty()
     detectSlash()
+    if (inputSaveRef.current) clearTimeout(inputSaveRef.current)
+    inputSaveRef.current = setTimeout(() => {
+      inputSaveRef.current = null
+      persistContent()
+    }, 300)
+  }
+
+  /* ── Paste ──────────────────────────────────────────────────
+     There was no paste handler at all, so the browser inserted its own
+     normalisation of the clipboard's text/html and the result was persisted
+     verbatim. Two things were wrong with that. The obvious one is that the
+     app was trusting the browser to be its sanitiser. The quieter one is that
+     pasting from a web page dragged in that page's fonts, colours and margins,
+     so a paste never looked like the document it landed in.
+
+     execCommand('insertHTML') rather than a Range: it is what every other
+     formatting path in this file already uses, so paste lands in the same
+     undo stack as everything else and Ctrl+Z inside the block still works. */
+  function handlePaste(e) {
+    const cd = e.clipboardData
+    if (!cd) return
+    e.preventDefault()
+
+    const html = cd.getData('text/html')
+    if (html) {
+      document.execCommand('insertHTML', false, sanitizeEditorHtml(html))
+    } else {
+      /* Plain text is inserted as text, deliberately — insertHTML would make
+         `<b>` in copied source code render as bold rather than show as the
+         characters the user copied. */
+      const text = cd.getData('text/plain')
+      if (text) document.execCommand('insertText', false, text)
+    }
+    persistContent()
+    checkEmpty()
   }
 
   /* ── Click handler ──────────────────────────────────────── */
@@ -569,23 +697,46 @@ export default function TextBlockContent({
     [data-ds-text] ul, [data-ds-text] ol { padding-left: 24px; margin: 6px 0; }
     [data-ds-text] li { margin: 3px 0; line-height: 1.7; }
     [data-ds-text] hr { border: none; border-top: 2px solid rgba(128,128,128,0.2); margin: 18px 0; }
+    /* THE APP'S THEME, NOT THE OPERATING SYSTEM'S.
+
+       This block used to switch on @media (prefers-color-scheme: dark) — the
+       only such query in the whole codebase, sitting in the primary writing
+       surface, while every other component switches on [data-theme]. A user on
+       a light OS running the app in dark mode got an rgba(0,0,0,0.06) code
+       block on a #201F1C ground: invisible. The inverse gave white on cream.
+
+       And the accent was hardcoded to #5B5FE8 — the DARK accent — in both
+       themes, so every link, checkbox tint and code rule inside a text block
+       was indigo while the rest of the app was green. */
     [data-ds-text] pre {
-      background: rgba(0,0,0,0.06); border-left: 3px solid #5B5FE8;
+      background: rgba(0,0,0,0.06); border-left: 3px solid var(--ds-accent);
       padding: 14px 16px; border-radius: 0 8px 8px 0;
       font-family: var(--ds-font-mono); font-size: 13px; line-height: 1.7;
       overflow-x: auto; margin: 10px 0; white-space: pre-wrap;
       position: relative;
     }
-    @media (prefers-color-scheme: dark) {
-      [data-ds-text] pre { background: rgba(255,255,255,0.06); }
-    }
+    [data-theme='dark'] [data-ds-text] pre { background: rgba(255,255,255,0.06); }
     [data-ds-text] code { font-family: var(--ds-font-mono); }
     [data-ds-text] [data-type="checklist"] {
       display: flex; align-items: flex-start; gap: 8px; padding: 4px 0;
     }
+    /* !important, and that is load-bearing rather than lazy.
+
+       Checklists created before this fix carry accent-color:#5B5FE8 as an
+       INLINE style, written into the stored HTML — so a stylesheet rule alone
+       could never win, and every checklist anyone has already made would keep
+       the wrong accent forever. This overrides the stored value at render time
+       and leaves the content untouched, which is much safer than migrating
+       every user's notes. New checklists are written without the declaration
+       at all (see the two innerHTML strings above).
+
+       Sizing is here too, for the same reason: the old inline style said 15px
+       while this rule said 16px, so the rule never applied and every checkbox
+       in the app was a pixel smaller than intended. */
     [data-ds-text] [data-type="checklist"] input[type="checkbox"] {
-      margin-top: 5px; cursor: pointer; accent-color: #5B5FE8;
-      width: 16px; height: 16px; flex-shrink: 0;
+      margin-top: 5px; cursor: pointer;
+      accent-color: var(--ds-accent) !important;
+      width: 16px !important; height: 16px !important; flex-shrink: 0;
     }
       [data-ds-text] [data-type="checklist"] span {
       flex: 1; min-height: 1em; outline: none;
@@ -637,11 +788,22 @@ export default function TextBlockContent({
           onClickCapture={handleLinkClick}
           onFocus={() => onEditStart?.()}
           onBlur={e => {
-            if (menuPos || slashMenu) return
+            /* PERSIST FIRST, ALWAYS.
+
+               This used to return early when a menu was open, so opening the
+               context menu and then clicking away on the canvas exited through
+               neither this path nor handleToolbarClose — and took the edit
+               with it. persistContent is idempotent, so saving here and again
+               when the menu closes costs nothing.
+
+               The menu check still gates onEditEnd, which is what it was
+               actually for: reaching for the toolbar is not leaving. */
             persistContent()
+            if (menuPos || slashMenu) return
             checkEmpty()
             onEditEnd?.()
           }}
+          onPaste={handlePaste}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
           onMouseDown={e => e.stopPropagation()}
@@ -716,3 +878,5 @@ export default function TextBlockContent({
     </>
   )
 }
+
+export default memo(TextBlockContentInner)

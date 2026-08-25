@@ -4,18 +4,29 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { usePrefs } from '../providers'
 import { useToast } from '../../components/ui/Toast'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
+import { makeColors, Z } from '../../lib/theme'
+import * as H from '../../lib/undo'
 import SettingsPanel from '../../components/settings/SettingsPanel'
 import BuilderPanel from '../../components/builder/BuilderPanel'
 import { templateAssetIds, TPL_OK } from '../../lib/templatestore'
 import { migratePrefs } from '../../lib/prefs'
+import { lockViewportZoom } from '../../lib/viewportlock'
+import { markdownToHtml, markdownTitle, MARKDOWN_EXTS } from '../../lib/markdown'
 import { processPdfFile, putPdf, newPdfId, prunePdfs, PDF_EXTS } from '../../lib/pdfs'
 import { createBlock } from '../../components/notebook/blockRegistry'
-import * as XLSX from 'xlsx'
+import { migrateInk } from '../../lib/shapes'
+/* Not `xlsx` directly. lib/workbook.js wraps XLSX.read with a
+   prototype-pollution guard, because the pinned 0.18.5 is the last SheetJS on
+   public npm and carries CVE-2023-30533 — reachable from exactly this parse,
+   with attacker-controlled bytes. See that file for the full reasoning and
+   DEFERRED.md for the version bump that makes the guard unnecessary. */
+import { readWorkbook, utils as XLSXUtils } from '../../lib/workbook'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckPanel from '../../components/tools/CrosscheckPanel'
-import { saveState, loadState, clearState, debounce, SAVE_OK, storageEstimate, formatBytes } from '../../lib/persistence'
-import { pruneImages, requestPersistence, idbClear, STORE_IMAGES, STORE_PDFS } from '../../lib/idb'
+import { saveState, loadState, clearState, debounce, SAVE_OK, SAVE_QUOTA, SAVE_STALE, LOAD_FAILED, storageEstimate, formatBytes } from '../../lib/persistence'
+import { pruneImages, requestPersistence, idbClear, STORE_IMAGES, STORE_PDFS, STORE_FILES, STORE_TEMPLATES } from '../../lib/idb'
 import { processImageFile, putImage, newImageId, IMAGE_EXTS, MAX_IMAGE_BYTES } from '../../lib/images'
+import { processFile, putFile, newFileId, pruneFiles, MAX_FILE_BYTES } from '../../lib/files'
 
 /* Import formats, in two tiers.
    --------------------------------------------------------------------------
@@ -48,8 +59,53 @@ const ALSO_ACCEPTED = ['.xlt', '.xltx', '.xltm', '.fods', '.xml', '.dbf', '.numb
 
 /* One picker for everything. Images are routed to an image block, spreadsheets
    to the sidebar — the user shouldn't have to know which button to press. */
-const ACCEPT_EXTS = [...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED, ...IMAGE_EXTS, ...PDF_EXTS].join(',')
+const ACCEPT_EXTS = [...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED, ...IMAGE_EXTS, ...PDF_EXTS, ...MARKDOWN_EXTS].join(',')
+
+/* A note that will not fit on a canvas is not a note. 2MB of markdown is
+   roughly a 350,000-word document; past that the honest answer is that this
+   is the wrong tool, said out loud, rather than a text block that renders for
+   nine seconds. */
+const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
 const DATA_EXTS = new Set([...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED])
+
+/* THE DOUBLE CHEVRON, composed from an icon that already exists.
+
+   Icons are generated: an SVG goes in the icons folder one level above the
+   repo and `npm run icons` builds icon-paths.js, which must never be
+   hand-edited. That folder is outside the connected workspace, so a proper
+   `nav-collapse` could not be built here — and hand-editing the generated
+   file to get one would break the rule that keeps the icon set honest.
+
+   Two nav-chevron-right glyphs, mirrored and overlapped, give exactly the
+   double chevron with nothing hand-written. When the real icon is built this
+   becomes a single <Icon name="nav-collapse" />; nothing else changes.
+
+   The 0.62 overlap is what makes it read as one mark rather than two arrows
+   with a gap between them. */
+function DoubleChevron({ size = 13, dir = 'left' }) {
+  return (
+    <span aria-hidden="true" style={{
+      display: 'inline-flex', alignItems: 'center',
+      transform: dir === 'left' ? 'scaleX(-1)' : undefined,
+      width: size * 1.38, height: size, flexShrink: 0,
+    }}>
+      <Icon name="nav-chevron-right" size={size} style={{ marginRight: -size * 0.62 }} />
+      <Icon name="nav-chevron-right" size={size} />
+    </span>
+  )
+}
+
+/* During a dragover the FileList is deliberately NOT readable — browsers hide
+   it until drop so a page cannot inspect what you are merely hovering with.
+   `types` is all there is, and 'Files' in it is the only honest way to tell an
+   OS file drag from an internal sidebar one. Anything that reads
+   dataTransfer.files before the drop event gets an empty list and silently
+   decides there are no files. */
+const hasFileDrag = e => Array.from(e?.dataTransfer?.types || []).includes('Files')
+
+/* A drop of 40 files is a mis-drag, not an intention. The cap is a guard
+   against turning a slip of the wrist into 40 IndexedDB writes and 40 blocks. */
+const MAX_DROP_FILES = 12
 const extOf = name => {
   const m = /\.[a-z0-9]+$/i.exec(name || '')
   return m ? m[0].toLowerCase() : ''
@@ -67,6 +123,21 @@ const isoDay = d =>
    untouched so number and string columns behave exactly as before. */
 const normaliseRow = row =>
   Array.isArray(row) ? row.map(c => (c instanceof Date && !Number.isNaN(c.getTime()) ? isoDay(c) : c)) : row
+
+/* Stamp the grace window on every asset these blocks reference.
+
+   Module scope, not a closure inside the component: it reads Date.now(), and
+   an impure call inside a component body stops React's compiler analysing
+   everything after it — which is how eighteen unrelated diagnostics in this
+   file stayed invisible. It needs nothing from the component but the Map. */
+function _graceAssets(grace, blocks) {
+  const now = Date.now()
+  for (const b of blocks || []) {
+    if (b?.imageId) grace.set(b.imageId, now)
+    if (b?.pdfId) grace.set(b.pdfId, now)
+    if (b?.fileId) grace.set(b.fileId, now)
+  }
+}
 
 export default function AppPage() {
   const { dark, setDark, prefs, setPref, hydratePrefs } = usePrefs()
@@ -111,6 +182,49 @@ export default function AppPage() {
   const [folders, setFolders] = useState([])
   const [notebooks, setNotebooks] = useState([])
   const [activeNotebookId, setActiveNotebookId] = useState(null)
+
+  /* ── UNDO ────────────────────────────────────────────────────────────────
+
+     Captured by watching `notebooks`, not by asking each mutator to describe
+     its own inverse. Two reasons, and the second is the important one.
+
+     First, it is nearly free: every mutation in this file is immutable, so the
+     previous `notebooks` array shares every object that did not change and
+     holding a reference to it costs one spine of shallow copies rather than a
+     copy of the workspace.
+
+     Second, it CANNOT BE FORGOTTEN. A mutator added next month is undoable the
+     moment it lands, because nothing has to opt in. The alternative — a
+     do/undo pair per operation — is how you end up back where this app started,
+     with twelve carefully undoable deletions and no undo for move, resize,
+     rename, reorder or re-parent.
+
+     `historyRef` mirrors the state because the keyboard handler reads it and
+     must not go stale, and because a capture must never itself cause a render. */
+  /* A REF, NOT STATE, and that is not a shortcut.
+
+     Nothing renders from the history — there is no undo button, no menu, no
+     count — so putting it in state would cost a render on every edit to
+     produce no pixels. Keeping it in a ref also removes the during-render
+     `historyRef.current = history` mirror this used to need, which is exactly
+     the write React's compiler flags: a ref assigned while rendering makes the
+     component impure and defeats the compiler's analysis of everything after
+     it.
+
+     If an undo button ever wants a disabled state, mirror THAT into state
+     rather than moving the stack. */
+  const historyRef = useRef(H.emptyHistory())
+  /* The previous `notebooks` we recorded against, and which notebook was open
+     at the time — see lib/undo.js for why the active id is part of the state. */
+  const prevNotebooksRef = useRef(null)
+  const prevActiveRef = useRef(null)
+  /* Set just before a mutation to say what it was; read by the capture effect
+     and cleared. Unlabelled edits are recorded as a generic 'edit'. */
+  const pendingLabelRef = useRef(null)
+  /* True while an undo/redo is being applied, so the resulting `notebooks`
+     change is not recorded as a new edit — which would make undo impossible to
+     escape from. */
+  const applyingHistoryRef = useRef(false)
   const [expandedNotebookIds, setExpandedNotebookIds] = useState(new Set())
   const [renamingFolderId, setRenamingFolderId] = useState(null)
   const [renamingFolderLabel, setRenamingFolderLabel] = useState('')
@@ -124,7 +238,7 @@ export default function AppPage() {
   function freshNotebook() {
     const id = `notebook_${Date.now()}`
     const sheetId = `sheet_${Date.now()}`
-    return { id, name: 'My Notebook', sheets: [{ id: sheetId, name: 'Sheet 1', blocks: [] }], activeSheetId: sheetId }
+    return { id, name: 'My Project', sheets: [{ id: sheetId, name: 'Sheet 1', blocks: [] }], activeSheetId: sheetId }
   }
 
   // Load persisted state on mount, exactly once. DataStudio is always the
@@ -135,8 +249,58 @@ export default function AppPage() {
      empty initial render can't overwrite a real workspace before it arrives. */
   const [hydrated, setHydrated] = useState(false)
   const [saveError, setSaveError] = useState(null)
+  /* Another tab owns the workspace. Not an error — a different situation with
+     a different remedy (reload), and worth saying so rather than telling
+     someone their storage is broken. */
+  const [saveStale, setSaveStale] = useState(false)
   const [importError, setImportError] = useState(null)
   const [importing, setImporting] = useState(false)
+  const [fileDragActive, setFileDragActive] = useState(false)
+  const sidebarCollapsed = prefs?.sidebarCollapsed ?? false
+
+  /* THE ASSET GRACE WINDOW — id -> the last moment it was known to be wanted.
+     A ref, because nothing renders from it and it must not cause a render.
+
+     It closes two ways of losing bytes that are still needed, both of which
+     come from the prune's keep-set being a snapshot of one moment:
+
+     1. UNDO. A delete offers undo for seven seconds; the autosave fires after
+        600ms and prunes against a keep-set the deleted blocks are no longer
+        in. Press Undo and the blocks return as missing-asset boxes. This is
+        the exact race lib/templatestore.js already carries a graceAssets list
+        for — notebook blocks simply never got the equivalent.
+     2. A PRUNE RACING AN IN-FLIGHT SAVE. The debounce guards scheduling, not
+        execution, and a large workspace has been measured at 1.58s inside
+        idbSet. Import an image while a save is in flight and that save's
+        callback prunes with a keep-set built before the import existed.
+
+     One mechanism answers both: stamp on DELETE, stamp every import the moment
+     its id is minted, re-stamp everything live on each save, and keep anything
+     stamped within the window.
+
+     The delete-time stamp is the important one and was missing. Stamping only
+     live ids meant a just-deleted asset kept whatever timestamp the PREVIOUS
+     save gave it — so after a minute of reading or panning (neither of which
+     writes anything) it expired on the very pass the window exists to survive,
+     while the toast was still offering UNDO. See graceAssetsOf below. */
+  const assetGraceRef = useRef(new Map())
+  const ASSET_GRACE_MS = 60_000
+
+  /* STAMP THE GRACE WINDOW AT DELETE TIME, NOT AT SAVE TIME.
+
+     The window used to be refreshed inside the autosave, and only for ids that
+     were still LIVE. A just-deleted asset is by definition not live, so it
+     kept whatever timestamp the previous save had given it — and if more than
+     ASSET_GRACE_MS had passed since that save, it expired on the very pass the
+     window exists to protect it from. Panning, zooming and reading write
+     nothing, so a minute of ordinary use was enough. Delete a photo, click the
+     UNDO the toast is still offering, and the block came back reading "Image
+     data not found" — the app blaming the browser for its own collector.
+
+     lib/templatestore.js has always stamped at delete time. This is the same
+     shape, and it must be called BEFORE the state update that removes the
+     blocks, while their ids are still reachable. */
+  const graceAssetsOf = useCallback(blocks => _graceAssets(assetGraceRef.current, blocks), [])
   const [usage, setUsage] = useState(null)
   // null = not asked yet, true = protected from eviction, false = refused
   const [persisted, setPersisted] = useState(null)
@@ -150,14 +314,46 @@ export default function AppPage() {
 
   useEffect(() => {
     let cancelled = false
+    /* Every path that leaves the workspace UNREADABLE must leave the app
+       usable and MUST NOT arm the autosave — `hydrated` is what gates saving,
+       so refusing to set it is refusing to overwrite whatever is still down
+       there. The alternative is a blank canvas that quietly becomes the real
+       workspace 600ms later. */
+    const refuseToSave = message => {
+      const nb = freshNotebook()
+      setNotebooks([nb])
+      setActiveNotebookId(nb.id)
+      setExpandedNotebookIds(prev => new Set(prev).add(nb.id))
+      hydratePrefs(migratePrefs(null))
+      setSaveError(message)
+      /* setHydrated is deliberately NOT called. */
+    }
+
     loadState().then(saved => {
       if (cancelled) return
-      let initialNotebooks = saved?.notebooks?.length ? saved.notebooks : []
+      if (saved?.status === LOAD_FAILED) {
+        refuseToSave(
+          `Could not read your saved workspace (${saved.error}). Nothing has been changed on disk — `
+          + 'saving is turned off for this session so it stays that way. Try reloading; if that does not '
+          + 'help, close any other DataStudio tabs first.'
+        )
+        return
+      }
+      /* Strokes drawn before ink became a shape move across here, once, on
+         load. They were stored in a `drawings` array with no verbs — you
+         could draw one and then never touch it again — and as ink shapes they
+         gain select, drag, resize, rotate, marquee and delete-with-undo.
+
+         migrateInk returns the SAME array when there is nothing to move, so a
+         workspace with no legacy strokes is not marked as changed and does
+         not get written back on every boot. */
+      let initialNotebooks = migrateInk(saved?.notebooks?.length ? saved.notebooks : [])
       const initialFolders = saved?.folders?.length ? saved.folders : []
       if (initialNotebooks.length === 0) {
         const nb = freshNotebook()
         initialNotebooks = [nb]
         setActiveNotebookId(nb.id)
+        setExpandedNotebookIds(prev => new Set(prev).add(nb.id))
       } else {
         setActiveNotebookId(initialNotebooks[0].id)
       }
@@ -170,10 +366,14 @@ export default function AppPage() {
       setHydrated(true)
     }).catch(err => {
       if (cancelled) return
-      // Even a total load failure must leave a usable app.
-      const nb = freshNotebook()
-      setNotebooks([nb]); setActiveNotebookId(nb.id); setHydrated(true)
-      setSaveError(`Could not read your saved workspace: ${err.message}`)
+      /* Usable, but READ-ONLY. This branch used to call setHydrated(true),
+         which armed the autosave over a workspace it had just failed to read
+         — the same overwrite the LOAD_FAILED branch above exists to prevent,
+         reached a different way. */
+      refuseToSave(
+        `Could not read your saved workspace: ${err.message}. Saving is turned off for this session `
+        + 'so nothing already saved is overwritten.'
+      )
     })
     /* Ask the browser to keep this origin's storage. Without it IndexedDB is
        best-effort and can be evicted under disk pressure — fine for a cache,
@@ -192,23 +392,44 @@ export default function AppPage() {
      used to be a console.warn nobody saw, so people kept working on a
      workspace that had silently stopped persisting. */
   const debouncedSaveRef = useRef(null)
-  if (!debouncedSaveRef.current) {
+  if (debouncedSaveRef.current == null) {
+    /* maxWait bounds the delay no matter how continuous the input is. A plain
+       trailing debounce postpones forever under a stream of changes closer
+       together than the delay — and renaming a block writes per keystroke, so
+       holding a key down meant the workspace never saved at all. */
     debouncedSaveRef.current = debounce(async (state, onResult) => {
       const res = await saveState(state)
       onResult(res)
-    }, 600)
+    }, 600, { maxWait: 5000 })
   }
   useEffect(() => {
     if (!hydrated) return
     debouncedSaveRef.current({ notebooks, folders, prefs }, res => {
       setSaveError(res.status === SAVE_OK ? null : res.error)
-      if (res.status === SAVE_OK) {
+      setSaveStale(res.status === SAVE_STALE)
+      /* THE COLLECTOR RUNS ON A QUOTA FAILURE TOO.
+
+         It used to be inside `if (SAVE_OK)`, and it is the only code in the
+         app that ever deletes asset bytes — deleteImage, deletePdf and
+         deleteFile are exported and called from nowhere. So once saves started
+         failing on quota, the error's own advice ("delete some images to free
+         space") freed exactly nothing: deleting a block shrank the state
+         payload by a hundred bytes while the megabytes sat untouched, and the
+         storage meter never moved because it only refreshed on success.
+
+         The keep-set is derived from in-memory state, which is valid whether
+         or not the write landed. A stale result is different: another tab owns
+         the workspace, its blocks are not in our keep-set, and pruning against
+         our view would delete ITS assets. Never prune on stale. */
+      if (res.status === SAVE_OK || res.status === SAVE_QUOTA) {
         // Drop image bytes no block references any more, then refresh the meter.
         const live = []
         const livePdfs = []
+        const liveFiles = []
         notebooks.forEach(n => n.sheets?.forEach(s => s.blocks?.forEach(b => {
           if (b.type === 'image' && b.imageId) live.push(b.imageId)
           if (b.type === 'pdf' && b.pdfId) livePdfs.push(b.pdfId)
+          if (b.type === 'file' && b.fileId) liveFiles.push(b.fileId)
         })))
         /* §9.1. A saved template owns COPIES of its assets, and no notebook
            block references them — so the keep-set above, on its own, describes
@@ -220,33 +441,259 @@ export default function AppPage() {
            it managed to read. An incomplete keep-set is not a smaller prune,
            it is a delete, and the cost of the alternative is some orphaned
            bytes until the next save. */
+        /* Stamp, expire, and collect. Done before the template read so the
+           window is measured from now rather than from whenever that
+           resolves. */
+        const graceNow = Date.now()
+        const grace = assetGraceRef.current
+        for (const id of [...live, ...livePdfs, ...liveFiles]) grace.set(id, graceNow)
+        for (const [id, ts] of grace) if (graceNow - ts > ASSET_GRACE_MS) grace.delete(id)
+
         templateAssetIds().then(keep => {
+          /* READ THE GRACE LIST HERE, NOT ABOVE.
+
+             This used to be materialised into an array before
+             templateAssetIds() was awaited. An import that stamped the ref
+             during that await mutated the Map but not the array already copied
+             out of it, so a freshly written asset was missing from the keep-set
+             and the prune deleted the bytes seconds after they arrived. */
+          const graced = [...grace.keys()]
           if (keep.status !== TPL_OK) { storageEstimate().then(setUsage); return }
+          /* `graced` is added to all three. Ids are prefixed per store
+             (img_ / pdf_ / file_) and each prune only inspects its own
+             store's keys, so an id from the wrong family in a keep-set is
+             inert rather than wrong. */
           Promise.all([
-            pruneImages([...live, ...keep.images]),
-            prunePdfs([...livePdfs, ...keep.pdfs]),
+            pruneImages([...live, ...keep.images, ...graced]),
+            prunePdfs([...livePdfs, ...keep.pdfs, ...graced]),
+            /* No template keep-set for attachments yet: templateAssetIds()
+               reports images and pdfs only, so a template that carries a file
+               block would have its bytes pruned on the next save. Files are
+               therefore pruned ONLY against live blocks, and saving a template
+               containing an attachment is not yet supported — recorded here
+               rather than discovered later as "my template lost its files". */
+            pruneFiles([...liveFiles, ...graced]),
           ]).then(() => storageEstimate().then(setUsage))
         })
       }
     })
   }, [notebooks, folders, prefs, hydrated])
 
-  /* Warn before closing only when a save is actually outstanding. The old
-     handler fired whenever any block existed, i.e. almost always — training
-     everyone to dismiss it, which meant the one time it mattered it was
-     ignored. */
+  /* Record every change to the workspace, once it has actually happened.
+
+     Runs after `notebooks` changes and after nothing else, so it sees exactly
+     the transitions a user would want to reverse. Three things it deliberately
+     does NOT record:
+
+       · the first value after load, because there is no "before" to return to
+         and offering one would undo the user's entire workspace;
+       · a change it caused itself, via applyingHistoryRef;
+       · anything while `hydrated` is false, for the same reason as the first. */
   useEffect(() => {
-    if (!saveError) return
+    if (!hydrated) {
+      prevNotebooksRef.current = notebooks
+      prevActiveRef.current = activeNotebookId
+      return
+    }
+    const prev = prevNotebooksRef.current
+    const prevActive = prevActiveRef.current
+    prevNotebooksRef.current = notebooks
+    prevActiveRef.current = activeNotebookId
+    if (prev === notebooks) return
+    if (applyingHistoryRef.current) { applyingHistoryRef.current = false; return }
+    if (prev === null) return
+
+    const label = pendingLabelRef.current || 'edit'
+    pendingLabelRef.current = null
+    historyRef.current = H.record(historyRef.current, {
+      label, before: prev, after: notebooks,
+      activeBefore: prevActive, activeAfter: activeNotebookId,
+      nbId: activeNotebookId, at: Date.now(),
+    })
+    // activeNotebookId is read for coalescing only; it must not re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notebooks, hydrated])
+
+  /** Called by a mutator to say what the next `notebooks` change was. */
+  const markUndo = useCallback(label => { pendingLabelRef.current = label }, [])
+
+  const applyHistory = useCallback(step => {
+    const res = step(historyRef.current)
+    if (!res) return null
+    applyingHistoryRef.current = true
+    historyRef.current = res.history
+    setNotebooks(res.state)
+    /* Clamped, always. The recorded id is usually right, but an entry from
+       before a notebook was deleted names one that is no longer in `res.state`
+       — and pointing activeNotebookId at a notebook that does not exist renders
+       an empty canvas with no way back. Falling back to the first surviving
+       notebook is never wrong, only occasionally not what you hoped. */
+    const wanted = res.activeId
+    const exists = wanted && res.state.some(nb => nb.id === wanted)
+    setActiveNotebookId(exists ? wanted : (res.state[0]?.id ?? null))
+    /* prevActiveRef has to move with it, or the next capture records a
+       transition from an id that was never really current. */
+    prevActiveRef.current = exists ? wanted : (res.state[0]?.id ?? null)
+    return res.label
+  }, [])
+
+  const undoEdit = useCallback(() => applyHistory(H.undo), [applyHistory])
+  const redoEdit = useCallback(() => applyHistory(H.redo), [applyHistory])
+
+  /* THE PENDING SAVE HAS TO SURVIVE THE TAB CLOSING.
+
+     There was no pagehide, no visibilitychange and no unload handler anywhere
+     in the app, and the debounce had no way to be forced — so closing the tab
+     inside the 600ms window simply dropped the write. Drag a block, press
+     Ctrl+W within a second, reopen: the block is where it started.
+
+     pagehide fires on close, on navigation, and on the way into the bfcache.
+     visibilitychange catches the mobile case where a tab is backgrounded and
+     may be killed without a pagehide at all. Both just force the debounce to
+     run now. */
+  useEffect(() => {
+    function flush() { debouncedSaveRef.current?.flush?.() }
+    function onHidden() { if (document.visibilityState === 'hidden') flush() }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onHidden)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onHidden)
+    }
+  }, [])
+
+  /* Warn before closing when there is genuinely something unwritten.
+
+     This used to open with `if (!saveError) return` — armed only once a save
+     had ALREADY FAILED, which is the case where the data is lost regardless.
+     A save that is merely pending produced no warning at all, and that is the
+     common case: the flush above starts an async IndexedDB write, and a write
+     started at unload is not guaranteed to complete. The prompt is the real
+     protection; the flush is the optimistic path. */
+  useEffect(() => {
     function handleBeforeUnload(e) {
+      const unwritten = saveError || saveStale || debouncedSaveRef.current?.pending?.()
+      if (!unwritten) return
       e.preventDefault()
       e.returnValue = ''
       return ''
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [saveError])
+  }, [saveError, saveStale])
 
   useEffect(() => { window.__nbTableDrag = null }, [])
+
+  /* Browser zoom is banned for the whole app surface, not just the canvas.
+     Mounted here rather than in NotebookCanvas on purpose: a ctrl+scroll over
+     the sidebar or a rail never reaches the canvas's listener, and that is
+     half of where the accidental page-zooms were coming from. See
+     lib/viewportlock.js for the four routes it closes and why it is capture
+     phase. Returns its own cleanup. */
+  useEffect(() => lockViewportZoom(), [])
+
+  /* Held in a ref so the drop listeners below can be registered ONCE, with an
+     empty dep array, and still see current state. Re-binding four window
+     listeners on every render of a component this size is not free, and a
+     stale closure here would import into whichever notebook was open when the
+     listener was last bound. */
+  const importFilesRef = useRef(null)
+  useEffect(() => { importFilesRef.current = importFiles })
+
+  /* THE WINDOW-LEVEL FILE DROP GUARD — the most important listener in the app.
+
+     Dropping a file on a page that does not handle it is not a no-op: Chrome
+     NAVIGATES TO IT. Drop a PDF on DataStudio and the browser throws the app
+     away and shows you the PDF, taking every unsaved edit with it. Before
+     this, that was the behaviour everywhere except two small drop targets.
+
+     preventDefault is needed on BOTH events, for different reasons:
+       · dragover — without it the drop event never fires at all. This is the
+         single most common reason a drop handler "doesn't work"
+       · drop     — without it the navigation above happens anyway
+
+     This is the fallback layer. The canvas and the sidebar folders handle
+     their own drops and stopPropagation(), so a positioned drop is not also
+     imported a second time here. Anything dropped on the chrome in between
+     still lands, at the default position, rather than destroying the session.
+
+     depth counts dragenter/dragleave pairs. dragleave fires every time the
+     cursor crosses a child boundary, so a single boolean flickers the overlay
+     on and off continuously as you move across the app. */
+  useEffect(() => {
+    let depth = 0
+    /* Every path out of a drag ends here. Taking the overlay down is NOT the
+       job of whoever handles the drop — see the two-phase note below. */
+    function clearDrag() { depth = 0; setFileDragActive(false) }
+
+    function onDragEnter(e) {
+      if (!hasFileDrag(e)) return
+      depth++
+      setFileDragActive(true)
+    }
+    function onDragOver(e) {
+      if (!hasFileDrag(e)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+    function onDragLeave(e) {
+      if (!hasFileDrag(e)) return
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setFileDragActive(false)
+    }
+
+    /* CAPTURE phase. Runs before any React handler, so it runs even when the
+       canvas or a sidebar folder calls stopPropagation() — which they must, to
+       stop the fallback below importing the same file twice.
+
+       THIS IS A SHIPPED BUG, FIXED. The first version cleared the overlay in
+       the bubble handler only. A drop on the canvas or on a folder never
+       reached it, so the "Drop to import" scrim stayed up forever — over an
+       app that still worked underneath, because the scrim is
+       pointerEvents:none, which made it look like the app had frozen when it
+       had not. The lesson generalises: anything that must happen for EVERY
+       event cannot live where a handler is allowed to stop propagation. */
+    function onDropCapture(e) {
+      if (!hasFileDrag(e)) return
+      e.preventDefault()   // the navigation guard; must not depend on who handles the drop
+      clearDrag()
+    }
+
+    /* BUBBLE phase — the actual fallback import. Only reached when nothing
+       more specific claimed the drop. */
+    function onDrop(e) {
+      if (!hasFileDrag(e)) return
+      e.preventDefault()
+      clearDrag()
+      importFilesRef.current?.(e.dataTransfer.files)
+    }
+
+    /* A drag cancelled with Escape, released outside the window, or ended by
+       the tab losing focus fires neither a drop nor a balanced dragleave.
+       Without these the overlay is stranded until the next drag starts. */
+    function onDragEnd() { clearDrag() }
+    function onBlur() { clearDrag() }
+    function onKeyDown(e) { if (e.key === 'Escape') clearDrag() }
+
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDropCapture, true)
+    window.addEventListener('drop', onDrop)
+    window.addEventListener('dragend', onDragEnd)
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDropCapture, true)
+      window.removeEventListener('drop', onDrop)
+      window.removeEventListener('dragend', onDragEnd)
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [])
 
   // Dismiss Settings on outside click or Escape.
   useEffect(() => {
@@ -267,18 +714,18 @@ export default function AppPage() {
   const fileInputRef = useRef(null)
   const imageInputRef = useRef(null)
 
-  const base      = dark ? '#1A1917' : '#F5F3EE'
-  const surface   = dark ? '#201F1C' : '#EDEAE3'
-  const raised    = dark ? '#262522' : '#E4E1D8'
-  const border    = dark ? '#2E2D29' : '#D5D1C7'
-  const text      = dark ? '#E8E6E1' : '#1A1917'
-  const text2     = dark ? '#9A9790' : '#6B6860'
-  const text3     = dark ? '#5A5955' : '#A09D97'
-  const accent    = dark ? '#5B5FE8' : '#1D9E75'
-  const accentDim = dark ? '#1e2057' : '#d0f0e4'
-  const green     = '#4ade80'
-  const red       = '#f87171'
-  const amber     = '#E8B85B'
+  /* The palette, from lib/theme.js — one definition for the whole app.
+
+     This block used to be the canonical hand-copy of six; the other five have
+     been deleted. Destructured rather than used as `colors.x` so the ~200
+     existing references below keep working unchanged. */
+  const colors = makeColors(dark)
+  const {
+    base, surface, raised, border, borderDim,
+    text, text2, text3,
+    accent, accentText, accentDim,
+    green, red, amber,
+  } = colors
 
   // ── File import ──────────────────────────────────────────────
   /* ── Teleporting ───────────────────────────────────────────────────
@@ -311,6 +758,57 @@ export default function AppPage() {
      used to leave orphaned images occupying quota with nothing referencing
      them. Reloads rather than resetting state in place, because half the app
      caches derived values off the notebook tree. */
+  /** Every store that holds the user's own content. */
+  async function wipeLocalStores() {
+    await clearState()
+    await idbClear(STORE_IMAGES)
+    await idbClear(STORE_PDFS)
+    /* Files and templates were being LEFT BEHIND by a dialog that promised to
+       delete everything. Attachments are the bytes someone is least likely to
+       be able to reproduce and most likely to care about not leaving on a
+       borrowed machine, and a template carries its own copies of the images
+       and PDFs from the workspace it was made in — so both stores could
+       survive a "delete everything" with real content in them, unreachable
+       through the UI and invisible in the storage meter. */
+    await idbClear(STORE_FILES)
+    await idbClear(STORE_TEMPLATES)
+  }
+
+  /* SIGNING OUT CAN NOW TAKE THE WORKSPACE WITH IT.
+
+     It did not, and that was a real leak: signOut() cleared the Supabase token
+     and nothing else, while the app hydrates from IndexedDB on boot regardless
+     of auth state. So the next person to open DataStudio on a shared or
+     library machine got the previous user's notebooks, notes, images and PDFs
+     in full.
+
+     Clearing unconditionally would be worse. DataStudio is local-first: plenty
+     of people will have a workspace they built before they ever signed in, and
+     wiping it because they signed out once is destroying data they never
+     handed over. So it asks, and the safe answer is the default. */
+  async function signOutAndMaybeWipe() {
+    const choice = await ask({
+      title: 'Also remove this workspace from this device?',
+      body: 'Your projects, images, PDFs and attachments are stored in this browser, not in your account. '
+          + 'Signing out does not remove them.\n\n'
+          + 'Remove them if this is a shared or borrowed computer. Keep them if it is yours — '
+          + 'there is no cloud copy to restore from.',
+      actions: [
+        { label: 'Remove from this device', value: 'wipe', tone: 'danger' },
+        { label: 'Keep on this device', value: 'keep', autoFocus: true },
+        { label: 'Cancel', value: null, tone: 'quiet' },
+      ],
+    })
+    if (choice === null) return false
+    if (choice === 'wipe') {
+      await wipeLocalStores()
+      /* Reload rather than clearing React state: every block, image URL and
+         PDF document in memory still refers to bytes that no longer exist. */
+      window.location.reload()
+    }
+    return true
+  }
+
   async function deleteAllLocalData() {
     /* The one delete in the app that keeps a dialog. Everything else here
        deletes and offers UNDO, but there is nothing to hold the workspace in
@@ -320,7 +818,7 @@ export default function AppPage() {
     const choice = await ask({
       title: 'Delete everything in this browser?',
       tone: 'danger',
-      body: 'Every notebook, folder, image and PDF lives on this device only. '
+      body: 'Every project, folder, image, PDF, attachment and saved template lives on this device only. '
           + 'There is no cloud copy and no undo for this one.\n\n'
           + 'Export anything you want to keep first.',
       actions: [
@@ -329,9 +827,7 @@ export default function AppPage() {
       ],
     })
     if (choice !== 'delete') return
-    await clearState()
-    await idbClear(STORE_IMAGES)
-    await idbClear(STORE_PDFS)
+    await wipeLocalStores()
     window.location.reload()
   }
 
@@ -345,37 +841,133 @@ export default function AppPage() {
      appeared to do nothing at all.
 
      Now: route by extension, validate, and surface every failure. */
-  async function handleFileChange(e) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
+  /* Is this text a delimited table, or is it prose?
 
+     Judged on the first non-empty lines: real tabular data has the SAME number
+     of fields on every row, and more than one. Prose has commas in some
+     sentences and not others, which is exactly the signal this looks for.
+
+     Tabs are checked before commas because a tab-separated file is almost
+     never prose, whereas a comma-heavy paragraph is common. */
+  function looksDelimited(head) {
+    const lines = String(head || '').split(/\r?\n/).filter(l => l.trim()).slice(0, 12)
+    if (lines.length < 2) return false
+    for (const delim of ['\t', ',', ';', '|']) {
+      const counts = lines.map(l => l.split(delim).length)
+      if (counts[0] < 2) continue
+      /* Every row the same width, and that width greater than one. A single
+         inconsistent row is enough to call it prose — a table with a ragged
+         row is rare, a paragraph with a stray comma is not. */
+      if (counts.every(c => c === counts[0])) return true
+    }
+    return false
+  }
+
+  async function handleFileChange(e) {
+    const list = e.target.files
+    e.target.value = ''
+    await importFiles(list)
+  }
+
+  /* ONE route in, for every way a file can arrive: the picker, a drop on the
+     canvas, a drop on a sidebar folder, a drop anywhere else in the window.
+     They were not one route before because there was only one way in — the
+     picker — and dropping a real file on the app did nothing at all.
+
+     `opts.at`      canvas coordinates, when the file was dropped on the canvas.
+                    A PDF or an image then lands under the cursor instead of at
+                    the fixed 200/130 corner every import used.
+     `opts.folderId` a sidebar folder, when it was dropped on one. */
+  async function importFile(file, opts = {}) {
     setImportError(null)
     const ext = extOf(file.name)
 
-    if (IMAGE_EXTS.includes(ext)) return importImage(file)
-    if (PDF_EXTS.includes(ext)) return importPdf(file)
-    if (DATA_EXTS.has(ext)) return importWorkbook(file)
+    if (IMAGE_EXTS.includes(ext)) return importImage(file, opts)
+    if (PDF_EXTS.includes(ext)) return importPdf(file, opts)
+    /* Markdown is checked BEFORE the spreadsheet formats deliberately. A .md
+       file is prose, and routing prose through SheetJS produces a one-column
+       grid of sentences. */
+    if (MARKDOWN_EXTS.includes(ext)) return importMarkdown(file, opts)
 
-    setImportError(
-      `"${file.name}" isn't a format DataStudio can read. Spreadsheets: ${[...DATA_EXTS].slice(0, 6).join(' ')}… · Images: ${IMAGE_EXTS.join(' ')} · Documents: .pdf`
-    )
+    /* .txt IS DECIDED BY LOOKING AT IT.
+
+       It used to sit in the same group as .csv and .tsv and go straight to
+       SheetJS, so dragging in a paragraph of prose produced a grid of sentence
+       fragments split on whatever commas happened to be in it. Dropping a text
+       file into a data tool is a completely reasonable thing to try, and the
+       result looked like the app was broken.
+
+       An extension is a claim; the first few lines are evidence. If they are
+       consistently delimited it really is data and goes to the grid, otherwise
+       it becomes a note. Nothing is guessed silently either way — the toast
+       says which happened, because a wrong guess the user cannot see is worse
+       than a wrong guess they can correct. */
+    if (ext === '.txt') {
+      const head = await file.slice(0, 64 * 1024).text()
+      if (looksDelimited(head)) return importWorkbook(file, opts)
+      return importMarkdown(file, opts)
+    }
+
+    if (DATA_EXTS.has(ext)) return importWorkbook(file, opts)
+
+    /* Everything else becomes an attachment rather than an error. This branch
+       used to be a refusal that listed the formats the file was not — which
+       is the least useful thing to tell someone who has just dragged in a
+       .docx. It is the LAST branch on purpose: every type with a live block
+       of its own is routed above it, so nothing that could have been opened
+       properly gets buried as a chip. */
+    return importAttachment(file, opts)
+  }
+
+  /* Sequential, deliberately. Each import awaits an IndexedDB write; firing
+     them together turns a four-file drop into four interleaved transactions
+     for no gain, and the error messages arrive in an order that matches
+     nothing the user did. The state updates themselves are safe either way —
+     every setter here takes the functional form.
+
+     The FileList is copied to an array FIRST. It is a live view onto the drag
+     operation, and it empties when the browser tears the drag down — reading
+     it lazily inside the loop is a race that shows up only on slow imports. */
+  async function importFiles(list, opts = {}) {
+    const files = Array.from(list || [])
+    if (!files.length) return
+
+    const batch = files.slice(0, MAX_DROP_FILES)
+    if (files.length > batch.length) {
+      setImportError(`${files.length} files is more than one drop should carry — importing the first ${MAX_DROP_FILES}.`)
+    }
+
+    for (let i = 0; i < batch.length; i++) {
+      /* Fan the landing point out. Without this a four-file drop stacks four
+         blocks on the same pixel and looks like one file imported. */
+      const at = opts.at ? { x: opts.at.x + i * 26, y: opts.at.y + i * 26 } : null
+      await importFile(batch[i], { ...opts, at })
+    }
   }
 
   /* A PDF becomes a block holding an id. The bytes go straight to IndexedDB
      and are never part of the workspace snapshot — a 20MB document rewritten
      by the 600ms autosave would make the whole app stutter. */
-  async function importPdf(file) {
+  async function importPdf(file, opts = {}) {
     if (!activeNotebookId) { setImportError('Open a notebook before adding a PDF.'); return }
     setImporting(true)
     try {
       const processed = await processPdfFile(file)
       const id = newPdfId()
+      /* Stamped BEFORE the write. A prune that lands between the write and
+         the block being added would otherwise see bytes nothing references. */
+      assetGraceRef.current.set(id, Date.now())
       await putPdf(id, processed)
 
+      /* Dropped on the canvas: land under the cursor, offset by roughly a
+         title bar so the block's top edge is where the pointer was rather
+         than its centre being somewhere below it. Otherwise fall back to the
+         old jittered corner, which is what the picker still uses. */
+      const at = opts.at
       addNotebookBlock(
         activeNotebookId, 'pdf',
-        200 + Math.random() * 40, 130 + Math.random() * 30,
+        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
+        at ? Math.max(0, at.y - 20) : 130 + Math.random() * 30,
         null, null, 520, 620,
         { pdfId: id, name: processed.name, pdfPage: 1, pdfFit: 'width' }
       )
@@ -393,12 +985,13 @@ export default function AppPage() {
     }
   }
 
-  async function importImage(file) {
+  async function importImage(file, opts = {}) {
     if (!activeNotebookId) { setImportError('Open a notebook before adding an image.'); return }
     setImporting(true)
     try {
       const processed = await processImageFile(file)
       const id = newImageId()
+      assetGraceRef.current.set(id, Date.now())
       await putImage(id, {
         blob: processed.blob, width: processed.width, height: processed.height,
         type: processed.type, name: processed.name, addedAt: Date.now(),
@@ -407,9 +1000,11 @@ export default function AppPage() {
       // doesn't arrive taller than the viewport.
       const maxW = 420
       const scale = Math.min(1, maxW / processed.width)
+      const at = opts.at
       addNotebookBlock(
         activeNotebookId, 'image',
-        180 + Math.random() * 40, 140 + Math.random() * 30,
+        at ? Math.max(0, at.x - 40) : 180 + Math.random() * 40,
+        at ? Math.max(0, at.y - 20) : 140 + Math.random() * 30,
         null, null,
         Math.round(processed.width * scale),
         Math.round(processed.height * scale) + 30,
@@ -426,12 +1021,105 @@ export default function AppPage() {
     }
   }
 
-  function importWorkbook(file) {
+  /* A markdown file becomes a TEXT BLOCK, not a sheet.
+
+     This closes an asymmetry that was sitting in the app: DataStudio has
+     exported Markdown since the export panel existed (lib/exporters.js,
+     blocksToMarkdown) and could not read it back — you could export a
+     notebook to .md and then not drag it in. */
+  async function importMarkdown(file, opts = {}) {
+    if (!activeNotebookId) { setImportError('Open a notebook before adding a note.'); return }
+    if (file.size > MAX_MARKDOWN_BYTES) {
+      setImportError(`"${file.name}" is ${formatBytes(file.size)} of text — too large for one note. Split it up first.`)
+      return
+    }
+    setImporting(true)
+    try {
+      const raw = await file.text()
+      const html = markdownToHtml(raw)
+      if (!html) { setImportError(`"${file.name}" is empty.`); return }
+
+      /* Sized from the content: a two-line note arriving in a 620px-tall box
+         is as wrong as a long document arriving in a 90px one. The estimate is
+         crude on purpose — the block is resizable and a guess that is close is
+         worth more than a measurement that costs a layout pass. */
+      const lines = raw.split('\n').length
+      const height = Math.round(Math.min(560, Math.max(120, lines * 21 + 40)))
+      const at = opts.at
+
+      addNotebookBlock(
+        activeNotebookId, 'text',
+        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
+        at ? Math.max(0, at.y - 20) : 140 + Math.random() * 30,
+        null, null, 460, height,
+        {
+          content: html,
+          /* Named after the document's own first heading when it has one, so
+             a folder of notes is readable without opening any of them. */
+          name: markdownTitle(raw, file.name.replace(/\.[^.]+$/, '')),
+        }
+      )
+    } catch (err) {
+      setImportError(err?.message || `"${file.name}" could not be read.`)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  /* §8 — an attachment. The bytes go to their own IndexedDB store and the
+     block carries only an id, the same rule images and pdfs follow: a 40MB
+     file rewritten by the 600ms autosave is a frozen main thread.
+
+     KNOWN LIMIT, and the UI should keep saying it until §11 lands: this is
+     one browser profile on one machine. The attachment is invisible on
+     another device and gone if the profile is cleared. */
+  async function importAttachment(file, opts = {}) {
+    if (!activeNotebookId) { setImportError('Open a notebook before adding a file.'); return }
+    setImporting(true)
+    try {
+      const processed = await processFile(file)
+      const id = newFileId()
+      assetGraceRef.current.set(id, Date.now())
+      await putFile(id, processed)
+
+      const at = opts.at
+      addNotebookBlock(
+        activeNotebookId, 'file',
+        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
+        at ? Math.max(0, at.y - 20) : 150 + Math.random() * 30,
+        null, null, 300, 74,
+        { fileId: id, name: processed.name, size: processed.size, mime: processed.type }
+      )
+      storageEstimate().then(setUsage)
+    } catch (err) {
+      setImportError(err?.message || `"${file.name}" could not be attached.`)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  /* Wrapped so it can actually be awaited. importFiles documents itself as
+     sequential; four of the five branches are async and this one was not — it
+     started a FileReader and returned undefined, so `await` resolved on the
+     next microtask and three dropped workbooks parsed concurrently. The
+     visible symptom was the "Importing…" indicator vanishing when the
+     SMALLEST file finished while two were still going, and an error from the
+     second being wiped by the third's setImportError(null).
+
+     A wrapper rather than a rewrite of the body: reindenting forty lines to
+     add a promise is a large diff for a small change, and this keeps the
+     parsing code untouched. */
+  function importWorkbook(file, opts = {}) {
+    return new Promise(done => importWorkbookInner(file, opts, done))
+  }
+
+  function importWorkbookInner(file, opts, done) {
     setImporting(true)
     const reader = new FileReader()
     reader.onerror = () => {
       setImporting(false)
       setImportError(`Could not read "${file.name}" from disk.`)
+      done(null)
     }
     reader.onload = (evt) => {
       try {
@@ -443,25 +1131,46 @@ export default function AppPage() {
            month with no error. Dates come through as Date objects now and are
            normalised to YYYY-MM-DD below, which is the one string shape
            parseDate handles exactly. */
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true })
+        const workbook = readWorkbook(data, { type: 'array', cellDates: true })
         if (!workbook.SheetNames?.length) throw new Error('the file contains no sheets')
         const sheets = workbook.SheetNames.map(sheetName => {
           const ws = workbook.Sheets[sheetName]
-          const json = XLSX.utils.sheet_to_json(ws, { header: 1 }).map(normaliseRow)
+          const json = XLSXUtils.sheet_to_json(ws, { header: 1 }).map(normaliseRow)
           // A missing header stays blank rather than becoming "Column 3" —
           // the grid shows the column letter, so a placeholder is just clutter.
-          const headers = (json[0] || []).map((h, i) => ({ id: `col_${Date.now()}_${i}`, label: h ?? '', index: i, hidden: false }))
+          /* The random suffix matters here for the same reason it does on the
+             file id two lines below. This map runs synchronously across every
+             sheet in the workbook, so Date.now() is IDENTICAL for all of them
+             and `col_<T>_0` is generated once per sheet. The mutators are all
+             scoped by file + sheet so the data stays correct, but the hidden-
+             columns list in the sidebar flattens across sheets and renders by
+             col.id — producing duplicate React keys the moment you hide
+             column A on two sheets of one workbook. */
+          const salt = Math.random().toString(36).slice(2, 7)
+          const headers = (json[0] || []).map((h, i) => ({ id: `col_${Date.now()}_${salt}_${i}`, label: h ?? '', index: i, hidden: false }))
           return { name: sheetName, headers, rows: json.slice(1) }
         })
         const totalRows = sheets.reduce((n, s) => n + s.rows.length, 0)
         if (totalRows === 0) throw new Error('no rows were found in it')
-        const newFile = { id: `file_${Date.now()}`, name: file.name, sheets }
+        /* The random suffix is not decoration. Every other id in this file
+           carries one; this one did not, and two workbooks dropped together
+           finish reading in the same millisecond often enough to collide —
+           at which point the second silently overwrites the first in every
+           lookup keyed by file id. */
+        const newFile = { id: `file_${Date.now()}_${Math.random().toString(36).slice(2)}`, name: file.name, sheets }
         setFiles(prev => [...prev, newFile])
         setExpandedFiles(prev => { const next = new Set(prev); next.add(newFile.id); return next })
+        /* Dropped onto a folder: file it there. A workbook that appears at the
+           root after being dropped into an open folder has technically
+           imported and practically ignored you. */
+        if (opts.folderId) moveToFolder(newFile.id, opts.folderId)
       } catch (err) {
         setImportError(`Could not import "${file.name}" — ${err?.message || 'the file may be corrupt or password-protected'}.`)
       } finally {
         setImporting(false)
+        /* In `finally`, so a throw inside the try still releases the next
+           file in the queue. A rejected import must not hang the batch. */
+        done(null)
       }
     }
     reader.readAsArrayBuffer(file)
@@ -616,6 +1325,9 @@ export default function AppPage() {
     const nb = freshNotebook()
     setNotebooks(prev => [...prev, nb])
     setActiveNotebookId(nb.id)
+    /* New projects land expanded — the sidebar should show Sheet 1 right
+       away instead of making the user click to reveal what they just made. */
+    setExpandedNotebookIds(prev => new Set(prev).add(nb.id))
   }
   /* §9.1 Builder hands over a finished notebook — lib/templatestore.js has
      already allocated every id and copied every asset — so this is the same
@@ -625,6 +1337,7 @@ export default function AppPage() {
     if (!nb?.id) return
     setNotebooks(prev => [...prev, nb])
     setActiveNotebookId(nb.id)
+    setExpandedNotebookIds(prev => new Set(prev).add(nb.id))
   }
   function renameNotebook(nbId, name) {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, name }))
@@ -644,6 +1357,7 @@ export default function AppPage() {
       id, x, y, w: customW, h: customH,
       headers: customHeaders, rows: customRows, patch,
     })
+    markUndo('add')
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       const sid = _getActiveSheetId(n)
@@ -655,8 +1369,44 @@ export default function AppPage() {
        as a heuristic. */
     return id
   }
+  /* What KIND of change a patch is, for the undo label and — more importantly
+     — for coalescing. Dragging a block emits one patch on drop, but nudging it
+     with the arrow keys emits one per press, and thirty presses should be one
+     undo rather than thirty. */
+  function labelForPatch(patch) {
+    if (!patch) return 'edit'
+    const keys = Object.keys(patch)
+    if (keys.every(k => k === 'x' || k === 'y' || k === 'parentSectionId')) return 'move'
+    if (keys.every(k => k === 'w' || k === 'h' || k === 'x' || k === 'y')) return 'resize'
+    if (keys.length === 1 && keys[0] === 'name') return 'rename'
+    if (keys.length === 1 && keys[0] === 'content') return 'edit text'
+    return 'edit'
+  }
+
+  /* Append already-built blocks and shapes to the active sheet.
+
+     Separate from addNotebookBlock because that one CREATES a block from a
+     type and a position; this one takes objects that already exist and only
+     has to place them. Paste is the caller today; a future "duplicate to
+     another sheet" would be the second. */
+  function pasteIntoNotebook(nbId, { blocks = [], shapes = [] }) {
+    if (!blocks.length && !shapes.length) return 0
+    markUndo('paste')
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = _getActiveSheetId(n)
+      return { ...n, sheets: (n.sheets || []).map(s => s.id !== sid ? s : {
+        ...s,
+        blocks: [...(s.blocks || []), ...blocks],
+        shapes: [...(s.shapes || []), ...shapes],
+      }) }
+    }))
+    return blocks.length + shapes.length
+  }
+
   function updateNotebookBlock(nbId, blockId, patch) {
     if (patch?.__delete) { deleteNotebookBlock(nbId, blockId); return }
+    markUndo(labelForPatch(patch))
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       const sid = _getActiveSheetId(n)
@@ -743,6 +1493,10 @@ export default function AppPage() {
       else children.forEach(c => orphanIds.push(c.id))
     }
 
+    /* Protect the bytes before the blocks that reference them disappear. */
+    graceAssetsOf(sheet.blocks.filter(b => removeIds.has(b.id)))
+    markUndo('delete')
+
     const orphanOf = new Map(orphanIds.map(id => [id, sheet.blocks.find(b => b.id === id)?.parentSectionId ?? null]))
     const snap = {
       nbId, sheetId,
@@ -793,6 +1547,83 @@ export default function AppPage() {
       return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, drawings: [] } : s) }
     }))
   }
+  /* Shapes live on the SHEET, beside drawings and blocks — not in the block
+     array. A shape is not a block: it rotates, it has no content, its hit
+     area is its geometry rather than a rectangle, and there will be hundreds
+     of them. See claude/SHAPE_LAYER_AUG20.md for why that decision went the
+     way it did, and what it cost.
+
+     Same activeSheetId resolution as drawings, including the
+     `|| n.sheets?.[0]?.id` fallback: a notebook saved before activeSheetId
+     existed still has sheets, and dropping its shapes on the floor because a
+     field is missing is worse than guessing the first one. */
+  function addNotebookShape(nbId, shape) {
+    markUndo('draw')
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = n.activeSheetId || n.sheets?.[0]?.id
+      return { ...n, sheets: (n.sheets || []).map(sh => sh.id === sid ? { ...sh, shapes: [...(sh.shapes || []), shape] } : sh) }
+    }))
+  }
+  /* Patch in place, by id. NOT delete-and-recreate: the id is what selection,
+     undo and any future connector all hold on to. */
+  function updateNotebookShape(nbId, shapeId, patch) {
+    markUndo(labelForPatch(patch))
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = n.activeSheetId || n.sheets?.[0]?.id
+      return { ...n, sheets: (n.sheets || []).map(sh => sh.id !== sid ? sh : {
+        ...sh, shapes: (sh.shapes || []).map(x => x.id === shapeId ? { ...x, ...patch } : x),
+      }) }
+    }))
+  }
+  /* Deletes several at once and hands back the way to undo it, position
+     included — a shape that comes back at the top of the z-order has
+     technically returned and practically has not. */
+  function deleteNotebookShapes(nbId, ids) {
+    const kill = new Set(ids)
+
+    /* The snapshot is taken from state OUTSIDE the updater, not assigned
+       inside one. This function had it backwards, and it was the only delete
+       in the file that did — every other one (blocks, sheets, notebooks,
+       files) reads from `notebooks` first.
+
+       A setState updater has to be a pure function of its argument, because
+       React is entitled to call it twice and to re-run it against a rebased
+       state. Two real failures followed from writing to `removed` inside one:
+       the guard below could run before the updater and skip the undo toast
+       entirely, and a re-run against a state where the shapes were already
+       gone would overwrite `removed` with [] and turn the undo closure into
+       a silent no-op. Both need a queued update to be pending — which is
+       exactly what a shape drag leaves behind when you press Delete straight
+       after releasing one. */
+    const nb = notebooks.find(n => n.id === nbId)
+    const sid = nb?.activeSheetId || nb?.sheets?.[0]?.id
+    const sheet = nb?.sheets?.find(sh => sh.id === sid)
+    const removed = (sheet?.shapes || [])
+      .map((x, i) => ({ x, i }))
+      .filter(({ x }) => kill.has(x.id))
+
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const active = n.activeSheetId || n.sheets?.[0]?.id
+      return { ...n, sheets: (n.sheets || []).map(sh => sh.id !== active ? sh : {
+        ...sh, shapes: (sh.shapes || []).filter(x => !kill.has(x.id)),
+      }) }
+    }))
+    if (!removed.length) return null
+    return () => setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const sid = n.activeSheetId || n.sheets?.[0]?.id
+      return { ...n, sheets: (n.sheets || []).map(sh => {
+        if (sh.id !== sid) return sh
+        const next = [...(sh.shapes || [])]
+        for (const { x, i } of removed) next.splice(Math.min(i, next.length), 0, x)
+        return { ...sh, shapes: next }
+      }) }
+    }))
+  }
+
   /* Change a connection in place — used to say what a dependency MEANS.
      A separate function rather than delete-and-recreate, so the id survives
      and the selection doesn't jump. */
@@ -831,11 +1662,25 @@ export default function AppPage() {
     if (at < 0) return null
     const sheet = nb.sheets[at]
     const prevActiveSheetId = nb.activeSheetId
+    /* Every asset on the sheet, protected before the sheet goes. */
+    graceAssetsOf(sheet.blocks || [])
 
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       const newSheets = (n.sheets || []).filter(s => s.id !== sheetId)
-      return { ...n, sheets: newSheets, activeSheetId: newSheets[0]?.id || null }
+      /* Only move if the sheet you were LOOKING AT is the one that went.
+         Reassigning unconditionally yanked the canvas back to Sheet 1
+         whenever any other sheet was deleted from the sidebar — and worse,
+         every writer in this file resolves its target through
+         _getActiveSheetId, so a block drag still committing its backstop
+         after the jump would write into the wrong sheet, find no matching id,
+         and lose the move with no error. */
+      const stillThere = newSheets.some(s => s.id === n.activeSheetId)
+      return {
+        ...n,
+        sheets: newSheets,
+        activeSheetId: stillThere ? n.activeSheetId : (newSheets[0]?.id || null),
+      }
     }))
 
     /* Back at its own tab position, and looking at whatever sheet you were
@@ -868,6 +1713,9 @@ export default function AppPage() {
     const at = notebooks.findIndex(n => n.id === nbId)
     if (at < 0) return null
     const doomed = notebooks[at]
+    /* Every asset in every sheet of the notebook. This is the largest undo the
+       app offers and the one most likely to be clicked after a pause. */
+    for (const sh of doomed.sheets || []) graceAssetsOf(sh.blocks || [])
     const prevActiveId = activeNotebookId
     const remaining = notebooks.filter(n => n.id !== nbId)
     const standIn = remaining.length === 0 ? freshNotebook() : null
@@ -968,7 +1816,7 @@ export default function AppPage() {
                   ) : (
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
                   )}
-                  {isActive && !isRenaming && <Icon name="action-check" size={11} style={{ color: accent }} />}
+                  {isActive && !isRenaming && <Icon name="action-check" size={11} style={{ color: accentText }} />}
                   {!isRenaming && nb.sheets.length > 1 && (
                     <button onClick={e => { e.stopPropagation(); const undo = deleteNotebookSheet(nb.id, sheet.id); if (undo) toast(`Sheet "${sheet.name}" deleted`, { undo }) }}
                       style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0.35, flexShrink: 0 }}
@@ -1063,7 +1911,7 @@ export default function AppPage() {
           <>
             {selectedSidebarCols.length > 1 && (
               <div style={{ padding: '4px 8px 6px 24px' }}>
-                <button onClick={() => { const colInfos = selectedSidebarCols.map(id => { const col = file.sheets[0].headers.find(h => h.id === id); return col ? { fileId: file.id, fileName: file.name, sheetName: file.sheets[0].name, col } : null }).filter(Boolean); addColumnsToNotebook(colInfos) }} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accent, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontWeight: 600 }}>
+                <button onClick={() => { const colInfos = selectedSidebarCols.map(id => { const col = file.sheets[0].headers.find(h => h.id === id); return col ? { fileId: file.id, fileName: file.name, sheetName: file.sheets[0].name, col } : null }).filter(Boolean); addColumnsToNotebook(colInfos) }} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accentText, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontWeight: 600 }}>
                   <Icon name="action-add" size={11} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Add {selectedSidebarCols.length} to notebook
                 </button>
               </div>
@@ -1130,19 +1978,118 @@ export default function AppPage() {
     addNotebookBlock(activeNotebookId, 'table', x, y, headers, rows)
   }
 
-  // Memoised on `dark` alone. This object is compared by identity inside
-  // SheetGrid's memo() comparator — rebuilding it every render (as this used
-  // to) made that comparison false every time, so every table block
-  // re-rendered on every keystroke anywhere in the app.
-  const colors = useMemo(
-    () => ({ surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber }),
-    [surface, raised, border, text, text2, text3, accent, accentDim, red, base, green, amber]
-  )
+  /* `colors` no longer needs a useMemo: makeColors() returns one of two frozen
+     module-level objects, so its identity is already stable across every
+     render at a given theme. That stability is load-bearing — it is what lets
+     memo() on the block components hold, and a fresh object here would defeat
+     every one of them. */
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
 
-      <input ref={fileInputRef} type="file" accept={ACCEPT_EXTS} style={{ display: 'none' }} onChange={handleFileChange} />
+      {/* No `accept`, deliberately. Since §8 every format is importable —
+          the ones with a live block become one, and everything else becomes an
+          attachment — so a filter here would make the PICKER refuse files that
+          DROPPING accepts. Two doors into the same feature disagreeing about
+          what it takes is worse than either rule on its own.
+          ACCEPT_EXTS still describes what gets a rich block; the sidebar reads
+          IMPORT_FORMATS for that. */}
+      <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleFileChange} />
+
+      {/* ── Save status ──────────────────────────────────────────────────
+          Fixed, centred at the top, above every panel and rail. Nothing the
+          user can collapse, dismiss or scroll away contains it, because the
+          two states it reports are the two states in which continuing to work
+          is a mistake. */}
+      {(saveError || saveStale) && (
+        <div role="alert" aria-live="assertive"
+          style={{
+            position: 'fixed', top: 14, left: '50%', transform: 'translateX(-50%)',
+            zIndex: Z.toast, maxWidth: 'min(560px, calc(100vw - 32px))',
+            display: 'flex', alignItems: 'flex-start', gap: 9,
+            padding: '10px 14px', borderRadius: 'var(--ds-radius-md)',
+            background: saveStale ? 'var(--ds-accent-dim)' : 'var(--ds-amber-bg)',
+            border: `1px solid ${saveStale ? accent : amber}`,
+            color: saveStale ? accentText : amber,
+            boxShadow: 'var(--ds-shadow-lg)',
+            fontFamily: 'var(--ds-font-body)', fontSize: 12, lineHeight: 1.5,
+          }}>
+          <Icon name="status-warning" size={15} style={{ marginTop: 1, flexShrink: 0 }} />
+          <span>
+            <b>{saveStale ? 'Changed in another tab.' : 'Not saving.'}</b>{' '}
+            {saveStale
+              ? 'Another tab saved this workspace after you opened it, so nothing here has been written. Copy anything you need, then reload.'
+              : saveError}
+          </span>
+          {saveStale && (
+            <button onClick={() => window.location.reload()}
+              style={{ marginLeft: 4, flexShrink: 0, padding: '4px 10px', borderRadius: 'var(--ds-radius-xs)', border: `1px solid ${accent}`, background: 'transparent', color: accentText, font: 'inherit', fontWeight: 600, cursor: 'pointer' }}>
+              Reload
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* The way back. It has to exist and it has to be obvious: a sidebar
+          that hides with no visible handle is a sidebar someone has lost.
+          Sits where the panel's own corner was, so the eye is already there. */}
+      {sidebarCollapsed && (
+        <button onClick={() => setPref('sidebarCollapsed', false)}
+          title="Show sidebar"
+          aria-label="Show sidebar"
+          style={{
+            position: 'absolute', top: 22, left: 18, zIndex: Z.chromeTop,
+            display: 'flex', alignItems: 'center', gap: 7,
+            padding: '8px 11px', borderRadius: 10,
+            background: `${surface}ee`,
+            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+            border: `1px solid ${border}`,
+            boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
+            color: text2, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontSize: 12,
+            animation: 'dsToastIn 0.18s ease',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = accent }}
+          onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
+          <DoubleChevron size={12} dir="right" />
+          <Icon name="app-logo" size={14} style={{ color: accentText }} />
+        </button>
+      )}
+
+      {/* Drop affordance for the whole window.
+
+          pointerEvents:'none' is load-bearing — this sits above everything, so
+          without it the overlay itself becomes the drop target and the canvas
+          never learns WHERE the file landed. It is a sign, not a surface.
+
+          Deliberately not a per-zone highlight. While a file is in the air the
+          question is "will this app take it at all", and that is answered once,
+          in the middle of the screen, rather than by hunting for which panel
+          lit up. */}
+      {fileDragActive && (
+        <div aria-hidden="true" style={{
+          position: 'fixed', inset: 0, zIndex: Z.panel, pointerEvents: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: dark ? 'rgba(16,16,14,0.5)' : 'rgba(245,243,238,0.55)',
+          backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)',
+          animation: 'dsScrimIn 0.12s ease',
+        }}>
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+            padding: '26px 34px',
+            background: `${surface}f2`,
+            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+            border: `1.5px dashed ${accent}`, borderRadius: 16,
+            boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`,
+            fontFamily: 'var(--ds-font-body)',
+          }}>
+            <Icon name="action-add" size={20} style={{ color: accentText }} />
+            <div style={{ fontSize: 14, fontWeight: 600, color: text }}>Drop to import</div>
+            <div style={{ fontSize: 11, color: text2, textAlign: 'center', maxWidth: 260, lineHeight: 1.5 }}>
+              Spreadsheets, PDFs and images. Dropped on the canvas they land where you let go.
+            </div>
+          </div>
+        </div>
+      )}
       {/* Separate picker for Add → Image, so the dialog only offers images. */}
       <input ref={imageInputRef} type="file" accept={IMAGE_EXTS.join(',')} style={{ display: 'none' }}
         onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { setImportError(null); importImage(f) } }} />
@@ -1150,11 +2097,29 @@ export default function AppPage() {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: 'var(--ds-font-body)', position: 'relative' }}>
 
         {/* ── Sidebar (floating island) ── */}
-        <div data-kbd-zone style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: 100, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 14, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)' }}>
+        {/* Collapsed = translated out and made inert, NOT unmounted. Unmounting
+            throws away scroll position, which folder is open and which sheet is
+            highlighted, so reopening lands you somewhere you did not leave.
+            pointerEvents:none is what stops the hidden panel from swallowing
+            clicks meant for the canvas underneath it. */}
+        <div data-kbd-zone aria-hidden={sidebarCollapsed || undefined} style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: Z.chrome, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 14, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)',
+          transform: sidebarCollapsed ? 'translateX(calc(-100% - 24px))' : 'none',
+          opacity: sidebarCollapsed ? 0 : 1,
+          pointerEvents: sidebarCollapsed ? 'none' : 'auto',
+          transition: 'transform 0.24s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease',
+        }}>
           <div style={{ padding: '12px 12px 6px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <Icon name="app-logo" size={17} style={{ color: accent, flexShrink: 0 }} />
+              <Icon name="app-logo" size={17} style={{ color: accentText, flexShrink: 0 }} />
               <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700, color: text, flex: 1 }}>DataStudio</span>
+              <button onClick={() => setPref('sidebarCollapsed', true)}
+                title="Hide sidebar"
+                aria-label="Hide sidebar"
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, padding: 0, borderRadius: 6, background: 'none', border: `1px solid transparent`, color: text3, cursor: 'pointer', flexShrink: 0 }}
+                onMouseEnter={e => { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = border }}
+                onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.borderColor = 'transparent' }}>
+                <DoubleChevron size={12} dir="left" />
+              </button>
             </div>
             <button className="import-btn" onClick={handleImportClick} disabled={importing} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 7, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, cursor: importing ? 'default' : 'pointer', opacity: importing ? 0.65 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               {importing
@@ -1172,14 +2137,21 @@ export default function AppPage() {
                 <button onClick={() => setImportError(null)} style={{ display: 'block', marginTop: 4, background: 'none', border: 'none', color: red, opacity: 0.75, fontSize: 10, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)', textDecoration: 'underline' }}>Dismiss</button>
               </div>
             )}
-            {saveError && (
-              <div role="alert" style={{ marginTop: 7, padding: '7px 9px', borderRadius: 6, background: 'var(--ds-amber-bg)', border: `1px solid ${amber}`, color: dark ? amber : '#8a6410', fontSize: 10.5, lineHeight: 1.45 }}>
-                <span style={{ display: 'flex', gap: 6 }}>
-                  <Icon name="status-warning" size={13} style={{ marginTop: 1 }} />
-                  <span><b>Not saving.</b> {saveError}</span>
-                </span>
-              </div>
-            )}
+            {/* The "Not saving" banner used to live HERE, inside a panel that a
+                persisted preference translates off-screen and marks
+                aria-hidden. Collapse the sidebar and the single surface
+                reporting a failed save, a full disk, or a read-only session
+                became invisible — including to screen readers, since
+                aria-hidden takes the role="alert" out of the tree with it.
+
+                Worst on the load-failure path: refuseToSave deliberately mounts
+                a FRESH EMPTY notebook and tells you the real workspace is
+                intact only through this banner. With the sidebar collapsed you
+                see a blank canvas, conclude your work is gone, and reach for
+                "Delete everything".
+
+                It is now rendered at the top of the shell, outside anything
+                that can hide it. */}
             <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
               <button onClick={createFolder}
                 style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 7, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
@@ -1191,7 +2163,7 @@ export default function AppPage() {
                 style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 7, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
-                <Icon name="nav-notebook" size={13} /> Notebook
+                <Icon name="nav-notebook" size={13} /> Project
               </button>
             </div>
           </div>
@@ -1202,12 +2174,37 @@ export default function AppPage() {
               const folderFiles = files.filter(f => folder.itemIds.includes(f.id))
               const folderNotebooks = notebooks.filter(n => folder.itemIds.includes(n.id))
               const isDragOver = folderDragOver === folder.id
+              /* One flag for both kinds of drag the folder accepts: a sidebar
+                 item being refiled, and a file coming in off the desktop. The
+                 ghost row's two states are "something is in the air" and
+                 "nothing is", not "which something". */
+              const anyDrag = !!sidebarItemDrag || fileDragActive
               return (
-                <div key={folder.id} style={{ marginBottom: 2 }}>
+                /* The drag handlers sit on the WRAPPER, not on .folder-row.
+                   They used to be on the row, which is a sibling of the
+                   folder's body — so the "Drag files or projects here" line
+                   inside an open folder was not a drop target at all. It read
+                   as an invitation and did nothing when you accepted it. The
+                   whole folder, header and body, is now one target. */
+                <div key={folder.id} style={{ marginBottom: 2 }}
+                  onDragOver={e => { if (sidebarItemDrag || hasFileDrag(e)) { e.preventDefault(); setFolderDragOver(folder.id) } }}
+                  onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFolderDragOver(null) }}
+                  onDrop={e => {
+                    e.preventDefault()
+                    setFolderDragOver(null)
+                    /* An OS file drop is filed into THIS folder. stopPropagation
+                       keeps it from also reaching the window-level fallback,
+                       which would import the same file a second time — at the
+                       root, so you would get one copy in the folder and one
+                       outside it. */
+                    if (e.dataTransfer?.files?.length) {
+                      e.stopPropagation()
+                      importFiles(e.dataTransfer.files, { folderId: folder.id })
+                      return
+                    }
+                    if (sidebarItemDrag) { moveToFolder(sidebarItemDrag.itemId, folder.id); setSidebarItemDrag(null) }
+                  }}>
                   <div className="folder-row"
-                    onDragOver={e => { if (sidebarItemDrag) { e.preventDefault(); setFolderDragOver(folder.id) } }}
-                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFolderDragOver(null) }}
-                    onDrop={e => { e.preventDefault(); if (sidebarItemDrag) { moveToFolder(sidebarItemDrag.itemId, folder.id); setSidebarItemDrag(null); setFolderDragOver(null) } }}
                     style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 6px', borderRadius: 6, border: isDragOver ? `1px solid ${accent}` : '1px solid transparent', background: isDragOver ? accentDim : 'transparent' }}>
                     <span onClick={() => toggleFolder(folder.id)} style={{ display: 'flex', color: text3, cursor: 'pointer', flexShrink: 0 }}>
                       <Icon name={folder.collapsed ? 'nav-chevron-right' : 'nav-chevron-down'} size={11} />
@@ -1244,7 +2241,44 @@ export default function AppPage() {
                       {folderFiles.map(file => renderFileInSidebar(file, folder.id))}
                       {folderNotebooks.map(nb => renderNotebookInSidebar(nb, folder.id))}
                       {folderFiles.length === 0 && folderNotebooks.length === 0 && (
-                        <div style={{ padding: '5px 8px 6px', fontSize: 10, color: text3, fontStyle: 'italic' }}>Drag files or notebooks here</div>
+                        /* Empty-folder drop target, in two states.
+
+                           IDLE it is a ghost row: the same height, gap and
+                           type as a real file row, just drained of colour,
+                           with a + where the file icon goes. The folder then
+                           reads as a list with one empty slot rather than a
+                           panel with a hole in it, which is the whole reason
+                           the italic sentence looked wrong — it was the only
+                           thing in the sidebar shaped like nothing else.
+
+                           DRAGGING it inflates into a bordered well. The
+                           strong affordance costs nothing when it is not
+                           needed, because it only exists while something is
+                           actually in flight.
+
+                           pointerEvents:none is load-bearing. The drop
+                           handlers live on the folder wrapper; if this div
+                           could take pointer events it would become the
+                           dragleave relatedTarget and flicker the highlight
+                           off every time the cursor crossed it. */
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          margin: '2px 0 4px',
+                          padding: anyDrag ? '9px 8px' : '5px 8px',
+                          borderRadius: 7,
+                          border: `1px ${anyDrag ? 'solid' : 'dashed'} ${isDragOver ? accent : anyDrag ? border : 'transparent'}`,
+                          background: isDragOver ? accentDim : 'transparent',
+                          color: isDragOver ? accent : text3,
+                          fontSize: 11,
+                          opacity: anyDrag ? 1 : 0.7,
+                          pointerEvents: 'none',
+                          transition: 'padding 0.14s ease, opacity 0.14s ease, background 0.14s ease, border-color 0.14s ease, color 0.14s ease',
+                        }}>
+                          <Icon name="action-add" size={11} style={{ flexShrink: 0 }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {isDragOver ? (fileDragActive ? 'Drop to file here' : 'Drop to add') : 'Drag files or projects here'}
+                          </span>
+                        </div>
                       )}
                     </div>
                   )}
@@ -1252,11 +2286,28 @@ export default function AppPage() {
               )
             })}
 
+            {!hydrated && !saveError && (
+              <div aria-hidden style={{ margin: '10px 6px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[0, 1, 2].map(i => (
+                  <div key={i} style={{
+                    height: 30, borderRadius: 'var(--ds-radius-sm)', background: raised,
+                    opacity: 0.55 - i * 0.12,
+                  }} />
+                ))}
+              </div>
+            )}
+
             {files.filter(f => !folders.some(folder => folder.itemIds.includes(f.id))).map(file => renderFileInSidebar(file, null))}
 
             {notebooks.filter(n => !folders.some(folder => folder.itemIds.includes(n.id))).map(nb => renderNotebookInSidebar(nb, null))}
 
-            {files.length === 0 && notebooks.length <= 1 && folders.length === 0 && (
+            {/* `hydrated &&` matters. notebooks starts as [] and fills after an
+                async IndexedDB read, so a user with a large workspace saw "No
+                files yet" for a beat before their work appeared. Showing an
+                empty state for data that exists is worse than showing nothing:
+                for the length of that frame the app is telling someone their
+                projects are gone. */}
+            {hydrated && files.length === 0 && notebooks.length <= 1 && folders.length === 0 && (
               <div style={{ margin: '16px 6px', padding: '13px 12px', borderRadius: 8, border: `1px dashed ${border}`, color: text3, fontSize: 12, lineHeight: 1.6 }}>
                 <div style={{ textAlign: 'center', color: text2, fontWeight: 600, marginBottom: 10 }}>No files yet</div>
                 {/* Only the verified formats are named. The old copy claimed
@@ -1291,7 +2342,7 @@ export default function AppPage() {
                 <div key={col.id} style={{ padding: '4px 4px 4px 16px', display: 'flex', alignItems: 'center', gap: 5 }}>
                   <div style={{ width: 6, height: 6, borderRadius: 2, background: border, flexShrink: 0 }} />
                   <span title={col.label} style={{ flex: 1, fontSize: 11, color: text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through' }}>{col.label}</span>
-                  <button onClick={() => restoreColumn(fileId, sheetName, col.id)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', color: accent, fontSize: 11, padding: '2px 6px', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center' }} title="Restore column" aria-label="Restore column"><Icon name="action-move-out" size={11} /></button>
+                  <button onClick={() => restoreColumn(fileId, sheetName, col.id)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', color: accentText, fontSize: 11, padding: '2px 6px', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center' }} title="Restore column" aria-label="Restore column"><Icon name="action-move-out" size={11} /></button>
                 </div>
               ))}
             </div>
@@ -1306,17 +2357,24 @@ export default function AppPage() {
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <Icon name="storage-drive" size={11} />
                     STORAGE
-                    {/* Whether the browser agreed to protect this data from
-                        eviction. A refusal is worth showing: it means the OS
-                        may reclaim the workspace if the disk fills up. */}
-                    {persisted === true && (
-                      <span title="This browser has agreed to keep your workspace — it won't be evicted to reclaim disk space."
-                        style={{ color: accent, letterSpacing: 0.4 }}>· KEPT</span>
-                    )}
-                    {persisted === false && (
-                      <span title="The browser would not guarantee this storage, so it may be cleared if the disk fills up. Bookmarking or installing the app usually earns the guarantee. Export anything important."
-                        style={{ color: amber, letterSpacing: 0.4, cursor: 'help' }}>· AT RISK</span>
-                    )}
+                    {/* THE "AT RISK" BADGE IS GONE, DELIBERATELY.
+
+                        It sat permanently in the sidebar of a tool people open
+                        in front of clients, in amber, saying their work was at
+                        risk. It is a browser-eviction technicality — the
+                        storage API declining a guarantee — and no reader takes
+                        it that way; they read "this app might lose my data".
+                        That is a sentence you cannot un-say in a meeting.
+
+                        The FACT is still true and still worth knowing, so it
+                        lives in Settings → Storage, worded plainly, where
+                        somebody has gone looking for it. A permanent alarm on
+                        the main surface is not the same thing as informing
+                        someone, and it stops being true at all once the
+                        workspace syncs to a backend.
+
+                        The meter itself stays: it is the thing that becomes a
+                        plan limit. */}
                   </span>
                   <span>{formatBytes(usage.usage)}</span>
                 </div>
@@ -1342,7 +2400,7 @@ export default function AppPage() {
             measures containment against it, and the Builder button has to sit
             OUTSIDE that box or pressing Builder would leave Settings open
             behind the panel. */}
-        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 100, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: Z.chrome, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
 
           {/* ── Builder ──
               §9.1. A separate optional mode, deliberately additive: it opens a
@@ -1393,6 +2451,7 @@ export default function AppPage() {
                 prefs={prefs} setPref={setPref}
                 usage={usage} persisted={persisted} formatBytes={formatBytes}
                 onDeleteAllData={deleteAllLocalData}
+                onSignOut={signOutAndMaybeWipe}
               />
             )}
           </div>
@@ -1423,6 +2482,7 @@ export default function AppPage() {
               onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
               onRenameSheet={(sheetId, name) => renameNotebookSheet(activeNotebookId, sheetId, name)}
               onOpenCrosscheck={() => setShowCCWizard(true)}
+              onDropFiles={(list, x, y) => importFiles(list, { at: { x, y } })}
               onDropColumn={(x, y) => {
                 const d = dragData.current
                 if (!d || d.type !== 'sidebar') return
@@ -1431,9 +2491,15 @@ export default function AppPage() {
                 dragData.current = null
               }}
               onPickImage={() => imageInputRef.current?.click()}
+              onAddShape={(shape) => addNotebookShape(activeNotebookId, shape)}
+              onUpdateShape={(id, patch) => updateNotebookShape(activeNotebookId, id, patch)}
+              onDeleteShapes={(ids) => deleteNotebookShapes(activeNotebookId, ids)}
               onAddDrawing={(drawing) => addNotebookDrawing(activeNotebookId, drawing)}
               onDeleteDrawing={(drawingId) => deleteNotebookDrawing(activeNotebookId, drawingId)}
               onClearDrawings={() => clearNotebookDrawings(activeNotebookId)}
+              onUndo={undoEdit}
+              onRedo={redoEdit}
+              onPasteBlocks={payload => pasteIntoNotebook(activeNotebookId, payload)}
               onAddSheet={() => addNotebookSheet(activeNotebookId)}
               onDeleteSheet={(sheetId) => deleteNotebookSheet(activeNotebookId, sheetId)}
               onSetActiveSheet={(sheetId) => setNotebookActiveSheet(activeNotebookId, sheetId)}

@@ -2,6 +2,7 @@
 import Icon from '../components/ui/Icon'
 
 import { useTheme } from './providers'
+import { makeColors , Z } from '../lib/theme'
 
 /* ══════════════════════════════════════════════════════════════════
    DataStudio landing page — reconciliation wedge positioning
@@ -25,21 +26,10 @@ import { useTheme } from './providers'
 export default function Home() {
   const { dark, setDark } = useTheme()
 
-  const t = {
-    base:      dark ? '#1A1917' : '#F5F3EE',
-    surface:   dark ? '#201F1C' : '#EDEAE3',
-    raised:    dark ? '#262522' : '#E4E1D8',
-    border:    dark ? '#2E2D29' : '#D5D1C7',
-    text:      dark ? '#E8E6E1' : '#1A1917',
-    text2:     dark ? '#9A9790' : '#6B6860',
-    text3:     dark ? '#5A5955' : '#A09D97',
-    accent:    dark ? '#5B5FE8' : '#1D9E75',
-    accentDim: dark ? '#2a2d6e' : '#E1F5EE',
-    accentText:dark ? '#a5a8f5' : '#0F6E56',
-    amber:     '#E8B85B',
-    green:     '#4ade80',
-    red:       '#f87171',
-  }
+  /* This page invented `accentText` because the accent is unreadable as words
+     — 2.59:1 on raised. It was right, and it is a token now (--ds-accent-text,
+     4.56:1), so every surface gets the fix rather than just this one. */
+  const t = makeColors(dark)
 
   const btnPrimary = {
     background: t.accent, color: 'white', border: 'none',
@@ -70,7 +60,7 @@ export default function Home() {
 
       {/* ════════ NAV ════════ */}
       <nav style={{
-        position: 'sticky', top: 0, zIndex: 100,
+        position: 'sticky', top: 0, zIndex: Z.chrome,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '0 48px', height: '64px',
         background: dark ? 'rgba(26,25,23,0.92)' : 'rgba(245,243,238,0.92)',
@@ -145,7 +135,7 @@ export default function Home() {
               <a href="/app" style={{ ...btnPrimary, padding: '16px 32px', fontSize: '16px', fontWeight: 600 }}>Try it free →</a>
               <a href="#how" style={{ ...btnGhost, padding: '15px 26px' }}>See how it works</a>
             </div>
-            <p style={{ fontSize: '13px', color: t.text3 }}>
+            <p style={{ fontSize: '13px', color: t.text2 }}>
               No signup. No credit card. Works in your browser.
             </p>
           </div>
@@ -215,7 +205,7 @@ export default function Home() {
             ))}
           </div>
 
-          <p style={{ fontSize: '14px', color: t.text3, marginTop: '40px', textAlign: 'center', fontStyle: 'italic' }}>
+          <p style={{ fontSize: '14px', color: t.text2, marginTop: '40px', textAlign: 'center', fontStyle: 'italic' }}>
             That's 9 hours a week spent on work a computer should be doing for you.
           </p>
         </div>
@@ -448,7 +438,7 @@ export default function Home() {
                 <h3 style={{ fontSize: '18px', fontWeight: 700, color: t.text, marginBottom: '18px', fontFamily: 'var(--ds-font-head)' }}>
                   {persona.role}
                 </h3>
-                <p style={{ fontSize: '12px', color: t.text3, textTransform: 'uppercase', letterSpacing: '.08em', fontWeight: 600, marginBottom: '14px' }}>
+                <p style={{ fontSize: '12px', color: t.text2, textTransform: 'uppercase', letterSpacing: '.08em', fontWeight: 600, marginBottom: '14px' }}>
                   This is for you if…
                 </p>
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -646,7 +636,7 @@ export default function Home() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
           <a href="/app" style={{ ...btnPrimary, padding: '18px 40px', fontSize: '17px', fontWeight: 600 }}>Open DataStudio →</a>
         </div>
-        <p style={{ fontSize: '13px', color: t.text3, marginTop: '22px' }}>
+        <p style={{ fontSize: '13px', color: t.text2, marginTop: '22px' }}>
           No credit card · No account required · Your data stays in your browser
         </p>
       </section>

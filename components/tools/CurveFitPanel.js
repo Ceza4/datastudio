@@ -3,6 +3,7 @@ import Icon from '../ui/Icon'
 import { useState, useMemo, useEffect } from 'react'
 import { fit, curvePoints, MODELS } from '../../lib/curvefit'
 import SendToSheet from './SendToSheet'
+import { Z } from '../../lib/theme'
 
 /* CurveFitPanel
    --------------------------------------------------------------------------
@@ -127,10 +128,10 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
 
   return (
     <>
-      <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: 890 }} />
+      <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: Z.panel }} />
       <div className="ds-island" role="dialog" aria-label="Curve fitting"
         style={{
-          position: 'fixed', top: 74, left: '50%', transform: 'translateX(-50%)', zIndex: 900,
+          position: 'fixed', top: 74, left: '50%', transform: 'translateX(-50%)', zIndex: Z.panel,
           width: 940, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 110px)',
           overflowY: 'auto', padding: 16,
         }}>
@@ -197,7 +198,7 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                   style={{ marginTop: 6, background: 'none', border: 'none', color: 'var(--ds-accent)', fontSize: 10.5, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)' }}>
                   Reset to auto-derived guess
                 </button>
-                <div style={{ marginTop: 7, fontSize: 10, color: 'var(--ds-text-3)', lineHeight: 1.5 }}>
+                <div style={{ marginTop: 7, fontSize: 10, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
                   Auto-derived from the data, then refined by multi-start. A bad guess converges silently to
                   the wrong answer — check the residuals.
                 </div>

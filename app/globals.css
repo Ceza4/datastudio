@@ -13,9 +13,11 @@
    overrides the colour tokens. No JS recomputation, no prop drilling, and it
    applies to pseudo-elements and :hover states that inline styles can't reach.
 
-   The `colors` object still passed down as a prop mirrors these values for
-   the components that haven't been migrated yet — both point at the same
-   source of truth, so they can't drift.
+   The `colors` object passed down as a prop mirrors these values. It used to
+   be rebuilt from hex literals in six separate files, and this comment used to
+   claim the two "can't drift" — they had, in four places. The JS mirror now
+   lives in exactly one module, lib/theme.js, and scripts/check-tokens.mjs
+   fails the build if the two ever disagree again.
    -------------------------------------------------------------------------- */
 
 :root {
@@ -24,19 +26,37 @@
   --ds-surface:    #EDEAE3;
   --ds-raised:     #E4E1D8;
   --ds-border:     #D5D1C7;
+  /* A resting border that is actually dimmer than the hover border. Block
+     chrome read `isHovered ? border : '#D5D1C7'` and `--ds-border` IS
+     #D5D1C7, so hovering a block in light mode changed nothing at all — nine
+     block types with a two-part hover cue where one part never fired. */
+  --ds-border-dim: #E0DCD3;
   --ds-canvas-bg:  #EAE7DE;
 
   /* ── Text ── */
   --ds-text:       #1A1917;
   --ds-text-2:     #6B6860;
-  --ds-text-3:     #A09D97;
+  /* 3.01:1 against every surface, deliberately.
+
+     This was #A09D97 — 2.07:1 on raised — and it is the most-used colour token
+     in the app, carrying placeholders, labels, timestamps and icon strokes.
+     WCAG AA wants 4.5:1 for text, and there is no room in this palette for a
+     third tier that reaches it (the value would be ~#666460, which is
+     --ds-text-2). So the tier is now labelled honestly: 3.01 is the
+     UI-component threshold. --ds-text-3 is for decoration, dividers, disabled
+     states and icon strokes. Anything a user must READ uses --ds-text-2. */
+  --ds-text-3:     #83807B;
 
   /* ── Accent & status ── */
   --ds-accent:     #1D9E75;
-  --ds-accent-dim: #d0f0e4;
-  --ds-green:      #4ade80;
-  --ds-red:        #f87171;
-  --ds-amber:      #E8B85B;
+  /* The accent as TEXT: same hue, 4.56:1. --ds-accent itself is 2.59:1 on
+     raised, which is fine for a fill, a ring or a border and unreadable as
+     words — and it was being used for words in about fifteen places. */
+  --ds-accent-text: #147154;
+  --ds-accent-dim: #D0F0E4;
+  --ds-green:      #2A8331;
+  --ds-red:        #C0392B;
+  --ds-amber:      #8A6410;
 
   /* Status tints — used by result rows / summary cards */
   --ds-green-bg:   #dcfce7;
@@ -65,6 +85,7 @@
   --ds-fs-xl:      15px;
 
   /* ── Geometry ── */
+  --ds-radius-xs:  4px;
   --ds-radius-sm:  6px;
   --ds-radius-md:  8px;
   --ds-radius-lg:  12px;
@@ -78,6 +99,16 @@
 
   --ds-btn-padding: 6px 12px;
   --ds-transition:  0.15s ease;
+
+  /* ── Motion ──
+     One named keyframe was being played at 0.22s, 0.18s and 0.16s from three
+     different call sites, and four separate overshoot curves were in use. Bind
+     to these instead of typing a duration. */
+  --ds-motion-hover: 0.15s;
+  --ds-motion-enter: 0.18s;
+  --ds-motion-exit:  0.12s;
+  --ds-ease-standard:  cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-ease-overshoot: cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 
 [data-theme='dark'] {
@@ -85,14 +116,19 @@
   --ds-surface:    #201F1C;
   --ds-raised:     #262522;
   --ds-border:     #2E2D29;
+  --ds-border-dim: #252420;
   --ds-canvas-bg:  #141412;
 
   --ds-text:       #E8E6E1;
   --ds-text-2:     #9A9790;
-  --ds-text-3:     #5A5955;
+  --ds-text-3:     #706E6A;   /* 3.01:1 — see the light-theme note above */
 
   --ds-accent:     #5B5FE8;
-  --ds-accent-dim: #1e2057;
+  --ds-accent-text: #7D81ED;  /* 4.55:1 */
+  --ds-accent-dim: #1E2057;
+  --ds-green:      #4ADE80;
+  --ds-red:        #F87171;
+  --ds-amber:      #E8B85B;
 
   --ds-green-bg:   #0d2a1a;
   --ds-amber-bg:   #2a1f0d;
@@ -131,11 +167,49 @@ h1, h2, h3, h4 {
    both themes.
 
    :focus-visible rather than :focus, so a mouse click doesn't leave a ring
-   behind but a Tab press does. */
+   behind but a Tab press does.
+
+   !important, AND THAT IS THE WHOLE POINT OF THIS PARAGRAPH.
+
+   Thirty-four elements across twenty-one files set `outline: 'none'` in an
+   inline style object, and an inline style always beats a stylesheet rule —
+   so those controls silently opted out of the ring above. Only five of them
+   put anything in its place. The worst were the three <select>s, which kept a
+   static border and nothing else, and the Kanban inputs, which are
+   `border: none` AND `outline: none` on a transparent background: tab through
+   a board and there was no feedback at all.
+
+   Fixing thirty-four call sites by hand would work until the thirty-fifth.
+   An !important declaration in the stylesheet is the one thing that beats an
+   inline style, so the ring is now guaranteed rather than merely offered.
+
+   The exceptions below are real ones: surfaces that already draw their own
+   focus affordance and would otherwise show two. */
+/* ── Placeholders ─────────────────────────────────────────────────────────
+   The app had no ::placeholder rule at all, so every empty field fell back to
+   the browser's default — roughly 54% of the text colour, which is a different
+   grey in every engine and answers to nothing in the token file. A hint the
+   user is meant to read should be a decision, not a UA stylesheet default.
+
+   --ds-text-3 (3.01:1) rather than --ds-text-2: a placeholder that is as
+   strong as real content makes an empty field look filled in. */
+/* Surfaces that draw their own focus and would otherwise show two rings:
+   the writing surface (its caret IS the affordance), the sheet's scroll
+   container (the cursor cell is highlighted instead), and the open cell
+   editor (a 2px accent border already). */
+[contenteditable]:focus-visible,
+[data-ds-text]:focus-visible,
+[data-ds-grid-scroll]:focus-visible,
+[data-ds-cell-editor]:focus-visible {
+  outline: none !important;
+}
+
+::placeholder { color: var(--ds-text-3); opacity: 1; }
+
 :focus { outline: none; }
 
 :focus-visible {
-  outline: 2px solid var(--ds-accent);
+  outline: 2px solid var(--ds-accent) !important;
   outline-offset: 2px;
   border-radius: var(--ds-radius-sm);
 }
@@ -445,9 +519,46 @@ html, body, button, input, textarea, select {
   animation: dsTeleportArrive 0.62s cubic-bezier(0.34, 1.56, 0.64, 1);
   border-radius: 10px;
 }
+/* ── The contextual rails ─────────────────────────────────────────────────
+   @keyframes dsRailIn was declared SIX TIMES, once inside each rail component's
+   own <style> element — and the prefers-reduced-motion guard for it lived in
+   exactly one of them, TextBlockToolbar, which is unmounted whenever a non-text
+   block is selected. So the guard applied only in the case where it was not
+   needed, and the other five rails slid in regardless.
+
+   One declaration, one guard, both here. */
+@keyframes dsRailIn {
+  from { opacity: 0; transform: translateY(-50%) translateX(8px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────
+   Everything that moves on its own, in one place.
+
+   `reduceMotion` also exists as a stored preference (lib/prefs.js) that was
+   migrated, defaulted and read by nothing — shouldReduceMotion() had zero
+   importers and Settings exposed no toggle. It is now honoured: providers.js
+   stamps data-reduce-motion on <html>, so the setting and the OS preference
+   reach the same rules. A setting that does nothing is worse than no setting. */
 @media (prefers-reduced-motion: reduce) {
   [data-ds-arrived='true'] { animation: none; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-island-rail],
+  [data-ds-toast],
+  [data-ds-dialog],
+  [data-ds-scrim],
+  .fadein { animation: none !important; }
+  * { transition-duration: 0.01ms !important; }
+}
+
+:root[data-reduce-motion='true'] [data-island-rail],
+:root[data-reduce-motion='true'] [data-ds-toast],
+:root[data-reduce-motion='true'] [data-ds-dialog],
+:root[data-reduce-motion='true'] [data-ds-scrim],
+:root[data-reduce-motion='true'] .fadein { animation: none !important; }
+:root[data-reduce-motion='true'] * { transition-duration: 0.01ms !important; }
 
 /* Toasts and dialogs. Both enter with a slight overshoot — the same curve the
    contextual rails use, so new chrome arrives the same way everywhere. */
@@ -460,3 +571,34 @@ html, body, button, input, textarea, select {
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 @keyframes dsScrimIn { from { opacity: 0 } to { opacity: 1 } }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Viewport lock — declarative half
+   ══════════════════════════════════════════════════════════════════════
+   The JS half lives in lib/viewportlock.js and cancels browser zoom. This
+   half handles the gesture JS cannot reach.
+
+   `overscroll-behavior: none` refuses history navigation. A two-finger
+   horizontal swipe on a trackpad is a back/forward gesture in Chrome, and
+   it is decided BEFORE any wheel listener runs — preventDefault() in JS is
+   too late by definition. The only way to decline it is here. This is the
+   whole reason a left-swipe over the canvas could throw you onto the
+   previous page mid-pan; Miro sets the same property.
+
+   It is set on html AND body: the propagation rule that lifts a value from
+   body to the viewport only applies when html's own value is `auto`, and
+   relying on that quirk is how this ends up silently off again later.
+
+   `touch-action: none` hands pinch and drag on the canvas to our own
+   pointer handlers rather than the browser's. Deliberately scoped to the
+   canvas — setting it globally would kill ordinary touch scrolling in the
+   sidebar, the rails and every panel.
+   ══════════════════════════════════════════════════════════════════════ */
+html, body {
+  overscroll-behavior: none;
+}
+
+[data-ds-canvas] {
+  overscroll-behavior: none;
+  touch-action: none;
+}

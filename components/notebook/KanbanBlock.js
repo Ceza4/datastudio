@@ -1,13 +1,31 @@
 'use client'
 import Icon from '../ui/Icon'
 import { useToast } from '../ui/Toast'
-import { useState } from 'react'
+import { useState, memo } from 'react'
 
-const CARD_COLORS = ['#5B5FE8', '#4ade80', '#E8B85B', '#f87171', '#a78bfa', '#38bdf8', '#fb923c']
+/* The shared swatch set. This was a fourth private palette — one of four
+   arrays doing the same job with eleven values between them and nothing in
+   common — and its first entry was the DARK accent, so a card created in light
+   mode came up indigo on a green-accented canvas. */
+import { SWATCHES } from '../../lib/theme'
+const CARD_COLORS = SWATCHES.map(s => s.value)
+
+/** Every id in the app is `prefix_time_random`; these two were `prefix_time`. */
+const newLocalId = prefix => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`
 
 /* Kanban-style block with draggable cards across draggable lanes.
    Used inside notebook blocks of type 'kanban'. */
-export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editingRef }) {
+
+/* memo, because this component is a child of NotebookCanvas and NotebookCanvas
+   re-renders on every frame of a pan or a zoom. Without it, dragging the canvas
+   re-rendered every block on screen sixty times a second; with it, React bails
+   out at this boundary and the frame costs nothing but the transform.
+
+   A plain shallow compare is enough because every prop it receives is stable by
+   construction: `colors` is one of two frozen module objects (lib/theme.js),
+   handlers are cached per block id by blockCb() in NotebookCanvas, and `block`
+   only changes identity when the block actually changes. */
+function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
   /* A board with no `lanes` is not supposed to exist — the registry always
      creates three. But "not supposed to" is exactly the data that reaches you
      from an older build, a partial write or a hand-edited export, and reading
@@ -26,7 +44,12 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
   function addCard(laneId) {
     const title = (newCardTitle[laneId] || '').trim()
     if (!title) return
-    const card = { id: `card_${Date.now()}`, title, tag: '', color: CARD_COLORS[0] }
+    /* Salted, like every other id generator in the app. Date.now() alone has
+       millisecond resolution, so two cards created in the same tick — a paste,
+       a template instantiation, a fast double-click — shared an id. That is
+       also a React key collision, which means the wrong card gets edited or
+       deleted rather than merely looking odd. */
+    const card = { id: newLocalId('card'), title, tag: '', color: CARD_COLORS[0] }
     onUpdateBlock(block.id, {
       lanes: lanes.map(l => l.id === laneId ? { ...l, cards: [...l.cards, card] } : l)
     })
@@ -312,7 +335,7 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
         onClick={e => {
           e.stopPropagation()
           onUpdateBlock(block.id, {
-            lanes: [...lanes, { id: `lane_${Date.now()}`, name: `Lane ${lanes.length + 1}`, cards: [] }]
+            lanes: [...lanes, { id: newLocalId('lane'), name: `Lane ${lanes.length + 1}`, cards: [] }]
           })
         }}
         onMouseDown={e => e.stopPropagation()}
@@ -346,3 +369,5 @@ export default function KanbanBlock({ block, onUpdateBlock, colors, dark, editin
     </div>
   )
 }
+
+export default memo(KanbanBlockInner)

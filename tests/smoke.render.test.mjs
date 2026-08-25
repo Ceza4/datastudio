@@ -514,5 +514,160 @@ console.log('\n builder')
      'and does not claim you have no templates before it has looked')
 }
 
+
+/* ── shapes ───────────────────────────────────────────────────────────── */
+{
+  console.log('\n shapes')
+  const { default: ShapeLayer } = await import('../components/notebook/ShapeLayer.js')
+  const { createShape } = await import('../lib/shapes.js')
+
+  const all = ['line', 'arrow', 'rect', 'ellipse', 'triangle', 'diamond']
+    .map((k, i) => createShape(k, { id: 's' + i, x: i * 40, y: 20, w: 60, h: 45, rot: i * 11 }))
+  /* Ink is built from points rather than a box, so it cannot come from the
+     same map — and it is the kind most likely to be forgotten by a change to
+     shapePath, because it is the only one whose path is not derived from
+     x/y/w/h alone. */
+  all.push(createShape('ink', {
+    id: 'ink1', color: '#f00', size: 3,
+    points: [{ x: 10, y: 10 }, { x: 40, y: 60 }, { x: 90, y: 20 }],
+  }))
+  all.push(createShape('ink', {
+    id: 'ink2', rot: 35,
+    points: [{ x: 200, y: 10 }, { x: 240, y: 60 }],
+  }))
+
+  const base = {
+    zoom: 1, accent: COLORS.accent, surface: COLORS.surface, stroke: COLORS.text2,
+    live: null, soleSelected: null, onHandleDown: () => {},
+  }
+
+  /* Every kind in one pass. A kind added to SHAPE_KINDS without a branch in
+     shapePath() renders as an empty path rather than throwing, so this is a
+     smoke test in the literal sense — but a kind added without a branch in
+     arrowHead() or shapeTransform() DOES throw, and that is the common way to
+     half-add one. */
+  check('ShapeLayer — every kind at once', () =>
+    render(ShapeLayer, { ...base, shapes: all, selectedIds: new Set() }))
+
+  check('ShapeLayer — empty sheet', () =>
+    render(ShapeLayer, { ...base, shapes: [], selectedIds: new Set() }))
+
+  /* The two handle layouts are different components' worth of branching: a
+     boxed shape gets eight handles plus a rotate arm, a linear one gets two
+     endpoints and no rotation, because an arrow's angle already lives in its
+     endpoints and offering to rotate it would store the angle twice. */
+  const boxed = all.find(x => x.kind === 'rect')
+  const linear = all.find(x => x.kind === 'arrow')
+  check('ShapeLayer — handles on a boxed shape', () =>
+    render(ShapeLayer, { ...base, shapes: all, selectedIds: new Set([boxed.id]), soleSelected: boxed }))
+  check('ShapeLayer — handles on a linear shape', () =>
+    render(ShapeLayer, { ...base, shapes: all, selectedIds: new Set([linear.id]), soleSelected: linear }))
+
+  /* A gesture in flight. `live` is a Map keyed by id; passing the wrong shape
+     of thing here is the kind of mistake that renders fine and then silently
+     stops previewing the drag. */
+  check('ShapeLayer — mid-drag, live overrides', () =>
+    render(ShapeLayer, {
+      ...base, shapes: all, selectedIds: new Set([boxed.id]), soleSelected: boxed,
+      live: new Map([[boxed.id, { ...boxed, x: 400, y: 400 }]]),
+    }))
+
+  /* Zoomed right out. Every chrome dimension is divided by zoom, so a zoom of
+     0 would produce Infinity in a dozen SVG attributes — React renders those
+     without complaint and the browser then drops the whole element. */
+  check('ShapeLayer — at 0.25x zoom', () =>
+    render(ShapeLayer, { ...base, zoom: 0.25, shapes: all, selectedIds: new Set([boxed.id]), soleSelected: boxed }))
+
+  const inked = all.find(x => x.id === 'ink1')
+  check('ShapeLayer — handles on an ink stroke', () =>
+    render(ShapeLayer, { ...base, shapes: all, selectedIds: new Set([inked.id]), soleSelected: inked }))
+
+  const inkMarkup = render(ShapeLayer, { ...base, shapes: [inked], selectedIds: new Set() })
+  ok(inkMarkup.includes('Q'),
+     'a stroke renders as a smoothed path, not a faceted polyline')
+  ok(inkMarkup.includes('stroke="#f00"') && inkMarkup.includes('fill="none"'),
+     'in its own colour, and never filled — a stroke has no interior')
+
+  const markup = render(ShapeLayer, { ...base, shapes: all, selectedIds: new Set([boxed.id]), soleSelected: boxed })
+  ok(markup.includes('pointer-events:none') || markup.includes('pointerEvents'),
+     'the layer refuses pointer events — hit testing is done in JS, or a diagonal arrow gets its bounding box as a hit area')
+  ok((markup.match(/<rect/g) || []).length >= 8, 'a boxed selection draws its eight resize handles')
+}
+
+/* ── the canvas itself ────────────────────────────────────────────────── */
+{
+  console.log('\n notebook canvas')
+  /* THE FILE THIS SUITE WAS WRITTEN FOR, AND IT WAS NOT IN IT.
+
+     A const declared thirty lines above the useState that creates it
+     shipped and took the whole app down on mount: "Cannot access
+     'snapEnabled' before initialization". Every unit test passed, the
+     module imported fine, all three static guards were green — because a
+     temporal dead zone only fires when the component BODY RUNS, and
+     nothing here ran it.
+
+     check:hooks does not catch this shape either: that guard inspects
+     dependency arrays, and this was a plain const in the body.
+
+     react-dom/server runs the body. That is the entire point of this file,
+     and the largest component in the app was the one thing it did not
+     cover. */
+  const { default: NotebookCanvas } = await import('../components/notebook/NotebookCanvas.js')
+
+  const noop = () => {}
+  const sheet = { id: 's1', name: 'Sheet 1', blocks: [], shapes: [], drawings: [] }
+  const nb = { id: 'nb1', name: 'Project', sheets: [sheet], activeSheetId: 's1' }
+  const props = {
+    nb, dark: true, colors: COLORS,
+    prefs: { gridAlways: false, gridSize: 32, snapDefault: false },
+    notebooks: [nb], onTeleport: noop, revealRequest: null, onRevealHandled: noop,
+    onAddBlock: noop, onUpdateBlock: noop, onDeleteBlock: noop, onDeleteBlocks: noop,
+    onRenameNotebook: noop, onRenameSheet: noop, onDropColumn: noop, onDropFiles: noop,
+    onAddShape: noop, onUpdateShape: noop, onDeleteShapes: noop, onOpenCrosscheck: noop,
+    onRemoveTableColumn: noop, onAddConnection: noop, onDeleteConnection: noop,
+    onUpdateConnection: noop, onAddDrawing: noop, onDeleteDrawing: noop,
+    onClearDrawings: noop, onPickImage: noop,
+  }
+
+  check('NotebookCanvas — an empty sheet', () => render(NotebookCanvas, props))
+
+  /* With content, because a body that survives the empty case can still
+     throw on the first block it has to lay out. */
+  const populated = {
+    ...nb,
+    sheets: [{
+      ...sheet,
+      blocks: [
+        { id: 'b1', type: 'text', x: 20, y: 20, w: 280, name: '', content: '<p>hi</p>' },
+        { id: 'b3', type: 'task', x: 20, y: 300, name: '', title: 'Do it', notes: '' },
+      ],
+      shapes: [
+        { id: 'sh1', kind: 'rect', x: 500, y: 300, w: 80, h: 60, rot: 0, color: null, size: 2, fill: null },
+        { id: 'sh2', kind: 'ink', x: 600, y: 300, w: 50, h: 40, rot: 0, color: null, size: 2, fill: null,
+          points: [{ x: 0, y: 0 }, { x: 0.5, y: 1 }, { x: 1, y: 0 }] },
+      ],
+    }],
+  }
+  check('NotebookCanvas — blocks and shapes on it', () =>
+    render(NotebookCanvas, { ...props, nb: populated, notebooks: [populated] }))
+
+  /* Every pref combination that changes what the body computes. gridOn is
+     derived from two of them, and it is exactly what broke. */
+  for (const pr of [
+    { gridAlways: true, gridSize: 16, snapDefault: true },
+    { gridAlways: true, gridSize: 64, snapDefault: false },
+    { gridAlways: false, gridSize: 32, snapDefault: true },
+  ]) {
+    check('NotebookCanvas — prefs ' + JSON.stringify(pr), () =>
+      render(NotebookCanvas, { ...props, prefs: pr }))
+  }
+
+  /* No prefs at all. Every one is read with ?? so the component is supposed
+     to survive this; nothing proved it until now. */
+  check('NotebookCanvas — no prefs object', () => render(NotebookCanvas, { ...props, prefs: undefined }))
+  check('NotebookCanvas — a notebook with no sheets', () =>
+    render(NotebookCanvas, { ...props, nb: { id: 'x', name: 'x', sheets: [] } }))
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

@@ -17,6 +17,7 @@ import Icon from '../ui/Icon'
   -------------------------------------------------------------------------- */
 
 import { parseDate } from '../../lib/tasks'
+import { Z } from '../../lib/theme'
 
 /**
  * Columns that look like dates.
@@ -87,7 +88,7 @@ export default function CalendarToolbar({ block, blocks, dark, colors, onUpdateB
       data-kbd-zone
       style={{
         position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
-        zIndex: 96, width: 178,
+        zIndex: Z.rail, width: 178,
         display: 'flex', flexDirection: 'column', gap: 3, padding: 8,
         maxHeight: 'calc(100% - 120px)', overflowY: 'auto',
         background: `${surface}dd`,
@@ -97,12 +98,6 @@ export default function CalendarToolbar({ block, blocks, dark, colors, onUpdateB
         fontFamily: 'var(--ds-font-body)',
         animation: 'dsRailIn 0.18s cubic-bezier(.34,1.3,.64,1)',
       }}>
-      <style>{`
-        @keyframes dsRailIn {
-          from { opacity: 0; transform: translateY(-50%) translateX(8px); }
-          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
-        }
-      `}</style>
 
       <div style={{
         fontSize: 'var(--ds-fs-xs)', fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
@@ -144,7 +139,7 @@ export default function CalendarToolbar({ block, blocks, dark, colors, onUpdateB
       </button>
 
       {tables.length === 0 && (
-        <div style={{ fontSize: 'var(--ds-fs-xs)', color: text3, lineHeight: 1.55, padding: '7px 3px 3px' }}>
+        <div style={{ fontSize: 'var(--ds-fs-xs)', color: text2, lineHeight: 1.55, padding: '7px 3px 3px' }}>
           No tables on this sheet yet. Import a spreadsheet with a date column
           and it can feed this calendar.
         </div>
@@ -167,7 +162,7 @@ export default function CalendarToolbar({ block, blocks, dark, colors, onUpdateB
               </span>
             </Label>
             {cols.length === 0 ? (
-              <div style={{ fontSize: 'var(--ds-fs-xs)', color: text3, padding: '0 3px', lineHeight: 1.5 }}>
+              <div style={{ fontSize: 'var(--ds-fs-xs)', color: text2, padding: '0 3px', lineHeight: 1.5 }}>
                 No date column found.
               </div>
             ) : (
@@ -198,7 +193,7 @@ export default function CalendarToolbar({ block, blocks, dark, colors, onUpdateB
 
       <div style={{
         marginTop: 10, paddingTop: 8, borderTop: `1px solid ${border}`,
-        fontSize: 'var(--ds-fs-xs)', lineHeight: 1.55, color: text3, display: 'flex', gap: 6,
+        fontSize: 'var(--ds-fs-xs)', lineHeight: 1.55, color: text2, display: 'flex', gap: 6,
       }}>
         <Icon name="status-info" size={12} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>Click any event to jump to where its information lives.</span>

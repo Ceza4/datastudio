@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo } from 'react'
 import Icon from '../ui/Icon'
 import {
   PRIORITY_COLOR, PRIORITY_LABEL, STATUS_LABEL, DEADLINE_COLOR,
@@ -38,8 +38,18 @@ const DOT = 7
 const GAP = 8
 const INDENT = BOX + GAP + DOT + GAP
 
-export default function TaskBlock({ block, blocks, connections, colors, dark, onUpdateBlock, isSelected, onTeleport }) {
-  const { surface, raised, border, text, text2, text3, accent, accentDim, green } = colors
+
+/* memo, because this component is a child of NotebookCanvas and NotebookCanvas
+   re-renders on every frame of a pan or a zoom. Without it, dragging the canvas
+   re-rendered every block on screen sixty times a second; with it, React bails
+   out at this boundary and the frame costs nothing but the transform.
+
+   A plain shallow compare is enough because every prop it receives is stable by
+   construction: `colors` is one of two frozen module objects (lib/theme.js),
+   handlers are cached per block id by blockCb() in NotebookCanvas, and `block`
+   only changes identity when the block actually changes. */
+function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBlock, isSelected, onTeleport }) {
+  const { surface, raised, border, text, text2, text3, accent, accentText, accentDim, green } = colors
   const [editingTitle, setEditingTitle] = useState(false)
 
   /* `deadlineState` is computed at render, and nothing re-renders a task at
@@ -206,7 +216,7 @@ export default function TaskBlock({ block, blocks, connections, colors, dark, on
             fontSize: 'var(--ds-fs-xs)', fontFamily: 'var(--ds-font-body)',
             fontWeight: 600, letterSpacing: 0.2,
             padding: '2px 7px', borderRadius: 'var(--ds-radius-sm)', lineHeight: 1.5,
-            color: accent, background: accentDim,
+            color: accentText, background: accentDim,
           }}>
             {STATUS_LABEL.doing}
           </span>
@@ -311,3 +321,5 @@ export default function TaskBlock({ block, blocks, connections, colors, dark, on
     </div>
   )
 }
+
+export default memo(TaskBlockInner)

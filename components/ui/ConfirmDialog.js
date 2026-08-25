@@ -2,6 +2,7 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from './Icon'
+import { Z } from '../../lib/theme'
 
 /*
   components/ui/ConfirmDialog.js
@@ -101,7 +102,7 @@ export default function ConfirmDialog({ open, title, body, tone = 'normal', acti
       data-ds-dialog-scrim
       onPointerDown={e => { if (e.target === e.currentTarget) onResolve(null) }}
       style={{
-        position: 'fixed', inset: 0, zIndex: 100001,
+        position: 'fixed', inset: 0, zIndex: Z.dialog,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: 'var(--ds-space-5)',
         /* Deliberately not pure black: the canvas keeps its warmth through the

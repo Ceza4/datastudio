@@ -128,7 +128,7 @@ export default class BlockErrorBoundary extends Component {
           {message}
         </div>
 
-        <div style={{ fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.45 }}>
+        <div style={{ fontSize: 10.5, color: 'var(--ds-text-2)', lineHeight: 1.45 }}>
           Your data is still saved.
         </div>
 

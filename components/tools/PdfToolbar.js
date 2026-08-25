@@ -1,5 +1,6 @@
 'use client'
 import Icon from '../ui/Icon'
+import { Z } from '../../lib/theme'
 
 /*
   components/tools/PdfToolbar.js
@@ -52,7 +53,7 @@ export default function PdfToolbar({ block, dark, colors, tool = 'select', onToo
       data-kbd-zone
       style={{
         position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
-        zIndex: 96, width: 152,
+        zIndex: Z.rail, width: 152,
         display: 'flex', flexDirection: 'column', gap: 3, padding: 8,
         maxHeight: 'calc(100% - 120px)', overflowY: 'auto',
         background: `${surface}dd`,
@@ -62,12 +63,6 @@ export default function PdfToolbar({ block, dark, colors, tool = 'select', onToo
         fontFamily: 'var(--ds-font-body)',
         animation: 'dsRailIn 0.18s cubic-bezier(.34,1.3,.64,1)',
       }}>
-      <style>{`
-        @keyframes dsRailIn {
-          from { opacity: 0; transform: translateY(-50%) translateX(8px); }
-          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
-        }
-      `}</style>
 
       <div title={block.name || 'PDF'} style={{
         fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',

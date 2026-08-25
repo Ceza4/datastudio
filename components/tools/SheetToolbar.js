@@ -1,5 +1,6 @@
 'use client'
 import Icon from '../ui/Icon'
+import { Z } from '../../lib/theme'
 
 /* SheetToolbar
    --------------------------------------------------------------------------
@@ -57,7 +58,7 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
         right: 16,
         top: '50%',
         transform: 'translateY(-50%)',
-        zIndex: 96,
+        zIndex: Z.rail,
         width: 146,
         display: 'flex', flexDirection: 'column', gap: 3,
         padding: 8,
@@ -69,12 +70,6 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
         fontFamily: 'var(--ds-font-body)',
         animation: 'dsRailIn 0.18s cubic-bezier(.34,1.3,.64,1)',
       }}>
-      <style>{`
-        @keyframes dsRailIn {
-          from { opacity: 0; transform: translateY(-50%) translateX(8px); }
-          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
-        }
-      `}</style>
 
       <div title={block.name || 'Sheet'} style={{
         fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',

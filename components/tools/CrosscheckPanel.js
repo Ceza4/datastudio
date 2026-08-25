@@ -2,6 +2,7 @@
 import Icon from '../ui/Icon'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import SendToSheet from './SendToSheet'
+import { Z } from '../../lib/theme'
 
 /* CrosscheckPanel
    --------------------------------------------------------------------------
@@ -225,7 +226,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
     top: pos.y,
     width: 420,
     maxHeight: 'calc(100vh - 120px)',
-    zIndex: 9000,
+    zIndex: Z.panel,
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
@@ -294,7 +295,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
               <div style={{
                 padding: 16, borderRadius: 'var(--ds-radius-md)',
                 border: '1px dashed var(--ds-border)', textAlign: 'center',
-                fontSize: 'var(--ds-fs-md)', color: 'var(--ds-text-3)', lineHeight: 1.7,
+                fontSize: 'var(--ds-fs-md)', color: 'var(--ds-text-2)', lineHeight: 1.7,
               }}>
                 No table columns yet.<br />Drag a column from the sidebar onto the notebook first.
               </div>
@@ -585,7 +586,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                 To column
               </button>
             )}
-            <button onClick={addToNotebook} className="ds-btn ds-btn-primary"><Icon name="action-check" size={13} /> Add to notebook</button>
+            <button onClick={addToNotebook} className="ds-btn ds-btn-primary"><Icon name="action-check" size={13} /> Add to project</button>
           </>
         )}
       </div>
@@ -608,7 +609,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
               <option value="status">Status (matched / maybe / unmatched)</option>
               <option value="source">Your original value</option>
             </select>
-            <div style={{ fontSize: 10, color: 'var(--ds-text-3)', marginTop: 5, lineHeight: 1.45 }}>
+            <div style={{ fontSize: 10, color: 'var(--ds-text-2)', marginTop: 5, lineHeight: 1.45 }}>
               Rows follow the same order as the results above
               {matchedOnly ? ' — currently filtered to matches only.' : '.'}
             </div>

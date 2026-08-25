@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 import { useTheme } from '../providers'
+import { makeColors } from '../../lib/theme'
+import { signUp, AUTH, MIN_PASSWORD, isSupabaseConfigured } from '../../lib/auth'
 
 export default function Signup() {
   const { dark, setDark } = useTheme()
@@ -10,22 +12,36 @@ export default function Signup() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const t = {
-    base:      dark ? '#1A1917' : '#F5F3EE',
-    surface:   dark ? '#201F1C' : '#EDEAE3',
-    raised:    dark ? '#262522' : '#E4E1D8',
-    border:    dark ? '#2E2D29' : '#D5D1C7',
-    text:      dark ? '#E8E6E1' : '#1A1917',
-    text2:     dark ? '#9A9790' : '#6B6860',
-    text3:     dark ? '#5A5955' : '#A09D97',
-    accent:    dark ? '#5B5FE8' : '#1D9E75',
-    accentDim: dark ? '#2a2d6e' : '#E1F5EE',
-  }
+  /* The app's palette. accentDim was '#2a2d6e' / '#E1F5EE' here — values that
+     exist in no token file — so sign-up rendered a slightly different product
+     than the app it signs you into. */
+  const t = makeColors(dark)
 
-  const handleSignup = (e) => {
+  const [notice, setNotice] = useState(null)
+  const [done, setDone] = useState(null)
+
+  /* Was a setTimeout that did nothing for 1500ms and then stopped — a form
+     that convincingly pretends to create an account is worse than one that
+     visibly does not, because nobody files a bug against it. */
+  const handleSignup = async (e) => {
     e.preventDefault()
+    if (loading) return
+    setNotice(null)
     setLoading(true)
-    setTimeout(() => setLoading(false), 1500)
+    const res = await signUp(email, password)
+    setLoading(false)
+
+    if (res.status === AUTH.OK) { window.location.href = '/app'; return }
+    /* Email confirmation ON: the account EXISTS but there is no session yet.
+       Sending someone to /app here shows a signed-in screen they are not
+       signed in to; showing an error hides that it worked. It gets its own
+       screen. */
+    if (res.status === AUTH.CONFIRM_EMAIL) { setDone(res.message); return }
+    setNotice({
+      tone: res.status === AUTH.UNCONFIGURED ? 'info' : 'error',
+      message: res.message,
+      field: res.field || null,
+    })
   }
 
   const inputStyle = {
@@ -34,6 +50,27 @@ export default function Signup() {
     borderRadius:'8px', fontSize:'14px', color:t.text,
     outline:'none', fontFamily:'var(--ds-font-body)',
     boxSizing:'border-box'
+  }
+
+  /* The confirmation screen. A separate return rather than a banner over the
+     form, because the form is now finished and leaving it there invites
+     someone to submit it again and meet "user already registered" — an error
+     caused entirely by the interface not having moved on. */
+  if (done) {
+    return (
+      <div style={{minHeight:'100vh', background:t.base, display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'var(--ds-font-body)', padding:'24px'}}>
+        <div style={{maxWidth:'380px', textAlign:'center'}}>
+          <div style={{width:'44px', height:'44px', borderRadius:'50%', background:t.accentDim, color:t.accent, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px', fontSize:'20px'}}>&#9993;</div>
+          <h1 style={{fontFamily:'var(--ds-font-head)', fontSize:'19px', fontWeight:700, color:t.text, marginBottom:'8px'}}>Check your email</h1>
+          <p style={{fontSize:'13px', color:t.text2, lineHeight:1.6, marginBottom:'20px'}}>{done}</p>
+          <p style={{fontSize:'12px', color:t.text2, lineHeight:1.6}}>
+            You don&#39;t have to wait for it —{' '}
+            <a href="/app" style={{color:t.accent, textDecoration:'none', fontWeight:500}}>start working now</a>
+            {' '}and your account will pick it up when you sign in.
+          </p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -111,6 +148,16 @@ export default function Signup() {
             />
           </div>
 
+          {notice && (
+            <div role={notice.tone === 'error' ? 'alert' : 'status'} style={{
+              marginBottom:'16px', padding:'10px 12px', borderRadius:'8px',
+              fontSize:'12.5px', lineHeight:1.5,
+              background: notice.tone === 'error' ? 'rgba(248,113,113,0.12)' : t.raised,
+              border:`1px solid ${notice.tone === 'error' ? '#f87171' : t.border}`,
+              color: notice.tone === 'error' ? '#f87171' : t.text2,
+            }}>{notice.message}</div>
+          )}
+
           {/* PASSWORD */}
           <div style={{marginBottom:'8px'}}>
             <label style={{display:'block', fontSize:'12px', fontWeight:500, color:t.text2, marginBottom:'6px'}}>Password</label>
@@ -118,7 +165,7 @@ export default function Signup() {
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
-              placeholder="Min. 8 characters"
+              placeholder={`Min. ${MIN_PASSWORD} characters`}
               required
               style={inputStyle}
             />
@@ -126,7 +173,7 @@ export default function Signup() {
 
           {/* PASSWORD HINT */}
           <p style={{fontSize:'11px', color:t.text3, marginBottom:'24px'}}>
-            At least 8 characters — you know the drill.
+            At least {MIN_PASSWORD} characters — you know the drill.
           </p>
 
           {/* SUBMIT */}
@@ -154,8 +201,11 @@ export default function Signup() {
           <div style={{flex:1, height:'1px', background:t.border}}></div>
         </div>
 
-        {/* GOOGLE */}
-        <button style={{
+        {/* GOOGLE — not wired. Left visible and DISABLED rather than removed:
+            the provider is a Supabase dashboard switch, not code, so the day
+            it is turned on this needs one call. */}
+        <button disabled title="Google sign-up is not enabled on this build yet" style={{
+          opacity: 0.45, cursor: 'not-allowed',
           width:'100%', padding:'11px',
           background:'none', border:`1px solid ${t.border}`,
           borderRadius:'8px', fontSize:'14px', color:t.text,
@@ -172,11 +222,18 @@ export default function Signup() {
         </button>
 
         {/* TERMS */}
-        <p style={{textAlign:'center', fontSize:'11px', color:t.text3, marginTop:'20px', lineHeight:1.6}}>
+        <p style={{textAlign:'center', fontSize:'11px', color:t.text2, marginTop:'20px', lineHeight:1.6}}>
           By signing up you agree to our{' '}
           <a href="#" style={{color:t.accent, textDecoration:'none'}}>Terms</a>
           {' '}and{' '}
           <a href="#" style={{color:t.accent, textDecoration:'none'}}>Privacy Policy</a>
+        </p>
+
+        <p style={{textAlign:'center', fontSize:'12px', color:t.text3, marginTop:'18px', lineHeight:1.6}}>
+          {isSupabaseConfigured()
+            ? 'An account is only for syncing across devices. '
+            : 'Accounts aren’t set up on this build. '}
+          <a href="/app" style={{color:t.text2, textDecoration:'underline'}}>Use DataStudio without one</a>
         </p>
 
         {/* LOGIN LINK */}

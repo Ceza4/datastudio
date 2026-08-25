@@ -202,5 +202,40 @@ console.log('\n through blocksToHtml — the real export path')
   ok(th.includes('&lt;u&gt;'), 'table cells are entity-escaped')
 }
 
+console.log('\n entities are not escaped twice')
+{
+  /* THIS FUNCTION RECEIVES HTML, NOT PLAIN TEXT. Its input comes from a
+     contentEditable, which stores a typed "&" as "&amp;". Escaping every
+     ampersand unconditionally therefore escaped the escapes, and every text
+     block containing & < or > exported wrong in HTML, PDF and DOCX. It also
+     compounded, so anything sanitised twice degraded further each time. */
+  const typed = '<p>Q&amp;A &lt;tag&gt; 5&gt;3</p>'
+  ok(sanitizeHtml(typed) === typed,
+     'what a contentEditable stores comes back UNCHANGED — this is the export bug, and it was live')
+  ok(sanitizeHtml(sanitizeHtml(typed)) === sanitizeHtml(typed),
+     'and sanitising is idempotent, so a second pass cannot degrade it further')
+
+  ok(sanitizeHtml('<p>AT&T</p>') === '<p>AT&amp;T</p>',
+     'a bare ampersand with no entity after it is still escaped, exactly as before')
+  ok(sanitizeHtml('<p>&notanentity</p>') === '<p>&amp;notanentity</p>',
+     'and so is one with no closing semicolon — the pattern requires a complete entity')
+
+  ok(sanitizeHtml('<p>&#9745; &#x2611; &nbsp;</p>') === '<p>&#9745; &#x2611; &nbsp;</p>',
+     'decimal, hex and named entities all survive intact')
+
+  /* The safety argument, asserted rather than assumed: leaving an entity
+     alone cannot produce markup, because markup needs a < and that is still
+     escaped unconditionally on every path. */
+  ok(sanitizeHtml('<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>') === '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
+     'an ENCODED script tag stays inert visible text and never becomes a tag')
+  ok(!sanitizeHtml('<script>alert(1)</script>').includes('<script'),
+     'and a real one still dies')
+  ok(!sanitizeHtml('<p onclick="x()">y</p>').includes('onclick'),
+     'event handlers still die')
+
+  ok(sanitizeHtml('<a href="https://x.com/?a=1&amp;b=2">q</a>').includes('a=1&amp;b=2'),
+     'a query string in an href survives — double-escaping it produced a link that 404s')
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 export default { pass, fail }

@@ -2,6 +2,7 @@
 import Icon from '../ui/Icon'
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { Z } from '../../lib/theme'
 
 /* SlashMenu — presentational only.
    --------------------------------------------------------------------------
@@ -111,7 +112,7 @@ export default function SlashMenu({ x, y, filter, activeIdx, colors, onSelect, o
       aria-label="Insert block"
       onMouseDown={e => { e.preventDefault(); e.stopPropagation() }}
       style={{
-        position: 'fixed', left, top, zIndex: 99999,
+        position: 'fixed', left, top, zIndex: Z.popover,
         background: surface, border: `1px solid ${border}`, borderRadius: 10,
         boxShadow: '0 12px 40px rgba(0,0,0,0.28)', padding: 6,
         fontFamily: 'var(--ds-font-body)', width: MENU_W,

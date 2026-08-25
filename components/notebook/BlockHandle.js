@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import Icon from '../ui/Icon'
+import { Z } from '../../lib/theme'
 
 /* Shared fallback for a handle rendered outside the canvas, which has nobody
    to build the index. Frozen because it is handed to every such handle at
@@ -30,7 +31,7 @@ export default function BlockHandle({
   onTeleport,
   onGoToSource,
 }) {
-  const { raised, border, text2, text3, red, accent, accentDim, surface } = colors
+  const { raised, border, text2, text3, red, accent, accentText, accentDim, surface } = colors
   const [showBacklinks, setShowBacklinks] = useState(false)
 
   return (
@@ -51,23 +52,24 @@ export default function BlockHandle({
         userSelect: 'none',
       }}
     >
-      <span
-        style={{
-          fontSize: 9,
-          color: text3,
-          textTransform: 'uppercase',
-          letterSpacing: 1,
-          flexShrink: 0,
-          opacity: 0.6,
-        }}
-      >
-        {label}
-      </span>
+      {/* THE TYPE CHIP IS GONE — the little uppercase TEXT / TABLE / PDF that
+          sat in front of every title.
+
+          It answered a question the block already answers: you can see it is a
+          table, because it is a table. What it cost was the start of the title
+          line on every block forever, so the header read 'TEXT Untitled'
+          instead of 'Untitled' and the block's own name never got to be the
+          first thing you read.
+
+          `label` stays a prop rather than being removed: BlockPicker, the add
+          menu and the keyboard hints all still use it, and the shape of this
+          component should not change for a visual decision. */}
 
       {renaming ? (
         <input
           autoFocus
           value={block.name || ''}
+          placeholder="Untitled"
           onChange={e => onRename(e.target.value)}
           onBlur={onStopRename}
           onKeyDown={e => {
@@ -75,15 +77,21 @@ export default function BlockHandle({
           }}
           onMouseDown={e => e.stopPropagation()}
           onClick={e => e.stopPropagation()}
+          /* Matched to the resting title below, deliberately. A rename field
+             that is a different size from the text it replaces makes the whole
+             header jump the moment you double-click it. */
           style={{
             flex: 1,
             background: 'transparent',
             border: 'none',
             color: text2,
             fontFamily: 'var(--ds-font-body)',
-            fontSize: 11,
+            fontSize: 12.5,
+            fontWeight: 600,
+            letterSpacing: '-0.005em',
             outline: 'none',
             minWidth: 0,
+            padding: 0,
           }}
         />
       ) : (
@@ -92,17 +100,30 @@ export default function BlockHandle({
             e.stopPropagation()
             onStartRename()
           }}
+          /* PROMINENCE FROM SIZE AND WEIGHT, NOT FROM CONTRAST.
+
+             The first attempt at "more popping" reached for the primary text
+             colour, and against the raised header that read as harsh —
+             near-black in light mode, near-white in dark. Secondary grey is
+             back. The title is still comfortably the loudest thing in the
+             header, because it is 12.5/600 with nothing in front of it now,
+             which is where the prominence should have come from in the first
+             place.
+
+             The untitled state stays dimmer AND lighter, so it reads as
+             absence rather than as a name someone chose. */
           style={{
             flex: 1,
             color: block.name ? text2 : text3,
             fontFamily: 'var(--ds-font-body)',
-            fontSize: 11,
+            fontSize: 12.5,
+            fontWeight: block.name ? 600 : 400,
+            letterSpacing: '-0.005em',
             minWidth: 0,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
             cursor: 'text',
-            fontStyle: block.name ? 'normal' : 'italic',
           }}
         >
           {block.name || 'Untitled'}
@@ -159,7 +180,7 @@ export default function BlockHandle({
             <div
               onMouseDown={e => e.stopPropagation()}
               style={{
-                position: 'absolute', top: '100%', right: 0, marginTop: 5, zIndex: 300,
+                position: 'absolute', top: '100%', right: 0, marginTop: 5, zIndex: Z.popover,
                 width: 232, maxHeight: 240, overflowY: 'auto',
                 background: surface, border: `1px solid ${border}`, borderRadius: 9,
                 boxShadow: '0 10px 30px rgba(0,0,0,0.28)', padding: 5,
@@ -193,7 +214,7 @@ export default function BlockHandle({
                   {/* The link's own words, which are usually more useful than
                       the source block's name for remembering why it points here. */}
                   {bl.label && bl.label !== bl.sourceName && (
-                    <span style={{ display: 'block', fontSize: 10, color: accent, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ display: 'block', fontSize: 10, color: accentText, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       “{bl.label}”
                     </span>
                   )}

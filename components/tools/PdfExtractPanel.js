@@ -3,6 +3,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { extractText, extractTable, paragraphsToHtml, summarisePage } from '../../lib/pdfextract'
+import { Z } from '../../lib/theme'
 
 /*
   components/tools/PdfExtractPanel.js
@@ -27,7 +28,7 @@ import { extractText, extractTable, paragraphsToHtml, summarisePage } from '../.
 
 export default function PdfExtractPanel({ items, pageNumber, pdfName, colors, onExtract, onClose }) {
   const [mode, setMode] = useState('auto')       // auto | text | table
-  const { surface, raised, border, text, text2, text3, accent, accentDim, red } = colors
+  const { surface, raised, border, text, text2, text3, accent, accentText, accentDim, red } = colors
 
   const analysis = useMemo(() => {
     const summary = summarisePage(items)
@@ -79,7 +80,7 @@ export default function PdfExtractPanel({ items, pageNumber, pdfName, colors, on
       onMouseDown={e => e.stopPropagation()}
       style={{
         position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-        zIndex: 99999, width: 520, maxHeight: '78vh',
+        zIndex: Z.popover, width: 520, maxHeight: '78vh',
         display: 'flex', flexDirection: 'column',
         background: surface, border: `1px solid ${border}`, borderRadius: 12,
         boxShadow: '0 20px 60px rgba(0,0,0,0.4)', overflow: 'hidden',
@@ -87,7 +88,7 @@ export default function PdfExtractPanel({ items, pageNumber, pdfName, colors, on
       }}>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '11px 14px', borderBottom: `1px solid ${border}` }}>
-        <Icon name="action-send-to-column" size={15} style={{ color: accent }} />
+        <Icon name="action-send-to-column" size={15} style={{ color: accentText }} />
         <span style={{ flex: 1, fontSize: 13, fontWeight: 650, color: text }}>
           Extract from page {pageNumber}
         </span>
@@ -209,7 +210,7 @@ export default function PdfExtractPanel({ items, pageNumber, pdfName, colors, on
 
   return createPortal(
     <>
-      <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: 99998, background: 'rgba(0,0,0,0.25)' }} />
+      <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: Z.modalScrim, background: 'rgba(0,0,0,0.25)' }} />
       {panel}
     </>,
     document.body

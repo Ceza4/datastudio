@@ -76,7 +76,17 @@ function OLD_createBlock(type, x, y, customHeaders, customRows, customW, customH
     : type === 'section'
     ? { id, type: 'section', x, y, w: customW || 500, h: customH || 350, name: 'Section', sectionColor: '#5B5FE8' }
     : type === 'image'
-    ? { id, type: 'image', x, y, w: customW || 360, h: customH || 260, name: 'Image', imageId: null, alt: '', fit: 'contain', rev: 0 }
+    /* DELIBERATE DIVERGENCE, 21 Aug 2026: name was 'Image', now ''.
+       This file pins the PRE-REFACTOR constructors so the registry can be
+       proved to reproduce them, and this line no longer does — on purpose.
+       A block created with its own type as its name puts real text in the
+       title field, so renaming meant deleting the word "Image" first, every
+       time. Blocks are born untitled and the header shows "Untitled" as a
+       placeholder instead.
+       Changing a pinned value is a decision, not a fix. Anything else that
+       fails against this file should be treated as a regression until proven
+       otherwise. */
+    ? { id, type: 'image', x, y, w: customW || 360, h: customH || 260, name: '', imageId: null, alt: '', fit: 'contain', rev: 0 }
     : { id, type: 'table', x, y, w: customW || undefined, name: '',
         headers: customHeaders || [''],
         rows: customRows || Array(8).fill(null).map(() => ['']) }
