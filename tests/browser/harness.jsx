@@ -20,7 +20,7 @@ import {
 } from '../../lib/database'
 import { idbKeys, idbDelete, STORE_TEMPLATES } from '../../lib/idb'
 import { editableRuns, mergeRunsIntoLines } from '../../lib/pdfreplace'
-import { sanitizeHtml } from '../../lib/sanitize'
+import { sanitizeHtml, sanitizeEditorHtml } from '../../lib/sanitize'
 import { makeViewport } from '../../lib/pdfspace'
 
 const colors = {
@@ -54,7 +54,16 @@ function App() {
   /* Exposed so the driver can inject sanitiser output into this live page and
      watch whether anything actually runs. A string assertion says a payload is
      absent; only a browser says it is inert. */
-  useEffect(() => { window.__sanitize = sanitizeHtml }, [])
+  /* BOTH PROFILES. This exposed only sanitizeHtml — the EXPORT profile — so
+     the ten live-execution payloads below proved the safety of the profile
+     users never see. sanitizeEditorHtml is the one that runs on every text
+     block render and every paste, and it is strictly more permissive: it also
+     allows `input`, `data-type`, and `style` on twenty-one elements. The only
+     profile with a real-browser execution proof was the wrong one. */
+  useEffect(() => {
+    window.__sanitize = sanitizeHtml
+    window.__sanitizeEditor = sanitizeEditorHtml
+  }, [])
 
   /* Raw DOM event names, in arrival order. The regression this harness exists
      for is invisible in the React tree and only legible in this sequence. */

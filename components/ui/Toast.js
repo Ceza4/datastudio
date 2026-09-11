@@ -170,7 +170,7 @@ function ToastRow({ toast, onDismiss }) {
         color: 'var(--ds-text)',
         animation: 'dsToastIn 0.22s cubic-bezier(.34,1.2,.64,1)',
       }}>
-      <Icon name={TONE_ICON[toast.tone] || 'status-info'} size={13}
+      <Icon name={TONE_ICON[toast.tone] || 'status-info'} size={14}
         style={{ color: TONE_COLOR[toast.tone] || 'var(--ds-text-2)', flexShrink: 0 }} />
 
       <span style={{ flex: 1, minWidth: 0 }}>{toast.message}</span>
@@ -190,7 +190,7 @@ function ToastRow({ toast, onDismiss }) {
           onClick={e => { e.stopPropagation(); toast.undo(); onDismiss(toast.id) }}
           style={{
             flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer',
-            padding: '3px 7px', borderRadius: 'var(--ds-radius-sm)',
+            padding: '4px 8px', borderRadius: 'var(--ds-radius-sm)',
             /* Mono, because it reads as a control rather than as more prose —
                same reason figures use it everywhere else in the app. */
             fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-sm)',

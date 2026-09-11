@@ -1,16 +1,16 @@
 'use client'
-import { useState, useEffect } from 'react'
-import { getSession, signOut, onAuthChange, isSupabaseConfigured } from '../../lib/auth'
+import { useState } from 'react'
 import Icon from '../ui/Icon'
 import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
-import { GRID_SIZES, shouldReduceMotion } from '../../lib/prefs'
+import { GRID_SIZES, IMAGE_DROP_MODES, shouldReduceMotion } from '../../lib/prefs'
+import { SYNC_OFF, SYNC_SYNCED, SYNC_SYNCING, SYNC_QUEUED, SYNC_ERROR } from '../../lib/sync'
 
 /*
   components/settings/SettingsPanel.js
   --------------------------------------------------------------------------
   Lifted out of app/app/page.js, where it had grown to ~180 lines inline and
   was about to grow further. Sections are declared in a fixed order —
-  Appearance · Canvas · Keyboard · Storage · Account — so adding one never
+  Appearance · Canvas · Keyboard · Storage — so adding one never
   reshuffles the others under someone who has learned where things are.
 
   The panel is a plain presentational component: every value comes in as a
@@ -22,10 +22,45 @@ import { GRID_SIZES, shouldReduceMotion } from '../../lib/prefs'
 const mono = 'var(--ds-font-mono)'
 const body = 'var(--ds-font-body)'
 
+/* The four sync states, as one line under the account email.
+
+   Each carries its own icon and its own remedy, because "error" on its own is
+   a dead end: offline says the work is safe here, over-quota says what to do
+   about it, and a real error shows the message verbatim rather than hiding a
+   gap in the translation list behind "something went wrong" — the same rule
+   lib/auth.js follows for auth errors. */
+function SyncLine({ status }) {
+  const state = status?.state || SYNC_OFF
+  const pending = status?.pending || 0
+
+  const map = {
+    [SYNC_SYNCED]:  { icon: 'sync-synced',  color: 'var(--ds-green)',  text: pending ? `Synced · ${pending} waiting` : 'Synced to your account' },
+    [SYNC_SYNCING]: { icon: 'sync-syncing', color: 'var(--ds-text-2)', text: 'Syncing…' },
+    [SYNC_QUEUED]:  { icon: 'sync-offline', color: 'var(--ds-amber)',  text: pending ? `Waiting to sync · ${pending}` : 'Waiting to sync' },
+    [SYNC_ERROR]:   { icon: 'sync-error',   color: 'var(--ds-red)',    text: 'Sync error' },
+    [SYNC_OFF]:     { icon: 'sync-offline', color: 'var(--ds-text-3)', text: 'Signed in · not syncing yet' },
+  }
+  const v = map[state] || map[SYNC_OFF]
+
+  return (
+    <div style={{ marginTop: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: v.color }}>
+        <Icon name={v.icon} size={12} />
+        <span>{v.text}</span>
+      </div>
+      {status?.message && (
+        <div style={{ fontSize: 11, color: 'var(--ds-text-3)', marginTop: 2, lineHeight: 1.45 }}>
+          {status.message}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SectionLabel({ children }) {
   return (
     <div style={{
-      fontSize: 9, fontFamily: mono, letterSpacing: 0.9, textTransform: 'uppercase',
+      fontSize: 11, fontFamily: mono, letterSpacing: 0.9, textTransform: 'uppercase',
       color: 'var(--ds-text-3)', margin: '0 0 7px',
     }}>
       {children}
@@ -43,8 +78,8 @@ function Toggle({ label, hint, icon, on, onChange }) {
       role="switch"
       aria-checked={on}
       style={{
-        width: '100%', display: 'flex', alignItems: 'center', gap: 9,
-        padding: '8px 9px', marginBottom: 6, borderRadius: 8, cursor: 'pointer',
+        width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+        padding: '8px 10px', marginBottom: 6, borderRadius: 8, cursor: 'pointer',
         border: `1px solid ${on ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
         background: on ? 'var(--ds-accent-dim)' : 'transparent',
         color: on ? 'var(--ds-accent)' : 'var(--ds-text-2)',
@@ -52,9 +87,9 @@ function Toggle({ label, hint, icon, on, onChange }) {
       }}>
       {icon && <Icon name={icon} size={14} />}
       <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: 'block', fontSize: 12 }}>{label}</span>
+        <span style={{ display: 'block', fontSize: 13 }}>{label}</span>
         {hint && (
-          <span style={{ display: 'block', fontSize: 10, color: 'var(--ds-text-3)', marginTop: 2, lineHeight: 1.4 }}>
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--ds-text-3)', marginTop: 2, lineHeight: 1.4 }}>
             {hint}
           </span>
         )}
@@ -81,42 +116,33 @@ export default function SettingsPanel({
   prefs, setPref,
   usage, persisted, formatBytes,
   onDeleteAllData,
-  /* Asks about the local workspace before signing out — see
-     signOutAndMaybeWipe in app/app/page.js for why that question exists. */
-  onSignOut,
+  /* onSignOut moved to components/ui/AccountButton with the rest of the
+     account, and it took its "also wipe this device?" question with it. */
+  /* The live sync state, straight from lib/sync.js. Four states plus off, and
+     "silence" is deliberately not one of them — a sync that quietly stops
+     syncing is the same bug as a save that quietly stops saving, one layer
+     out, and this app has already shipped that one once. */
+  syncStatus,
+  /* The plan decides what is TRUE in this section, not merely what is on
+     offer. On Free the browser is the only copy of the work; on Pro and Max it
+     is a cache in front of one. Those are different sentences, and printing
+     the wrong one turns a storage section into either a false alarm or a false
+     reassurance. */
+  account,
 }) {
   const [showShortcuts, setShowShortcuts] = useState(false)
-  /* undefined = not looked yet, null = signed out. The three states are kept
-     distinct because "we have not checked" and "there is no account" produce
-     very different copy, and collapsing them shows "Sign in to sync" for a
-     frame to somebody who is already signed in. */
-  const [account, setAccount] = useState(undefined)
-  const [signingOut, setSigningOut] = useState(false)
 
-  useEffect(() => {
-    let live = true
-    getSession().then(r => { if (live) setAccount(r.user || null) })
-    /* Also subscribed, not just read once: supabase-js broadcasts across
-       tabs, so signing out in one window has to empty this one too. */
-    const stop = onAuthChange(({ user }) => { if (live) setAccount(user || null) })
-    return () => { live = false; stop() }
-  }, [])
+  /* THE ACCOUNT SECTION LEFT THIS PANEL.
 
-  async function handleSignOut() {
-    if (signingOut) return
-    /* The question comes FIRST, while the user still has a session and a
-       workspace in front of them. Asking after the token is gone would be
-       asking about something they can no longer see. Cancelling leaves them
-       signed in, which is the only sensible reading of "cancel" here. */
-    if (onSignOut) {
-      const proceed = await onSignOut()
-      if (!proceed) return
-    }
-    setSigningOut(true)
-    await signOut()
-    setAccount(null)
-    setSigningOut(false)
-  }
+     It used to read the session itself, render the email, and own the sign-out
+     button. All three now live behind the Account button in the top-right, which is
+     where people look for them — and two places to sign out is one too many,
+     the same argument that moved the theme toggle in here in the first place.
+     This component is purely presentational again: every value arrives as a
+     prop and it makes no network calls of its own.
+
+     What survives is the SYNC line, moved down into Storage, because "where
+     does my work live" is a storage question rather than an identity one. */
 
   return (
     <div
@@ -135,13 +161,13 @@ export default function SettingsPanel({
 
       {/* ── Appearance ─────────────────────────────────────────────── */}
       <SectionLabel>Appearance</SectionLabel>
-      <div style={{ display: 'flex', gap: 5, marginBottom: 14 }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
         {[['Light', false, 'theme-light'], ['Dark', true, 'theme-dark']].map(([lbl, val, ic]) => (
           <button key={lbl} onClick={() => setDark(val)}
             aria-pressed={dark === val}
             style={{
               flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              padding: '8px 0', borderRadius: 8, fontSize: 12, cursor: 'pointer', fontFamily: body,
+              padding: '8px 0', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontFamily: body,
               border: `1.5px solid ${dark === val ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
               background: dark === val ? 'var(--ds-accent-dim)' : 'transparent',
               color: dark === val ? 'var(--ds-accent)' : 'var(--ds-text-2)',
@@ -182,14 +208,14 @@ export default function SettingsPanel({
         onChange={v => setPref('reduceMotion', v)}
       />
 
-      <div style={{ fontSize: 10.5, color: 'var(--ds-text-3)', margin: '10px 0 6px' }}>Grid size</div>
+      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', margin: '10px 0 6px' }}>Grid size</div>
       <div style={{ display: 'flex', gap: 4, marginBottom: 14 }}>
         {GRID_SIZES.map(s => (
           <button key={s} onClick={() => setPref('gridSize', s)}
             aria-pressed={prefs.gridSize === s}
             style={{
               flex: 1, padding: '6px 0', borderRadius: 6, cursor: 'pointer',
-              fontFamily: mono, fontSize: 10.5,
+              fontFamily: mono, fontSize: 11,
               border: `1px solid ${prefs.gridSize === s ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
               background: prefs.gridSize === s ? 'var(--ds-accent-dim)' : 'transparent',
               color: prefs.gridSize === s ? 'var(--ds-accent)' : 'var(--ds-text-2)',
@@ -197,6 +223,31 @@ export default function SettingsPanel({
             {s}
           </button>
         ))}
+      </div>
+
+      {/* A SEGMENTED CONTROL, not a Toggle — matching Grid size above and this
+          file's own rule that a Toggle is for on/off and a segmented control is
+          for one of a few values. "Full or Icon" is the latter, and it is likely
+          to grow a third option (Compact as a drop default) before it shrinks. */}
+      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', margin: '10px 0 6px' }}>New images drop as</div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+        {IMAGE_DROP_MODES.map(m => (
+          <button key={m} onClick={() => setPref('imageDropMode', m)}
+            aria-pressed={prefs.imageDropMode === m}
+            style={{
+              flex: 1, padding: '6px 0', borderRadius: 6, cursor: 'pointer',
+              fontFamily: body, fontSize: 12, textTransform: 'capitalize',
+              border: `1px solid ${prefs.imageDropMode === m ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
+              background: prefs.imageDropMode === m ? 'var(--ds-accent-dim)' : 'transparent',
+              color: prefs.imageDropMode === m ? 'var(--ds-accent)' : 'var(--ds-text-2)',
+            }}>
+            {m}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', lineHeight: 1.5, marginBottom: 14 }}>
+        Hold Shift while dropping to land that one batch as icons, whatever this
+        is set to.
       </div>
 
       {/* ── Keyboard ───────────────────────────────────────────────── */}
@@ -207,32 +258,32 @@ export default function SettingsPanel({
         aria-expanded={showShortcuts}
         style={{
           width: '100%', display: 'flex', alignItems: 'center', gap: 6,
-          padding: '8px 9px', marginBottom: showShortcuts ? 8 : 14,
-          borderRadius: 8, cursor: 'pointer', fontFamily: body, fontSize: 12,
+          padding: '8px 10px', marginBottom: showShortcuts ? 8 : 14,
+          borderRadius: 8, cursor: 'pointer', fontFamily: body, fontSize: 13,
           border: `1px solid ${showShortcuts ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
           background: showShortcuts ? 'var(--ds-accent-dim)' : 'transparent',
           color: showShortcuts ? 'var(--ds-accent)' : 'var(--ds-text-2)',
         }}>
         <span style={{ flex: 1, textAlign: 'left' }}>Shortcuts</span>
         {showShortcuts
-          ? <Icon name="nav-chevron-down" size={11} style={{ opacity: 0.8 }} />
-          : <span style={{ fontSize: 10, fontFamily: mono, opacity: 0.8 }}>?</span>}
+          ? <Icon name="nav-chevron-down" size={12} style={{ opacity: 0.8 }} />
+          : <span style={{ fontSize: 11, fontFamily: mono, opacity: 0.8 }}>?</span>}
       </button>
 
       {showShortcuts && (
         <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 14, paddingRight: 2 }}>
           {SHORTCUT_GROUPS.map(({ title, note, rows }) => (
             <div key={title} style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 9, fontFamily: mono, letterSpacing: 0.7, textTransform: 'uppercase', color: 'var(--ds-text-3)', marginBottom: note ? 2 : 5 }}>{title}</div>
-              {note && <div style={{ fontSize: 10, color: 'var(--ds-text-3)', marginBottom: 5, lineHeight: 1.4 }}>{note}</div>}
+              <div style={{ fontSize: 11, fontFamily: mono, letterSpacing: 0.7, textTransform: 'uppercase', color: 'var(--ds-text-3)', marginBottom: note ? 2 : 5 }}>{title}</div>
+              {note && <div style={{ fontSize: 11, color: 'var(--ds-text-3)', marginBottom: 5, lineHeight: 1.4 }}>{note}</div>}
               {rows.map(([k, d]) => (
                 <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '2px 0' }}>
                   <kbd style={{
-                    fontFamily: mono, fontSize: 9.5, padding: '2px 5px', borderRadius: 4,
+                    fontFamily: mono, fontSize: 11, padding: '2px 6px', borderRadius: 4,
                     border: '1px solid var(--ds-border)', background: 'var(--ds-raised)',
                     color: 'var(--ds-text-2)', flexShrink: 0, whiteSpace: 'nowrap',
                   }}>{k}</kbd>
-                  <span style={{ fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.45 }}>{d}</span>
+                  <span style={{ fontSize: 11, color: 'var(--ds-text-3)', lineHeight: 1.45 }}>{d}</span>
                 </div>
               ))}
             </div>
@@ -242,11 +293,23 @@ export default function SettingsPanel({
 
       {/* ── Storage ────────────────────────────────────────────────── */}
       <SectionLabel>Storage</SectionLabel>
-      <div style={{ fontSize: 11.5, color: 'var(--ds-text-2)', lineHeight: 1.6, marginBottom: 8 }}>
-        Everything is stored in this browser. Nothing is uploaded.
+      {/* WAS: "Everything is stored in this browser. Nothing is uploaded."
+          True when it was written, false the day sync shipped — which makes it
+          the worst kind of copy: a privacy claim the product no longer honours,
+          sitting in the panel somebody opens precisely to check before
+          trusting you with something. The identical claim was in the public
+          landing page's FAQ too ("your files are never uploaded to a server");
+          that page is now the wall in app/page.js and the claim went with it. */}
+      <div style={{ fontSize: 12, color: 'var(--ds-text-2)', lineHeight: 1.6, marginBottom: 8 }}>
+        {account?.cloud
+          ? 'This browser holds a working copy. Your account holds the original.'
+          : 'Everything is stored in this browser and never leaves it.'}
       </div>
+      {account?.cloud && syncStatus && (
+        <div style={{ marginBottom: 10 }}><SyncLine status={syncStatus} /></div>
+      )}
       {usage && (
-        <div style={{ fontSize: 11, color: 'var(--ds-text-2)', display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontFamily: mono }}>
+        <div style={{ fontSize: 12, color: 'var(--ds-text-2)', display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontFamily: mono }}>
           <span>{formatBytes(usage.usage)} used</span>
           <span style={{ color: 'var(--ds-text-3)' }}>of ~{formatBytes(usage.quota)}</span>
         </div>
@@ -256,14 +319,33 @@ export default function SettingsPanel({
           amber warning triangle was doing the alarming, not the words. */}
       <div style={{
         display: 'flex', gap: 6, alignItems: 'flex-start',
-        fontSize: 11, marginBottom: 10, lineHeight: 1.5,
+        fontSize: 12, marginBottom: 10, lineHeight: 1.5,
         color: 'var(--ds-text-3)',
       }}>
-        <Icon name="status-info" size={13} style={{ marginTop: 1 }} />
+        <Icon name="status-info" size={14} style={{ marginTop: 1 }} />
+        {/* THE HONEST VERSION, AND WHY THE LINE IS NOT SIMPLY DELETED.
+
+            Removing it was asked for on the grounds that we need to GUARANTEE
+            the storage. We cannot. navigator.storage.persist() is a request;
+            the browser grants or refuses it on engagement heuristics, and no
+            code we write changes that. Deleting the sentence would not create
+            a guarantee — it would only stop mentioning the risk.
+
+            What actually changed is that the risk stopped mattering, for paid
+            accounts. With a cloud original, eviction costs a re-download and
+            nothing else, so raising it at all would be alarming somebody about
+            a cache. On Free the browser genuinely is the only copy, and that
+            is exactly the person who deserves to be told.
+
+            So the guarantee now comes from the account rather than from the
+            browser, and this text says which of those two worlds the reader is
+            standing in. */}
         <span>
-          {persisted === true && 'This browser has agreed to keep your workspace, so it will not be cleared to reclaim disk space.'}
-          {persisted === false && 'This browser has not guaranteed the storage. Installing the app or bookmarking it usually earns the guarantee; syncing to an account will make it moot.'}
-          {persisted === null && 'This browser does not offer a storage guarantee either way.'}
+          {account?.cloud
+            ? 'Your work is in your account, so clearing this browser clears only a copy — it downloads again next time you sign in.'
+            : persisted === true
+              ? 'This browser has agreed to keep your workspace, so it will not be cleared to reclaim disk space. It is still the only copy — upgrade to keep one in your account.'
+              : 'This browser is the only place your work exists, and browsers can clear storage to reclaim disk space. Export anything you cannot lose, or upgrade to keep a copy in your account.'}
         </span>
       </div>
 
@@ -271,74 +353,15 @@ export default function SettingsPanel({
         style={{
           width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
           padding: '8px 0', borderRadius: 8, border: '1px solid var(--ds-border)',
-          background: 'transparent', color: 'var(--ds-red)', fontSize: 11.5, fontWeight: 600,
+          background: 'transparent', color: 'var(--ds-red)', fontSize: 12, fontWeight: 600,
           cursor: 'pointer', fontFamily: body,
         }}>
-        <Icon name="action-delete" size={13} />
+        <Icon name="action-delete" size={14} />
         Delete all local data
       </button>
 
-      {/* ── Account ────────────────────────────────────────────────── */}
-      <div style={{ marginTop: 16 }}>
-        <SectionLabel>Account</SectionLabel>
-
-        {account === undefined ? (
-          /* Not a spinner. A one-line placeholder of the same height as the
-             answer, so the panel does not jump when the read lands — the read
-             is usually a local token and takes a frame. */
-          <div style={{ padding: '9px 10px', fontSize: 10.5, color: 'var(--ds-text-3)' }}>Checking…</div>
-        ) : account ? (
-          <div style={{
-            display: 'flex', gap: 8, alignItems: 'center',
-            padding: '9px 10px', borderRadius: 8, border: '1px solid var(--ds-border)',
-          }}>
-            <Icon name="auth-account" size={13} style={{ flexShrink: 0, color: 'var(--ds-accent)' }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{
-                fontSize: 11, color: 'var(--ds-text)', fontWeight: 600,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }} title={account.email}>{account.email}</div>
-              {/* Says what an account currently DOES, which is not much yet.
-                  Claiming "synced" before sync.js exists would be the exact
-                  lie the login form used to tell. */}
-              <div style={{ fontSize: 10, color: 'var(--ds-text-2)', marginTop: 1 }}>
-                Signed in · this workspace is still stored on this device only
-              </div>
-            </div>
-            <button onClick={handleSignOut} disabled={signingOut}
-              style={{
-                flexShrink: 0, padding: '4px 9px', borderRadius: 6,
-                border: '1px solid var(--ds-border)', background: 'none',
-                color: 'var(--ds-text-2)', fontSize: 10.5, fontFamily: body,
-                cursor: signingOut ? 'default' : 'pointer', opacity: signingOut ? 0.5 : 1,
-              }}>
-              {signingOut ? '…' : 'Sign out'}
-            </button>
-          </div>
-        ) : (
-          <div style={{
-            display: 'flex', gap: 7, alignItems: 'flex-start',
-            padding: '9px 10px', borderRadius: 8,
-            border: '1px dashed var(--ds-border)',
-            fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.5,
-          }}>
-            <Icon name="auth-account" size={13} style={{ marginTop: 1, flexShrink: 0 }} />
-            <span>
-              {isSupabaseConfigured() ? (
-                <>
-                  No account. This workspace lives in this browser only.{' '}
-                  <a href="/login" style={{ color: 'var(--ds-accent)', textDecoration: 'none', fontWeight: 600 }}>Sign in</a>
-                </>
-              ) : (
-                'Accounts are not set up on this build. This workspace lives in this browser only.'
-              )}
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div style={{ borderTop: '1px solid var(--ds-border)', marginTop: 14, paddingTop: 9, fontSize: 10, color: 'var(--ds-text-2)', lineHeight: 1.6, fontFamily: mono }}>
-        DataStudio · local-first
+      <div style={{ borderTop: '1px solid var(--ds-border)', marginTop: 14, paddingTop: 9, fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.6, fontFamily: mono }}>
+        DataStudio · local-first, cloud-backed
       </div>
     </div>
   )

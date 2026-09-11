@@ -122,8 +122,8 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
   }
 
   const S = {
-    label: { fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', marginBottom: 5, display: 'block' },
-    select: { width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-raised)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none' },
+    label: { fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', marginBottom: 5, display: 'block' },
+    select: { width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-raised)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 13, outline: 'none' },
   }
 
   return (
@@ -139,10 +139,10 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
           <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700 }}>Curve fitting</span>
           <span className="ds-chip">{model.tier === 1 ? 'TIER 1 · EXACT' : 'TIER 2 · ITERATIVE'}</span>
-          <span style={{ flex: 1, fontSize: 11, color: 'var(--ds-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ flex: 1, fontSize: 12, color: 'var(--ds-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {block.name || 'Table'}
           </span>
-          <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', color: 'var(--ds-text-3)', cursor: 'pointer', fontSize: 15, padding: 2 }}>×</button>
+          <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', color: 'var(--ds-text-3)', cursor: 'pointer', fontSize: 16, padding: 2 }}>×</button>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: 16, alignItems: 'start' }}>
@@ -171,7 +171,7 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                   {tier2.map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
                 </optgroup>
               </select>
-              <div style={{ marginTop: 6, fontFamily: 'var(--ds-font-mono)', fontSize: 11, color: 'var(--ds-accent)' }}>
+              <div style={{ marginTop: 6, fontFamily: 'var(--ds-font-mono)', fontSize: 12, color: 'var(--ds-accent)' }}>
                 {model.formula}
               </div>
             </div>
@@ -179,10 +179,10 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
             {model.tier === 2 && result?.ok && (
               <div>
                 <span style={S.label}>Initial guess</span>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {model.params.map((p, i) => (
                     <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ width: 66, fontSize: 10.5, color: 'var(--ds-text-3)', fontFamily: 'var(--ds-font-mono)' }}>{p}</span>
+                      <span style={{ width: 66, fontSize: 11, color: 'var(--ds-text-3)', fontFamily: 'var(--ds-font-mono)' }}>{p}</span>
                       <input
                         value={manual ? manual[i] : fmt(result.params[i], 4)}
                         onChange={e => {
@@ -190,15 +190,15 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                           next[i] = e.target.value
                           setManual(next.map(v => Number(v) || 0))
                         }}
-                        style={{ ...S.select, padding: '4px 7px', fontSize: 11, fontFamily: 'var(--ds-font-mono)' }} />
+                        style={{ ...S.select, padding: '4px 8px', fontSize: 12, fontFamily: 'var(--ds-font-mono)' }} />
                     </div>
                   ))}
                 </div>
                 <button onClick={() => setManual(null)}
-                  style={{ marginTop: 6, background: 'none', border: 'none', color: 'var(--ds-accent)', fontSize: 10.5, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)' }}>
+                  style={{ marginTop: 6, background: 'none', border: 'none', color: 'var(--ds-accent)', fontSize: 11, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)' }}>
                   Reset to auto-derived guess
                 </button>
-                <div style={{ marginTop: 7, fontSize: 10, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
+                <div style={{ marginTop: 7, fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
                   Auto-derived from the data, then refined by multi-start. A bad guess converges silently to
                   the wrong answer — check the residuals.
                 </div>
@@ -217,19 +217,19 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                 <button onClick={() => setSendOpen(v => !v)}
                   style={{
                     width: '100%', display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '7px 9px', borderRadius: 7, cursor: 'pointer',
+                    padding: '8px 10px', borderRadius: 6, cursor: 'pointer',
                     border: `1px solid ${sendOpen ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
                     background: sendOpen ? 'var(--ds-accent-dim)' : 'transparent',
                     color: sendOpen ? 'var(--ds-accent)' : 'var(--ds-text-2)',
-                    fontFamily: 'var(--ds-font-body)', fontSize: 11.5,
+                    fontFamily: 'var(--ds-font-body)', fontSize: 12,
                   }}>
                   <span style={{ flex: 1, textAlign: 'left' }}>Send to a column</span>
-                  <Icon name={sendOpen ? 'nav-chevron-down' : 'nav-chevron-right'} size={10} />
+                  <Icon name={sendOpen ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} />
                 </button>
                 {sendOpen && (
                   <div style={{ marginTop: 8 }}>
                     <div style={{ marginBottom: 8 }}>
-                      <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }}>
                         Values
                       </span>
                       <select value={sendWhat} onChange={e => setSendWhat(e.target.value)} style={S.select}>
@@ -255,7 +255,7 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
           {/* ── right: fit + diagnostics ── */}
           <div>
             {!result?.ok ? (
-              <div style={{ padding: '30px 16px', textAlign: 'center', color: 'var(--ds-text-3)', fontSize: 12.5, border: '1px dashed var(--ds-border)', borderRadius: 8 }}>
+              <div style={{ padding: '30px 16px', textAlign: 'center', color: 'var(--ds-text-3)', fontSize: 13, border: '1px dashed var(--ds-border)', borderRadius: 8 }}>
                 {result?.error || 'Pick two numeric columns to fit.'}
               </div>
             ) : (
@@ -269,8 +269,8 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                     ['n', `${result.n}`],
                     ['dof', `${result.dof}`],
                   ].map(([k, v]) => (
-                    <div key={k} style={{ flex: '1 0 78px', background: 'var(--ds-raised)', border: '1px solid var(--ds-border)', borderRadius: 7, padding: '6px 9px' }}>
-                      <div style={{ fontSize: 9, color: 'var(--ds-text-3)', textTransform: 'uppercase', letterSpacing: 0.6, fontFamily: 'var(--ds-font-mono)' }}>{k}</div>
+                    <div key={k} style={{ flex: '1 0 78px', background: 'var(--ds-raised)', border: '1px solid var(--ds-border)', borderRadius: 6, padding: '6px 10px' }}>
+                      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', textTransform: 'uppercase', letterSpacing: 0.6, fontFamily: 'var(--ds-font-mono)' }}>{k}</div>
                       <div style={{ fontSize: 13, fontWeight: 650, fontVariantNumeric: 'tabular-nums' }}>{v}</div>
                     </div>
                   ))}
@@ -281,10 +281,10 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                   <line x1={M.l} y1={PH - M.b} x2={PW - M.r} y2={PH - M.b} stroke="var(--ds-border)" />
                   <line x1={M.l} y1={M.t} x2={M.l} y2={PH - M.b} stroke="var(--ds-border)" />
                   {[plot.cy0, plot.cy1].map((v, i) => (
-                    <text key={i} x={M.l - 5} y={plot.sy(v) + 3} textAnchor="end" fill="var(--ds-text-3)" style={{ fontSize: 8, fontFamily: 'var(--ds-font-mono)' }}>{fmt(v, 2)}</text>
+                    <text key={i} x={M.l - 5} y={plot.sy(v) + 3} textAnchor="end" fill="var(--ds-text-3)" style={{ fontSize: 11, fontFamily: 'var(--ds-font-mono)' }}>{fmt(v, 2)}</text>
                   ))}
                   {[plot.cx0, plot.cx1].map((v, i) => (
-                    <text key={i} x={plot.sx(v)} y={PH - M.b + 12} textAnchor={i ? 'end' : 'start'} fill="var(--ds-text-3)" style={{ fontSize: 8, fontFamily: 'var(--ds-font-mono)' }}>{fmt(v, 2)}</text>
+                    <text key={i} x={plot.sx(v)} y={PH - M.b + 12} textAnchor={i ? 'end' : 'start'} fill="var(--ds-text-3)" style={{ fontSize: 11, fontFamily: 'var(--ds-font-mono)' }}>{fmt(v, 2)}</text>
                   ))}
                   <path d={plot.curve.map((p, i) => `${i ? 'L' : 'M'} ${plot.sx(p[0])} ${plot.sy(p[1])}`).join(' ')}
                     fill="none" stroke="var(--ds-accent)" strokeWidth="2" />
@@ -297,14 +297,14 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                 {/* residuals — always visible, never behind a tab */}
                 <div style={{ marginTop: 8 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)' }}>Residuals</span>
-                    <span style={{ fontSize: 10, color: 'var(--ds-text-3)' }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)' }}>Residuals</span>
+                    <span style={{ fontSize: 11, color: 'var(--ds-text-3)' }}>
                       structure here means the model shape is wrong, whatever R² says
                     </span>
                   </div>
                   <svg width="100%" viewBox={`0 0 ${PW} ${RH}`} style={{ background: 'var(--ds-raised)', border: '1px solid var(--ds-border)', borderRadius: 8, display: 'block' }}>
                     <line x1={M.l} y1={RH / 2} x2={PW - M.r} y2={RH / 2} stroke="var(--ds-accent)" strokeDasharray="4 3" opacity="0.7" />
-                    <text x={M.l - 5} y={RH / 2 + 3} textAnchor="end" fill="var(--ds-text-3)" style={{ fontSize: 8, fontFamily: 'var(--ds-font-mono)' }}>0</text>
+                    <text x={M.l - 5} y={RH / 2 + 3} textAnchor="end" fill="var(--ds-text-3)" style={{ fontSize: 11, fontFamily: 'var(--ds-font-mono)' }}>0</text>
                     {plot.xs.map((x, i) => (
                       <g key={i}>
                         <line x1={plot.sx(x)} y1={RH / 2} x2={plot.sx(x)} y2={plot.ry(result.residuals[i])} stroke="var(--ds-text-3)" strokeWidth="1" opacity="0.5" />
@@ -315,11 +315,11 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                 </div>
 
                 {/* parameters */}
-                <table style={{ width: '100%', marginTop: 10, borderCollapse: 'collapse', fontSize: 11.5 }}>
+                <table style={{ width: '100%', marginTop: 10, borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr>
                       {['Parameter', 'Value', 'Std. error', 'Relative'].map(h => (
-                        <th key={h} style={{ textAlign: 'left', padding: '5px 8px', color: 'var(--ds-text-3)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid var(--ds-border)' }}>{h}</th>
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--ds-text-3)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid var(--ds-border)' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -330,10 +330,10 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
                       const shaky = rel != null && rel > 50
                       return (
                         <tr key={p}>
-                          <td style={{ padding: '5px 8px', fontFamily: 'var(--ds-font-mono)', color: 'var(--ds-text-2)' }}>{p}</td>
-                          <td style={{ padding: '5px 8px', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmt(result.params[i])}</td>
-                          <td style={{ padding: '5px 8px', fontVariantNumeric: 'tabular-nums', color: 'var(--ds-text-2)' }}>± {fmt(se)}</td>
-                          <td style={{ padding: '5px 8px', fontVariantNumeric: 'tabular-nums', color: shaky ? 'var(--ds-red)' : 'var(--ds-text-3)' }}>
+                          <td style={{ padding: '6px 8px', fontFamily: 'var(--ds-font-mono)', color: 'var(--ds-text-2)' }}>{p}</td>
+                          <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmt(result.params[i])}</td>
+                          <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: 'var(--ds-text-2)' }}>± {fmt(se)}</td>
+                          <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: shaky ? 'var(--ds-red)' : 'var(--ds-text-3)' }}>
                             {rel == null ? '—' : `${rel.toFixed(1)}%`}{shaky ? ' — poorly constrained' : ''}
                           </td>
                         </tr>

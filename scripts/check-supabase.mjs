@@ -116,10 +116,15 @@ try {
 }
 
 console.log('\n3. schema present')
-const tables = ['profiles', 'notebooks', 'folders', 'images', 'usage']
+/* Four tables after 0003, not five. `notebooks`, `folders` and `images` are
+   gone: the first two collapsed into `docs` (one table, one set of policies —
+   0002 exists because the first pass got column privileges wrong on two
+   tables out of five), and `images` became `assets` when PDFs and attachments
+   gained a cloud story of their own. */
+const tables = ['profiles', 'docs', 'assets', 'usage']
 for (const t of tables) {
   const { error } = await supabase.from(t).select('*').limit(0)
-  if (error) fail(`table "${t}" — ${error.message} (did you run supabase/migrations/0001_init.sql?)`)
+  if (error) fail(`table "${t}" — ${error.message} (did you run every file in supabase/migrations/, in order?)`)
   else pass(`table "${t}" exists`)
 }
 
@@ -142,4 +147,12 @@ if (failed) {
   process.exit(1)
 }
 console.log('All checks passed. Client + schema + RLS are wired correctly.')
-console.log('This does NOT test signed-in access — that needs real auth (plan step 2), not built yet.')
+/* Section 4 is weak BY CONSTRUCTION and saying so here is not modesty — a
+   table with RLS enabled and ZERO policies also returns zero rows
+   anonymously, so this script would show four green ticks against a schema
+   that is completely broken for real signed-in users. The test that actually
+   matters is supabase/rls_pentest.sql, which puts a logged-in user B against
+   a logged-in user A's rows. Run it. */
+console.log('\nThis does NOT prove signed-in isolation — anonymous requests get zero rows from a')
+console.log('table with no policies at all. Run supabase/rls_pentest.sql in the SQL editor for that,')
+console.log('and run its negative control too: a suite that cannot go red proves nothing.')

@@ -660,7 +660,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const headBase = {
     boxSizing: 'border-box', background: raised,
     borderRight: `1px solid ${border}`, borderBottom: `1px solid ${border}`,
-    fontFamily: 'var(--ds-font-body)', fontSize: 11, fontWeight: 600,
+    fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 600,
     color: text2, display: 'flex', alignItems: 'center', justifyContent: 'center',
     position: 'relative', userSelect: 'none',
   }
@@ -756,10 +756,10 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                   title={label || colName(c)}
                   onMouseDown={ev => { ev.preventDefault(); setRanges([]); setSel({ r1: 0, c1: c, r2: Math.max(displayRows - 1, 0), c2: c }) }}
                   onContextMenu={ev => ctxMenu(ev, 0, c)}>
-                  <span style={{ fontSize: 9, lineHeight: '10px', color: active ? accent : text3, fontWeight: 600, opacity: 0.7 }}>
+                  <span style={{ fontSize: 11, lineHeight: '10px', color: active ? accent : text3, fontWeight: 600, opacity: 0.7 }}>
                     {colName(c)}
                   </span>
-                  <span style={{ fontSize: 11, lineHeight: '12px', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: label ? 1 : 0.3 }}>
+                  <span style={{ fontSize: 12, lineHeight: '12px', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: label ? 1 : 0.3 }}>
                     {label}
                   </span>
                   <div
@@ -785,7 +785,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                     width: GUTTER_W, height: heightOf(r),
                     background: active ? accentDim : raised,
                     color: active ? accent : text3,
-                    fontSize: 10.5, fontWeight: active ? 700 : 500,
+                    fontSize: 11, fontWeight: active ? 700 : 500,
                     fontVariantNumeric: 'tabular-nums',
                     borderRight: active ? `2px solid ${accent}` : `1px solid ${border}`,
                     cursor: 'pointer',
@@ -840,7 +840,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                       position: 'absolute', left: colOff[c] - 1, top: rowOff[r] - 1,
                       width: Math.max(w, 170) + 2, height: h + 2, zIndex: 10, boxSizing: 'border-box',
                       border: `2px solid ${accent}`, outline: 'none', background: surface, color: text,
-                      fontFamily: 'var(--ds-font-body)', fontSize: 12.5, padding: '0 5px',
+                      fontFamily: 'var(--ds-font-body)', fontSize: 13, padding: '0 5px',
                     }} />
                 )
               }
@@ -857,7 +857,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                     borderRight: `1px solid ${border}`, borderBottom: `1px solid ${border}`,
                     background: selected && !isCur ? accentDim : cross ? `${accent}0d` : surface,
                     boxShadow: isCur ? `inset 0 0 0 2px ${accent}` : 'none',
-                    color: text, fontFamily: 'var(--ds-font-body)', fontSize: 12.5,
+                    color: text, fontFamily: 'var(--ds-font-body)', fontSize: 13,
                     fontVariantNumeric: 'tabular-nums', padding: '0 6px',
                     display: 'flex', alignItems: 'center',
                     justifyContent: numeric ? 'flex-end' : 'flex-start',
@@ -881,7 +881,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14, height: 22, padding: '0 10px',
         background: raised, borderTop: `1px solid ${border}`,
-        fontFamily: 'var(--ds-font-body)', fontSize: 10.5,
+        fontFamily: 'var(--ds-font-body)', fontSize: 11,
         fontVariantNumeric: 'tabular-nums', color: text3, userSelect: 'none',
       }}>
         <span style={{ color: accentText, fontWeight: 700, minWidth: 34 }}>{colName(cur.c)}{cur.r + 1}</span>
@@ -926,9 +926,9 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
               <button key={i}
                 onClick={() => { runMenuAction(it.act); setMenu(null) }}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', padding: '7px 14px',
+                  display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '8px 14px',
                   background: 'none', border: 'none', cursor: 'pointer',
-                  fontFamily: 'var(--ds-font-body)', fontSize: 12,
+                  fontFamily: 'var(--ds-font-body)', fontSize: 13,
                   color: it.danger ? 'var(--ds-red)' : text2,
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = raised}

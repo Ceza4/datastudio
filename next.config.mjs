@@ -2,54 +2,33 @@
 
 /* SECURITY HEADERS
    --------------------------------------------------------------------------
-   This file used to be an empty object, which meant the app shipped with no
-   CSP, no nosniff, no referrer policy and no frame-ancestors.
+   THE CSP IS NOT HERE ANY MORE. It moved to middleware.js, and that is not a
+   reorganisation — it is the only way to get a per-request nonce.
 
-   That mattered more here than it does in most apps. DataStudio's defence
-   against a stored XSS is that nothing dangerous ever reaches innerHTML — see
-   lib/sanitize.js and the paste handler in TextBlockContent. That defence is
-   good, and it is one bug deep. A CSP is the layer that decides whether such a
-   bug is a nuisance or a full compromise of every notebook, image and PDF in
-   the user's IndexedDB.
+   The version that lived in this file had to keep 'unsafe-inline' in
+   script-src, because Next bootstraps hydration from an inline script and a
+   static header cannot carry a value that changes per request. A CSP with
+   'unsafe-inline' in script-src does not stop the attack a CSP exists to stop:
+   an injected <script> runs. The note here used to say so and point at
+   DEFERRED.md; middleware.js now closes it.
 
-   ON 'unsafe-inline' IN script-src
-   Next's App Router bootstraps hydration from an inline script. Removing
-   unsafe-inline needs per-request nonces, which needs middleware and a dynamic
-   route — a real change, worth making, and deliberately not bundled into an
-   audit-fix pass. It is listed in DEFERRED.md. Everything else here is already
-   as tight as the app can run.
-
-   style-src keeps 'unsafe-inline' permanently: the entire codebase styles
-   through inline style objects by design, and fonts.googleapis.com serves the
-   two webfont stylesheets. */
-const csp = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com data:",
-  // blob: and data: are how every imported image and rendered PDF page is
-  // displayed. Neither can fetch anything.
-  "img-src 'self' blob: data:",
-  "media-src 'self' blob:",
-  // Supabase is the only host the app talks to. Left broad enough to cover a
-  // project subdomain without hardcoding the project ref into the build.
-  "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
-  // pdf.js runs its worker from /pdf.worker.min.mjs, same origin.
-  "worker-src 'self' blob:",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "upgrade-insecure-requests",
-].join('; ')
+   What stays in this file is everything that is the SAME on every request.
+   Splitting them this way means each header lives in exactly one place — a
+   static header set here and a dynamic one set in middleware would silently
+   race, and the winner would depend on the route.
+   -------------------------------------------------------------------------- */
 
 const nextConfig = {
   async headers() {
     return [{
       source: '/:path*',
       headers: [
-        { key: 'Content-Security-Policy', value: csp },
         { key: 'X-Content-Type-Options', value: 'nosniff' },
+        /* HSTS. Deliberately without `preload`: preloading is submitted to a
+           browser-vendor list and is effectively irreversible for months, so it
+           belongs after the production domain is settled and every subdomain is
+           known to serve TLS — not before. One year, subdomains included. */
+        { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
         { key: 'Referrer-Policy', value: 'no-referrer' },
         { key: 'X-Frame-Options', value: 'DENY' },
         /* No feature this app has needs any of these, and a page that never

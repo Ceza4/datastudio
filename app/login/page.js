@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { useTheme } from '../providers'
 import { makeColors } from '../../lib/theme'
-import { signIn, AUTH, isSupabaseConfigured } from '../../lib/auth'
+import { signIn, completeMfa, mfaPending, AUTH, isSupabaseConfigured } from '../../lib/auth'
+import { safeNextPath } from '../../lib/urls'
 
 export default function Login() {
   const { dark, setDark } = useTheme()
@@ -18,6 +19,29 @@ export default function Login() {
   const t = makeColors(dark)
 
   const [notice, setNotice] = useState(null)
+  /* Set once a password has been accepted but a second factor is still owed.
+     Supabase signs you in at assurance level 1 and leaves TOTP as a separate
+     step, so there is a real state where a session exists and is not yet
+     enough. */
+  /* Seeded from the URL so a redirect from proxy.js lands directly on the code
+     step. Without it, a user whose session is half-finished is sent here, shown
+     a password form they have already completed, and — because signing in again
+     produces the same aal1 session — goes round the same loop forever. */
+  const [needsCode, setNeedsCode] = useState(
+    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('mfa') === '1'
+  )
+  const [code, setCode] = useState('')
+
+  /* Where middleware.js was trying to send us before it bounced the request.
+     Read through safeNextPath, which allows a same-origin PATH and nothing
+     else: this value arrives in a URL somebody can be emailed, and handing it
+     to location.href unchecked is the textbook open redirect — a link that
+     genuinely starts on your domain, shows your real form, and forwards to a
+     copy of it somewhere else. */
+  const destination = () => {
+    if (typeof window === 'undefined') return '/app'
+    return safeNextPath(new URLSearchParams(window.location.search).get('next'), '/app')
+  }
 
   /* This was a setTimeout that did nothing for 1500ms and then stopped. It
      looked exactly like signing in, which made it worse than an empty page —
@@ -31,11 +55,17 @@ export default function Login() {
     setLoading(false)
 
     if (res.status === AUTH.OK) {
+      if (await mfaPending()) { setNeedsCode(true); return }
+      /* The gate in proxy.js checks the same thing server-side and will bounce
+         an unfinished session straight back here with ?mfa=1, so this branch is
+         a convenience rather than the enforcement. It used to be BOTH, which is
+         why a password alone was enough. */
       /* A hard navigation, not a router push. The app reads its whole state
          on mount, and arriving with a session already established is simpler
-         to reason about than teaching every consumer to react to one
-         appearing underneath it. */
-      window.location.href = '/app'
+         to reason about than teaching every consumer to react to one appearing
+         underneath it. It also means middleware.js re-runs and re-checks the
+         cookie server-side, rather than the client deciding it is signed in. */
+      window.location.href = destination()
       return
     }
     setNotice({
@@ -45,6 +75,17 @@ export default function Login() {
       tone: res.status === AUTH.UNCONFIGURED ? 'info' : 'error',
       message: res.message,
     })
+  }
+
+  const handleCode = async (e) => {
+    e.preventDefault()
+    if (loading) return
+    setNotice(null)
+    setLoading(true)
+    const res = await completeMfa(code)
+    setLoading(false)
+    if (res.status === AUTH.OK) { window.location.href = destination(); return }
+    setNotice({ tone: 'error', message: res.message })
   }
 
   return (
@@ -95,6 +136,54 @@ export default function Login() {
           <p style={{fontSize:'14px', color:t.text2}}>Sign in to your DataStudio account</p>
         </div>
 
+        {needsCode ? (
+          <form onSubmit={handleCode}>
+            <div style={{marginBottom:'16px'}}>
+              <label style={{display:'block', fontSize:'12px', fontWeight:500, color:t.text2, marginBottom:'6px'}}>
+                Authentication code
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                maxLength={6}
+                value={code}
+                onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="000000"
+                required
+                style={{
+                  width:'100%', padding:'10px 14px',
+                  background:t.raised, border:`1px solid ${t.border}`,
+                  borderRadius:'8px', fontSize:'18px', letterSpacing:'6px',
+                  fontFamily:'var(--ds-font-mono)', color:t.text,
+                  outline:'none', boxSizing:'border-box', textAlign:'center',
+                }}
+              />
+              <p style={{fontSize:'11.5px', color:t.text3, marginTop:'8px', lineHeight:1.5}}>
+                From your authenticator app. Codes change every 30 seconds.
+              </p>
+            </div>
+
+            {notice && (
+              <div role="alert" style={{
+                marginBottom:'16px', padding:'10px 12px', borderRadius:'8px',
+                fontSize:'12.5px', lineHeight:1.5,
+                background:'rgba(248,113,113,0.12)', border:'1px solid #f87171', color:'#f87171',
+              }}>{notice.message}</div>
+            )}
+
+            <button type="submit" disabled={loading} style={{
+              width:'100%', padding:'12px',
+              background: loading ? t.raised : t.accent,
+              color: loading ? t.text2 : 'white',
+              border:'none', borderRadius:'8px', fontSize:'14px', fontWeight:500,
+              cursor: loading ? 'not-allowed' : 'pointer', fontFamily:'var(--ds-font-body)',
+            }}>
+              {loading ? 'Checking…' : 'Verify'}
+            </button>
+          </form>
+        ) : (
         <form onSubmit={handleLogin}>
           {/* EMAIL */}
           <div style={{marginBottom:'16px'}}>
@@ -129,7 +218,9 @@ export default function Login() {
           <div style={{marginBottom:'24px'}}>
             <div style={{display:'flex', justifyContent:'space-between', marginBottom:'6px'}}>
               <label style={{fontSize:'12px', fontWeight:500, color:t.text2}}>Password</label>
-              <a href="#" style={{fontSize:'12px', color:t.accent, textDecoration:'none'}}>Forgot password?</a>
+              {/* Was href="#", i.e. a link that did nothing to a feature that
+                  did not exist — so a forgotten password was an account lost. */}
+              <a href="/forgot" style={{fontSize:'12px', color:t.accent, textDecoration:'none'}}>Forgot password?</a>
             </div>
             <input
               type="password"
@@ -164,6 +255,7 @@ export default function Login() {
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
+        )}
 
         {/* DIVIDER */}
         <div style={{display:'flex', alignItems:'center', gap:'12px', margin:'24px 0'}}>
@@ -194,15 +286,23 @@ export default function Login() {
           Continue with Google
         </button>
 
-        {/* The point of the whole page, said out loud. An account is for
-            SYNC; it is not the door. Somebody who lands here and does not
-            want one should be able to leave in the right direction. */}
-        <p style={{textAlign:'center', fontSize:'12px', color:t.text3, marginTop:'18px', lineHeight:1.6}}>
-          {isSupabaseConfigured()
-            ? 'You don’t need an account to use DataStudio. '
-            : 'Accounts aren’t set up on this build. '}
-          <a href="/app" style={{color:t.text2, textDecoration:'underline'}}>Open it without one</a>
-        </p>
+        {/* THE "OPEN IT WITHOUT AN ACCOUNT" LINK IS GONE.
+
+            It used to say an account was for sync and not the door, which was
+            true when it was written. An account is now the door: proxy.js
+            checks the session at the edge and /app is a redirect back to here
+            for anyone without one.
+
+            So the link had stopped being a choice and become a loop — click
+            it, get bounced back to this page, with the page still claiming you
+            did not need to be on it. A control that contradicts what the
+            product does is worse than no control, because the person believes
+            it until it fails on them. */}
+        {!isSupabaseConfigured() && (
+          <p style={{textAlign:'center', fontSize:'12px', color:t.text3, marginTop:'18px', lineHeight:1.6}}>
+            Accounts aren’t set up on this build, so signing in won’t work yet.
+          </p>
+        )}
 
         {/* SIGNUP LINK */}
         <p style={{textAlign:'center', fontSize:'13px', color:t.text2, marginTop:'24px'}}>

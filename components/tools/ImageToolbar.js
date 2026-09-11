@@ -1,4 +1,5 @@
 'use client'
+import { displayModeOf } from '../notebook/blockRegistry'
 import Icon from '../ui/Icon'
 import { useState, useRef } from 'react'
 import { transformImage, cropImage, processImageFile, putImage, newImageId, IMAGE_EXTS, MAX_IMAGE_BYTES } from '../../lib/images'
@@ -82,7 +83,7 @@ export default function ImageToolbar({
   }
 
   const btn = {
-    width: '100%', height: 30, padding: '0 9px', fontSize: 11.5,
+    width: '100%', height: 30, padding: '0 9px', fontSize: 12,
     justifyContent: 'flex-start',
   }
 
@@ -93,7 +94,7 @@ export default function ImageToolbar({
       style={{
         position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
         zIndex: Z.rail, width: 128,
-        display: 'flex', flexDirection: 'column', gap: 3, padding: 8,
+        display: 'flex', flexDirection: 'column', gap: 4, padding: 8,
         background: `${surface}dd`,
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
         border: `1px solid ${border}`, borderRadius: 12,
@@ -103,7 +104,7 @@ export default function ImageToolbar({
       }}>
 
       <div title={block.name || 'Image'} style={{
-        fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
+        fontSize: 11, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
         letterSpacing: 0.9, color: text3, padding: '2px 6px 6px',
         borderBottom: `1px solid ${border}`, marginBottom: 3,
         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
@@ -113,7 +114,7 @@ export default function ImageToolbar({
 
       {cropping ? (
         <>
-          <div style={{ fontSize: 10, color: text2, lineHeight: 1.45, padding: '2px 4px 6px' }}>
+          <div style={{ fontSize: 11, color: text2, lineHeight: 1.45, padding: '2px 4px 6px' }}>
             Drag a rectangle on the image.
           </div>
           <button className="ds-tbtn is-on" style={btn}
@@ -142,6 +143,40 @@ export default function ImageToolbar({
             title="Fit the whole image, or fill the block and crop the overflow">
             <Icon name={block.fit === 'cover' ? 'size-fill' : 'size-fit'} size={14} />
             {block.fit === 'cover' ? 'Fill' : 'Fit'}
+          </button>
+
+          {/* DISPLAY — full image, or collapsed to a generic icon.
+
+              Same shape as the Fit/Fill button directly above: one button whose
+              icon and label swap with the state, carrying `is-on` while active.
+              That pattern already exists in this file for exactly this kind of
+              two-state block property, so this is not a new control idiom.
+
+              It toggles between 'full' and 'icon' and SKIPS 'compact'. Compact
+              is never something a person sets by hand — it is only ever the
+              result of a section's Compact toggle — so offering it here as a
+              third stop would be offering a state with no meaning outside a
+              section.
+
+              railFor() needs no change: `rail: 'image'` is keyed on block TYPE,
+              not display state, so the whole toolbar — crop, rotate, alt text,
+              this button — stays reachable by selecting the block whether it is
+              currently a full image or a 24px chip.
+
+              Icon names are placeholders pending real ones through the usual
+              pipeline (SVG in, `npm run icons`, never hand-edit icon-paths.js).
+              They are not arbitrary in the meantime: `format-image` is the
+              app's existing image-FORMAT glyph (the one the export panel uses),
+              which is what the collapsed chip renders — so the button previews
+              its own result — and `block-image` is the picture you get back.
+              Swap both when the real pair is drawn. */}
+          <button className={`ds-tbtn${displayModeOf(block) === 'icon' ? ' is-on' : ''}`} style={btn}
+            onClick={() => onUpdateBlock(block.id, {
+              displayMode: displayModeOf(block) === 'icon' ? 'full' : 'icon',
+            })}
+            title="Show the full image, or collapse it to an icon">
+            <Icon name={displayModeOf(block) === 'icon' ? 'block-image' : 'format-image'} size={14} />
+            {displayModeOf(block) === 'icon' ? 'Full' : 'Icon'}
           </button>
 
           <button className={`ds-tbtn${block.alt ? '' : ' is-accent'}`} style={btn}
@@ -178,17 +213,17 @@ export default function ImageToolbar({
             placeholder="Describe the image…"
             rows={3}
             style={{
-              width: '100%', resize: 'none', padding: '5px 6px', borderRadius: 6,
+              width: '100%', resize: 'none', padding: '6px 6px', borderRadius: 6,
               border: `1px solid ${accent}`, background: 'var(--ds-base)',
               color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)',
-              fontSize: 11, lineHeight: 1.4, outline: 'none',
+              fontSize: 12, lineHeight: 1.4, outline: 'none',
             }} />
           <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-            <button className="ds-tbtn" style={{ flex: 1, height: 24, fontSize: 10.5, justifyContent: 'center' }}
+            <button className="ds-tbtn" style={{ flex: 1, height: 24, fontSize: 11, justifyContent: 'center' }}
               onClick={() => { onUpdateBlock(block.id, { alt: altDraft.trim() }); setEditingAlt(false) }}>
               Save
             </button>
-            <button className="ds-tbtn" style={{ flex: 1, height: 24, fontSize: 10.5, justifyContent: 'center' }}
+            <button className="ds-tbtn" style={{ flex: 1, height: 24, fontSize: 11, justifyContent: 'center' }}
               onClick={() => setEditingAlt(false)}>Cancel</button>
           </div>
         </div>
@@ -196,9 +231,9 @@ export default function ImageToolbar({
 
       {error && (
         <div role="alert" style={{
-          marginTop: 5, padding: '5px 7px', borderRadius: 6,
+          marginTop: 5, padding: '6px 8px', borderRadius: 6,
           background: 'var(--ds-red-bg)', border: `1px solid ${red}`,
-          color: red, fontSize: 10, lineHeight: 1.4,
+          color: red, fontSize: 11, lineHeight: 1.4,
         }}>{error}</div>
       )}
     </div>

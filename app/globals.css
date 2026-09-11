@@ -25,6 +25,7 @@
   --ds-base:       #F5F3EE;
   --ds-surface:    #EDEAE3;
   --ds-raised:     #E4E1D8;
+  --ds-paper:      #FCFBF8;   /* document page — see LIGHT.paper in lib/theme.js */
   --ds-border:     #D5D1C7;
   /* A resting border that is actually dimmer than the hover border. Block
      chrome read `isHovered ? border : '#D5D1C7'` and `--ds-border` IS
@@ -78,16 +79,46 @@
   --ds-teleport-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none' stroke='%23000' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M28 36a10 10 0 0 0 15 1l8-8a10 10 0 0 0-14-14l-5 4'/%3E%3Cpath d='M36 28a10 10 0 0 0-15-1l-8 8a10 10 0 0 0 14 14l5-4'/%3E%3C/svg%3E");
   --ds-font-mono:  var(--font-dm-mono, 'DM Mono'), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
-  --ds-fs-xs:      10px;
-  --ds-fs-sm:      11px;
-  --ds-fs-md:      12px;
-  --ds-fs-lg:      13px;
-  --ds-fs-xl:      15px;
+  /* ── Type scale ──
+     Six steps, every one a whole pixel, floor 11px.
+
+     It used to be five steps from 10px, and the call sites ignored it: 24
+     distinct sizes were in use across app/ and components/, 142 of them
+     fractional (10.5, 11.5, 8.5 …). A fractional size puts stems and
+     baselines between pixel rows and the rasteriser resolves that with grey
+     on both sides — that is the "blurry" everyone was seeing, and it was
+     free to fix. Nothing below 11px: no platform puts readable UI text there
+     and 62 call sites were at 9px or under.
+
+     Multiply through --ds-ui-scale so the UI-scale preference can enlarge
+     everything at once. viewportlock.js cancels browser zoom, so this is the
+     ONLY way a user can make the app bigger — see its header comment. */
+  --ds-ui-scale:   1;
+  --ds-fs-2xs:     calc(11px * var(--ds-ui-scale));   /* uppercase labels     */
+  --ds-fs-xs:      calc(12px * var(--ds-ui-scale));   /* metadata, badges     */
+  --ds-fs-sm:      calc(13px * var(--ds-ui-scale));   /* toolbars, menus      */
+  --ds-fs-md:      calc(14px * var(--ds-ui-scale));   /* body, block content  */
+  --ds-fs-lg:      calc(16px * var(--ds-ui-scale));   /* block titles         */
+  --ds-fs-xl:      calc(20px * var(--ds-ui-scale));   /* panel headings       */
+
+  /* ── Control geometry ──
+     One height per control size. Every button, field and chip picks one of
+     these three instead of inventing a padding pair — there were 60+ distinct
+     pairs in the tree, which is why nothing lined up with anything. */
+  --ds-control-sm: calc(28px * var(--ds-ui-scale));
+  --ds-control-md: calc(32px * var(--ds-ui-scale));
+  --ds-control-lg: calc(38px * var(--ds-ui-scale));
+
+  /* Inset for anything with a leading icon: the icon starts here, the text
+     starts at --ds-field-pad-x + icon + --ds-field-gap. */
+  --ds-field-pad-x: 14px;
+  --ds-field-gap:   10px;
 
   /* ── Geometry ── */
   --ds-radius-xs:  4px;
   --ds-radius-sm:  6px;
   --ds-radius-md:  8px;
+  --ds-radius-pan: 10px;   /* floating popovers: Add menu, slash menu, picker */
   --ds-radius-lg:  12px;
   --ds-radius-xl:  16px;
 
@@ -115,6 +146,7 @@
   --ds-base:       #1A1917;
   --ds-surface:    #201F1C;
   --ds-raised:     #262522;
+  --ds-paper:      #232220;
   --ds-border:     #2E2D29;
   --ds-border-dim: #252420;
   --ds-canvas-bg:  #141412;
@@ -200,11 +232,31 @@ h1, h2, h3, h4 {
 [contenteditable]:focus-visible,
 [data-ds-text]:focus-visible,
 [data-ds-grid-scroll]:focus-visible,
-[data-ds-cell-editor]:focus-visible {
+[data-ds-cell-editor]:focus-visible,
+.ds-searchrow input:focus-visible,
+.ds-searchrow input:focus {
   outline: none !important;
 }
 
 ::placeholder { color: var(--ds-text-3); opacity: 1; }
+
+/* ── Text selection ───────────────────────────────────────────────────────
+   The app had NO ::selection rule, so every selection fell back to the
+   browser default — and Chrome paints an UNFOCUSED selection in a pale grey
+   that is invisible on this palette. Select a sentence in a document, click
+   the font-size field in the ribbon (a real <input>, so it legitimately takes
+   focus) and the highlight appeared to vanish. The selection was still there;
+   nothing was drawing it. "Why is the selection gone?" is a rendering
+   question, not a selection one.
+
+   Tinted with the accent rather than the browser blue, and given an explicit
+   text colour so it stays legible on both themes and on paper. */
+::selection {
+  background: var(--ds-accent-dim);
+  color: var(--ds-text);
+}
+[data-theme='dark'] ::selection,
+:root:not([data-theme='light']) ::selection { color: var(--ds-text); }
 
 :focus { outline: none; }
 
@@ -259,14 +311,15 @@ h1, h2, h3, h4 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--ds-space-1);
-  padding: var(--ds-btn-padding);
+  gap: var(--ds-space-2);
+  height: var(--ds-control-md);
+  padding: 0 12px;
   border: 1px solid var(--ds-border);
   border-radius: var(--ds-radius-sm);
   background: transparent;
   color: var(--ds-text-2);
   font-family: var(--ds-font-body);
-  font-size: var(--ds-fs-md);
+  font-size: var(--ds-fs-sm);
   line-height: 1;
   cursor: pointer;
   transition: background var(--ds-transition), color var(--ds-transition),
@@ -313,7 +366,7 @@ h1, h2, h3, h4 {
   background: var(--ds-accent-dim);
   color: var(--ds-accent);
   font-family: var(--ds-font-mono);
-  font-size: var(--ds-fs-xs);
+  font-size: var(--ds-fs-2xs);
   font-weight: 600;
   letter-spacing: 0.5px;
 }
@@ -325,7 +378,7 @@ h1, h2, h3, h4 {
   border-bottom: 1px solid var(--ds-accent);
   color: var(--ds-text);
   font-family: var(--ds-font-body);
-  font-size: var(--ds-fs-md);
+  font-size: var(--ds-fs-sm);
   outline: none;
   min-width: 0;
 }
@@ -347,7 +400,7 @@ h1, h2, h3, h4 {
 
 /* Section label above a group of controls. */
 .ds-label {
-  font-size: var(--ds-fs-xs);
+  font-size: var(--ds-fs-2xs);
   font-weight: 700;
   letter-spacing: 0.5px;
   text-transform: uppercase;
@@ -389,6 +442,34 @@ h1, h2, h3, h4 {
 @media (prefers-reduced-motion: reduce) {
   .ds-icon-spin { animation: none; }
 }
+
+/* ── Live presence ────────────────────────────────────────────────────────
+   The one piece of motion that separates "somebody is in this block right now"
+   from "somebody changed this block earlier". Both render as a 7px dot in the
+   same header slot in the same person-hue; the pulse is the entire difference,
+   which is why it has to be legible and also why it has to be quiet.
+
+   SCALE ONLY, OPACITY HELD. A dot fading in and out reads as a loading
+   indicator, and a 7px dot at reduced opacity against the raised header is
+   close to invisible at the bottom of the cycle. 1.8s is slow enough to read as
+   breathing rather than blinking.
+
+   When motion is reduced it HOLDS AT REST rather than disappearing — same
+   choice as .ds-icon-spin above, and for the same reason: "live" must still be
+   legible to someone who has asked the app to stop moving. The label beside the
+   dot already says "is editing" in words, so no information is lost. */
+@keyframes dsPresencePulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.15); }
+}
+.ds-presence-dot {
+  animation: dsPresencePulse 1.8s var(--ds-ease-standard) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-presence-dot { animation: none; }
+}
+:root[data-reduce-motion='true'] .ds-presence-dot { animation: none; }
 .ds-spinner {
   width: 28px;
   height: 28px;
@@ -407,15 +488,15 @@ h1, h2, h3, h4 {
 .ds-tbtn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
+  gap: var(--ds-space-2);
+  height: var(--ds-control-md);
   padding: 0 14px;
   border: 1px solid var(--ds-border);
-  border-radius: 8px;
+  border-radius: var(--ds-radius-md);
   background: var(--ds-base);
   color: var(--ds-text-2);
   font-family: var(--ds-font-body);
-  font-size: 12.5px;
+  font-size: var(--ds-fs-sm);
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
@@ -451,6 +532,145 @@ h1, h2, h3, h4 {
   border-color: var(--ds-accent);
 }
 
+
+/* ── Search / filter row ──────────────────────────────────────────────────
+   The header of every popover that filters a list with a field of its own: the
+   Add menu and the block-link picker. Two of them, each with its own padding
+   pair, its own gap and its own idea of how big the esc key is (9px/11px
+   padding, 7px/8px gap, span vs kbd). They now share one object.
+
+   The slash menu is NOT one of these and must not be made into one — it has no
+   field, because the text you have already typed after the "/" IS the query.
+   It shares .ds-panel with these two, and nothing else.
+
+   GEOMETRY, AND WHY
+   · height 38px, not the ~34px it used to compute to. A field shorter than
+     the toolbar buttons beside it reads as disabled.
+   · the leading icon starts at --ds-field-pad-x (14px), and the text at
+     14 + 14 + 10 = 38px. It used to start at 32px, which put the caret
+     almost against the magnifier — the "cramped" complaint exactly.
+   · gap is --ds-field-gap, not a number, so the icon and the text can never
+     drift apart again in one file and not the others. */
+.ds-searchrow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-field-gap);
+  height: var(--ds-control-lg);
+  padding: 0 var(--ds-field-pad-x);
+  border-bottom: 1px solid var(--ds-border);
+  flex-shrink: 0;
+}
+.ds-searchrow > svg { color: var(--ds-text-3); flex: none; }
+
+.ds-searchrow input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ds-text);
+  caret-color: var(--ds-accent);
+  font-family: var(--ds-font-body);
+  font-size: var(--ds-fs-sm);
+}
+.ds-searchrow input::placeholder { color: var(--ds-text-3); }
+
+/* FOCUS LIVES ON THE ROW, NOT ON THE INPUT.
+
+   The global :focus-visible ring is `outline: 2px solid` with `!important`, so
+   focusing this input drew a rounded box floating inside the header — a second,
+   nested field rather than a focus state. The row is the control; the bare
+   input is an implementation detail.
+
+   The opt-out is NOT here. It is in the exclusion list beside the :focus-visible
+   rule itself, ~300 lines up, with the writing surface and the sheet — putting
+   an override that far from the rule it beats is how this file drifts. What
+   stays here is the affordance that replaces it: the row's own underline. */
+.ds-searchrow:focus-within {
+  border-bottom-color: var(--ds-accent);
+}
+
+/* Keycap. One size, everywhere — esc, ⌘K, ↵. Was 9px/1px 4px in the Add menu
+   and 9px/2px 5px in the picker, which is visible when they sit side by side. */
+.ds-kbd {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-xs);
+  background: var(--ds-raised);
+  color: var(--ds-text-3);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-fs-2xs);
+  line-height: 1;
+}
+
+/* ── Floating popover panel ───────────────────────────────────────────────
+   Add menu, slash menu, block picker. Radius was 10, 10 and 12; shadow was a
+   token in one and a hand-written rgba in the other two. */
+.ds-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-pan);
+  box-shadow: var(--ds-shadow-lg);
+  overflow: hidden;
+  font-family: var(--ds-font-body);
+}
+/* The scrolling list inside one. */
+.ds-panel-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--ds-space-2);
+}
+/* Its "nothing matched" line. */
+.ds-panel-empty {
+  padding: 14px var(--ds-field-pad-x);
+  font-size: var(--ds-fs-xs);
+  color: var(--ds-text-3);
+  line-height: 1.5;
+}
+
+/* ── Document ribbon band ─────────────────────────────────────────────────
+   The band scrolls horizontally rather than wrapping, and that is a deliberate
+   decision documented in DocumentRibbon.js: a ribbon whose groups reflow onto
+   a second row moves every control the moment the block is resized.
+
+   What was NOT intended is how it scrolled. A raw browser scrollbar sat inside
+   the chrome and 227px of the Home tab — the whole STYLES group — lived behind
+   it with nothing on screen saying so. The scrollbar goes; a fade at whichever
+   edge has more content takes its place, driven by [data-overflow] from the
+   component. A fade says "there is more this way" without spending 12px of a
+   toolbar's height on a control nobody drags. */
+.ds-ribbon-band {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.ds-ribbon-band::-webkit-scrollbar { height: 0; width: 0; }
+
+.ds-ribbon-scroll { position: relative; min-width: 0; }
+.ds-ribbon-scroll::before,
+.ds-ribbon-scroll::after {
+  content: '';
+  position: absolute; top: 0; bottom: 0; width: 28px;
+  pointer-events: none; opacity: 0; z-index: 2;
+  transition: opacity var(--ds-motion-hover) var(--ds-ease-standard);
+}
+.ds-ribbon-scroll::before {
+  left: 0;
+  background: linear-gradient(to right, var(--ds-surface), transparent);
+}
+.ds-ribbon-scroll::after {
+  right: 0;
+  background: linear-gradient(to left, var(--ds-surface), transparent);
+}
+.ds-ribbon-scroll[data-overflow~="start"]::before { opacity: 1; }
+.ds-ribbon-scroll[data-overflow~="end"]::after { opacity: 1; }
 
 /* Guard against any single bad var() dropping the whole page to serif. */
 html, body, button, input, textarea, select {
@@ -532,6 +752,22 @@ html, body, button, input, textarea, select {
   to   { opacity: 1; transform: translateY(-50%) translateX(0); }
 }
 
+/* The selection-anchored formatting pill (TextBlockToolbar v4).
+
+   dsRailIn cannot be reused for it: that keyframe carries translateY(-50%),
+   which is part of how a rail docked at `top:50%` centres itself. The pill is
+   positioned from a measured selection rect with a real `top`, so inheriting
+   that -50% would slide it half its own height off the anchor for the whole
+   animation.
+
+   It is a NEW keyframe name but it is NOT outside the reduced-motion guard:
+   that guard keys off the `[data-island-rail]` attribute, not the animation
+   name, and the pill carries that attribute like every other rail. */
+@keyframes dsToolbarIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 /* ── Reduced motion ───────────────────────────────────────────────────────
    Everything that moves on its own, in one place.
 
@@ -601,4 +837,54 @@ html, body {
 [data-ds-canvas] {
   overscroll-behavior: none;
   touch-action: none;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Real text columns — components/notebook/TextBlockContent.js AND
+   components/notebook/DocumentBlock.js
+   ══════════════════════════════════════════════════════════════════════
+   Deliberately unprefixed — NOT scoped under [data-ds-text] or
+   [data-ds-doc] the way the rest of each file's own styles are. This is
+   the one structural element genuinely shared between Notes and Document
+   (see lib/columns.js's own header comment), so it gets one rule here
+   instead of two copies that can drift, the same reasoning pagesetup.js
+   gives for centralising page geometry instead of duplicating it per
+   consumer.
+
+   Width is carried entirely by the row's own inline grid-template-columns
+   (written by lib/columns.js and by the resize-drag handler in each
+   editor) — nothing here sets a width. This stylesheet only draws the
+   gutter and sizes the drag hit-area to match it. */
+[data-type="columns"] {
+  display: grid;
+  margin: 0.5em 0;
+  position: relative;
+}
+[data-type="columns"] .ds-col {
+  min-width: 0;   /* without this, one long unbroken token (a URL, a code
+                     string) blows out its track's width instead of
+                     wrapping — the one line in this whole block that
+                     matters most and looks least important. */
+}
+[data-type="columns"] .ds-col > *:last-child {
+  margin-bottom: 0;
+}
+[data-type="col-divider"] {
+  cursor: col-resize;
+  position: relative;
+}
+[data-type="col-divider"]::after {
+  content: '';
+  position: absolute;
+  top: 2px; bottom: 2px; left: 50%;
+  width: 1px;
+  background: var(--ds-border);
+  transform: translateX(-50%);
+  transition: background var(--ds-motion-hover) var(--ds-ease-standard),
+              width var(--ds-motion-hover) var(--ds-ease-standard);
+}
+[data-type="col-divider"]:hover::after,
+[data-type="col-divider"][data-dragging]::after {
+  background: var(--ds-accent);
+  width: 2px;
 }

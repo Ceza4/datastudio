@@ -360,6 +360,10 @@ export default function PdfAnnotationLayer({
               style={{
                 position: 'absolute', left: p.x, top: p.y - size * 0.8,
                 color: edit.color || '#000',
+                /* NOT a token, and not an oversight. pdf-lib embeds this run as
+                   base-14 Helvetica on export, so the on-screen preview has to
+                   be Helvetica too or the overlay and the exported PDF
+                   disagree about where every glyph sits. Leave it. */
                 fontFamily: 'Helvetica, Arial, sans-serif',
                 fontSize: size, lineHeight: 1.2, whiteSpace: 'pre',
                 outline: on ? `2px solid ${accent}` : 'none',
@@ -450,15 +454,15 @@ export default function PdfAnnotationLayer({
             width: hoverRect.w, height: hoverRect.h,
             background: `${hoverRun.upright ? accent : red}1f`,
             border: `1px solid ${hoverRun.upright ? accent : red}`,
-            borderRadius: 2, pointerEvents: 'none',
+            borderRadius: 4, pointerEvents: 'none',
           }} />
           {!hoverRun.upright && (
             <div style={{
               position: 'absolute', left: hoverRect.x,
               top: Math.max(0, hoverRect.y - 17),
-              padding: '1px 5px', borderRadius: 3,
+              padding: '2px 6px', borderRadius: 4,
               background: surface, border: `1px solid ${red}`, color: red,
-              fontFamily: 'var(--ds-font-mono)', fontSize: 9, whiteSpace: 'nowrap',
+              fontFamily: 'var(--ds-font-mono)', fontSize: 11, whiteSpace: 'nowrap',
               pointerEvents: 'none',
             }}>
               Rotated text — can’t be rewritten
@@ -495,7 +499,7 @@ export default function PdfAnnotationLayer({
               font: `${editor.run.size * (viewport.scale || 1)}px Helvetica, Arial, sans-serif`,
               color: text, background: surface,
               border: `1px solid ${fitState === 'nofit' ? red : accent}`,
-              borderRadius: 3, outline: 'none',
+              borderRadius: 4, outline: 'none',
             }} />
 
           {/* Whether it will fit has to be answerable before Enter, not after
@@ -505,10 +509,10 @@ export default function PdfAnnotationLayer({
             top: editRect.y + editRect.h + 20 > height
               ? Math.max(0, editRect.y - 18)
               : editRect.y + editRect.h + 4,
-            display: 'flex', alignItems: 'center', gap: 5,
+            display: 'flex', alignItems: 'center', gap: 6,
             padding: '2px 6px', borderRadius: 4,
             background: surface, border: `1px solid ${fitState === 'nofit' ? red : border}`,
-            fontFamily: 'var(--ds-font-mono)', fontSize: 9, whiteSpace: 'nowrap',
+            fontFamily: 'var(--ds-font-mono)', fontSize: 11, whiteSpace: 'nowrap',
             pointerEvents: 'none',
           }}>
             <span style={{ width: 5, height: 5, borderRadius: '50%', background: fitTone, flexShrink: 0 }} />
@@ -534,10 +538,10 @@ export default function PdfAnnotationLayer({
           placeholder="Type, then Enter"
           style={{
             position: 'absolute', left: textAt.x, top: textAt.y,
-            minWidth: 140, padding: '1px 3px',
+            minWidth: 140, padding: '2px 4px',
             font: `${12 * (viewport.scale || 1)}px Helvetica, Arial, sans-serif`,
             color: '#000', background: 'rgba(255,255,255,0.95)',
-            border: `1px solid ${accent}`, borderRadius: 3, outline: 'none',
+            border: `1px solid ${accent}`, borderRadius: 4, outline: 'none',
           }} />
       )}
 
@@ -546,7 +550,7 @@ export default function PdfAnnotationLayer({
       {tool !== 'select' && !pageEdits.length && !drag && !strokePts && !textAt && !editor && (
         <div style={{
           position: 'absolute', left: 0, right: 0, bottom: 8, textAlign: 'center',
-          fontSize: 10, color: text3, fontFamily: 'var(--ds-font-body)',
+          fontSize: 11, color: text3, fontFamily: 'var(--ds-font-body)',
           pointerEvents: 'none', textShadow: '0 1px 3px rgba(255,255,255,0.9)',
         }}>
           {tool === 'text' ? 'Click where the text should go'

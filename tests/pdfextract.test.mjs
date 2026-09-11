@@ -1,7 +1,7 @@
 /*
   tests/pdfextract.test.mjs
   --------------------------------------------------------------------------
-  Turning a page's text runs into lines, paragraphs and tables.
+  Turning a page's text runs into lines and paragraphs.
 
   This is the most heuristic code in the PDF feature — a PDF has no concept of
   a paragraph, so every bit of structure is inferred from geometry. It's also
@@ -17,8 +17,8 @@
   -------------------------------------------------------------------------- */
 
 import {
-  groupIntoLines, groupIntoParagraphs, detectTable,
-  extractText, extractTable, paragraphsToHtml, summarisePage,
+  groupIntoLines, groupIntoParagraphs,
+  extractText, paragraphsToHtml, summarisePage,
 } from '../lib/pdfextract.js'
 
 let pass = 0, fail = 0
@@ -141,91 +141,13 @@ console.log('\n groupIntoParagraphs — indents and hyphens')
      'a word hyphenated across a line break is rejoined')
 }
 
-/* ── tables ──────────────────────────────────────────────────────────── */
-console.log('\n detectTable — a clean table')
-{
-  const items = [
-    run('Company', 72, 700, { font: 'Helvetica-Bold' }), run('Deal', 220, 700, { font: 'Helvetica-Bold' }), run('Status', 340, 700, { font: 'Helvetica-Bold' }),
-    run('Acme',    72, 680), run('12000', 220, 680), run('Won',   340, 680),
-    run('Globex',  72, 660), run('8400',  220, 660), run('Open',  340, 660),
-    run('Initech', 72, 640), run('15200', 220, 640), run('Lost',  340, 640),
-  ]
-  const t = extractTable(items)
-  ok(t.ok, 'detected', t.ok ? '' : t.reason)
-  ok(t.headers.length === 3, 'three columns')
-  ok(t.headerDetected === true, 'a bold first row is recognised as a header')
-  ok(t.headers.join() === 'Company,Deal,Status', 'header text read correctly')
-  ok(t.rows.length === 3, 'three data rows')
-  ok(t.rows[0].join() === 'Acme,12000,Won', 'first row correct')
-  ok(t.rows[2].join() === 'Initech,15200,Lost', 'last row correct')
-  ok(t.bbox && t.bbox.w > 0 && t.bbox.h > 0, 'a bounding box is reported, for provenance')
-}
+/* ── tables ──────────────────────────────────────────────────────────────
+   detectTable and extractTable were removed: geometry-based column clustering
+   was the "sloppy extraction" people actually experienced, and a plausible-but-
+   wrong table is precisely the error a preview does not catch. Their tests went
+   with them rather than being left asserting behaviour that no longer exists.
+   See the note at the top of lib/pdfextract.js. */
 
-console.log('\n detectTable — no header')
-{
-  const items = []
-  for (let i = 0; i < 4; i++) {
-    const y = 700 - i * 20
-    items.push(run(`Row${i}`, 72, y), run(`${i * 10}`, 220, y), run('x', 340, y))
-  }
-  const t = extractTable(items)
-  ok(t.ok, 'detected')
-  ok(t.headerDetected === false, 'uniform typography means no header row')
-  ok(t.headers[0] === 'Column 1', 'generic headers are invented')
-  ok(t.rows.length === 4, 'and NO data row is stolen to be the header')
-}
-
-console.log('\n detectTable — refusal')
-{
-  const prose = []
-  for (let i = 0; i < 8; i++) prose.push(run(`Line ${i} of ordinary flowing prose text`, 72, 700 - i * 14))
-  ok(!extractTable(prose).ok, 'prose is not mistaken for a table')
-
-  ok(!extractTable([]).ok, 'an empty page is refused')
-  ok(!extractTable([run('One line only', 72, 700)]).ok, 'a single line is refused')
-
-  const twoRows = [
-    run('A', 72, 700), run('B', 200, 700),
-    run('C', 72, 680), run('D', 200, 680),
-  ]
-  ok(!extractTable(twoRows).ok, 'two rows is below the minimum')
-
-  ok(typeof extractTable(prose).reason === 'string' && extractTable(prose).reason.length > 0,
-     'and a refusal explains itself, rather than just returning false')
-}
-
-console.log('\n detectTable — right-aligned numbers')
-{
-  /* A numeric column is usually right-aligned, so each cell STARTS at a
-     different x. Clustering on left edges alone would drop the column
-     entirely — which would quietly lose every figure in a financial table. */
-  const items = [
-    run('Item', 72, 700, { font: 'Helvetica-Bold' }), run('Amount', 300, 700, { font: 'Helvetica-Bold' }),
-    run('Rent',      72, 680), run('1200',   316, 680),
-    run('Utilities', 72, 660), run('84',     334, 660),
-    run('Software',  72, 640), run('12500',  310, 640),
-  ]
-  const t = extractTable(items)
-  ok(t.ok, 'detected despite ragged left edges', t.ok ? '' : t.reason)
-  ok(t.headers.length === 2, 'two columns')
-  const amounts = t.rows.map(r => r[1])
-  ok(amounts.every(Boolean), `every number landed in the amount column (${JSON.stringify(amounts)})`)
-}
-
-console.log('\n detectTable — a paragraph sitting above a table')
-{
-  const items = [
-    run('Some introductory prose about the figures below', 72, 760),
-    run('Company', 72, 700, { font: 'Helvetica-Bold' }), run('Deal', 220, 700, { font: 'Helvetica-Bold' }),
-    run('Acme',   72, 680), run('12000', 220, 680),
-    run('Globex', 72, 660), run('8400',  220, 660),
-    run('Initech', 72, 640), run('15200', 220, 640),
-  ]
-  const t = extractTable(items)
-  ok(t.ok, 'the table is still found')
-  ok(t.rows.every(r => !r.join(' ').includes('introductory')),
-     'the prose line is not swallowed as a one-cell row')
-}
 
 /* ── extractText ─────────────────────────────────────────────────────── */
 console.log('\n extractText')
@@ -267,37 +189,24 @@ console.log('\n summarisePage')
 
   const prose = summarisePage([run('Some words here on a page', 72, 700)])
   ok(prose.empty === false && prose.words === 6, 'counts words ("Some words here on a page" is six)')
-  ok(prose.table === null, 'no table claimed for a single line')
 
-  const table = summarisePage([
+  /* The summary NEVER claims a table any more, on any input. It used to report
+     detectTable's guess in the panel header — "a 4×3 table looks extractable" —
+     which made an inference sound like a finding before the user had seen a
+     single cell. The tabular input below is the exact shape that used to
+     trigger it. */
+  const tabular = summarisePage([
     run('A', 72, 700, { font: 'Helvetica-Bold' }), run('B', 220, 700, { font: 'Helvetica-Bold' }),
     run('1', 72, 680), run('2', 220, 680),
     run('3', 72, 660), run('4', 220, 660),
     run('5', 72, 640), run('6', 220, 640),
   ])
-  ok(table.table !== null, 'a table is announced when one is present')
-  ok(/table/i.test(table.label), 'and the label says so')
+  ok(tabular.table === undefined, 'no table field is reported at all, even for tabular-looking runs')
+  ok(!/table/i.test(tabular.label), 'and the label never promises one')
+  ok(/lines/.test(tabular.label) && /words/.test(tabular.label), 'the label reports lines and words instead')
 }
 
 /* ── defensive ───────────────────────────────────────────────────────── */
-console.log('\n bad input')
-{
-  ok(groupIntoLines(null).length === 0, 'null items')
-  ok(groupIntoLines(undefined).length === 0, 'undefined items')
-  ok(groupIntoLines([]).length === 0, 'empty items')
-  ok(groupIntoLines([{ str: 'no transform' }]).length === 0, 'a run with no transform is skipped')
-  ok(groupIntoLines([{ str: '', transform: [12, 0, 0, 12, 0, 0] }]).length === 0, 'empty strings are skipped')
-  ok(groupIntoLines([{ str: 'x', transform: [12, 0, 0, 12, NaN, 0] }]).length === 0, 'NaN coordinates are skipped')
-  ok(groupIntoParagraphs(null).length === 0, 'null lines')
-  ok(groupIntoParagraphs([]).length === 0, 'empty lines')
-  ok(detectTable(null).ok === false, 'null lines refused')
-
-  // Whitespace-only runs shouldn't create phantom lines.
-  ok(groupIntoLines([{ str: '   ', transform: [12, 0, 0, 12, 10, 10] }]).length === 1,
-     'a whitespace run still occupies a line (it carries position), but…')
-  ok(groupIntoLines([{ str: '   ', transform: [12, 0, 0, 12, 10, 10] }])[0].text === '',
-     '…its text is empty after normalisation')
-}
 
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

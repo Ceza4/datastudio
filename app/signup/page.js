@@ -63,10 +63,17 @@ export default function Signup() {
           <div style={{width:'44px', height:'44px', borderRadius:'50%', background:t.accentDim, color:t.accent, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px', fontSize:'20px'}}>&#9993;</div>
           <h1 style={{fontFamily:'var(--ds-font-head)', fontSize:'19px', fontWeight:700, color:t.text, marginBottom:'8px'}}>Check your email</h1>
           <p style={{fontSize:'13px', color:t.text2, lineHeight:1.6, marginBottom:'20px'}}>{done}</p>
+          {/* Was "you don't have to wait for it — start working now". The
+              most misleading of the three: at this point there is no session
+              at all, because the address is unconfirmed, so that link was a
+              redirect straight back to the sign-in form for somebody who had
+              just been told they could skip ahead.
+
+              Replaced with the thing they actually need to know, which is how
+              long the link lasts. */}
           <p style={{fontSize:'12px', color:t.text2, lineHeight:1.6}}>
-            You don&#39;t have to wait for it —{' '}
-            <a href="/app" style={{color:t.accent, textDecoration:'none', fontWeight:500}}>start working now</a>
-            {' '}and your account will pick it up when you sign in.
+            The link works once and expires in 24 hours. Nothing else is needed —
+            opening it signs you in.
           </p>
         </div>
       </div>
@@ -221,20 +228,35 @@ export default function Signup() {
           Continue with Google
         </button>
 
-        {/* TERMS */}
-        <p style={{textAlign:'center', fontSize:'11px', color:t.text2, marginTop:'20px', lineHeight:1.6}}>
-          By signing up you agree to our{' '}
-          <a href="#" style={{color:t.accent, textDecoration:'none'}}>Terms</a>
-          {' '}and{' '}
-          <a href="#" style={{color:t.accent, textDecoration:'none'}}>Privacy Policy</a>
-        </p>
+        {/* THE TERMS SENTENCE IS GONE, AND THAT IS THE FIX.
 
-        <p style={{textAlign:'center', fontSize:'12px', color:t.text3, marginTop:'18px', lineHeight:1.6}}>
-          {isSupabaseConfigured()
-            ? 'An account is only for syncing across devices. '
-            : 'Accounts aren’t set up on this build. '}
-          <a href="/app" style={{color:t.text2, textDecoration:'underline'}}>Use DataStudio without one</a>
-        </p>
+            It read "By signing up you agree to our Terms and Privacy Policy",
+            with both words linked to href="#". There are no such documents, so
+            the sentence asserted agreement to nothing, and the links went
+            nowhere — a dead link in the one place on the site where a user is
+            being asked to agree to something.
+
+            Three ways out, and only one of them is honest. Linking to stub
+            pages that say "coming soon" makes the sentence absurd: you have
+            agreed to a page that admits it does not exist. Writing the
+            documents is not an engineering task and inventing legal text would
+            be worse than the dead link. So: removed until real documents are
+            published, at which point this becomes four lines and a route.
+
+            Removed rather than reworded, for the same reason as the block
+            below — a claim you cannot back is not improved by softening it. */}
+
+        {/* Was "an account is only for syncing across devices — use
+            DataStudio without one". Both halves are now false: an account is
+            required to open the app at all, and the link it offered is a
+            redirect back to /login. Removed rather than reworded, because the
+            honest version of the sentence says nothing the form does not
+            already say. */}
+        {!isSupabaseConfigured() && (
+          <p style={{textAlign:'center', fontSize:'12px', color:t.text3, marginTop:'18px', lineHeight:1.6}}>
+            Accounts aren’t set up on this build, so signing up won’t work yet.
+          </p>
+        )}
 
         {/* LOGIN LINK */}
         <p style={{textAlign:'center', fontSize:'13px', color:t.text2, marginTop:'16px'}}>

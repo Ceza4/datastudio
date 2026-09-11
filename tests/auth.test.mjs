@@ -29,6 +29,7 @@ import {
 
 let pass = 0, fail = 0
 const ok = (c, m) => { c ? (pass++, console.log('  ok   ' + m)) : (fail++, console.log('  FAIL ' + m)) }
+const eq = (a, b, m) => ok(a === b, `${m}  (got ${JSON.stringify(a)})`)
 
 /** A Supabase client just real enough to branch on. */
 const fakeClient = (behaviour = {}) => ({
@@ -77,13 +78,43 @@ console.log('\n describeAuthError')
 {
   ok(describeAuthError({ message: 'Invalid login credentials' }).includes('do not match'),
      'the most common error is rewritten into something actionable')
-  ok(describeAuthError({ message: 'User already registered' }).includes('signing in'),
-     'and an existing account points at the right door')
-  ok(describeAuthError({ message: 'Email not confirmed' }).includes('inbox'), 'unconfirmed email says where to look')
+  /* THE ASSERTION IS NOW THE OPPOSITE OF WHAT IT WAS, and that is the point.
+     It used to require the message to say "try signing in instead" — helpful,
+     and an account-enumeration oracle: it turns the signup form into a free
+     API for asking "does this person use DataStudio?", which for a tool
+     holding unpublished research is itself worth protecting. The message is
+     now identical to the ordinary success case. */
+  ok(!/already|signing in|exists/i.test(describeAuthError({ message: 'User already registered' })),
+     'an existing address is NOT disclosed — the message must not differ from a fresh signup')
+  ok(describeAuthError({ message: 'User already registered' }).includes('inbox'),
+     'it says the same thing a real signup says: check your inbox')
+  /* THIS ASSERTION USED TO BE ITS OPPOSITE, and the flip is the fix.
+
+     It required the unconfirmed-email case to say "check your inbox" — helpful
+     wording, and an account-enumeration oracle: Supabase returns that error
+     ONLY when the credentials are otherwise valid, so a distinct message is a
+     positive identification of a registered address. Every other door in this
+     file was carefully closed and this one was propped open with good
+     intentions.
+
+     The guidance did not disappear; it moved to signIn(), which can say it
+     safely because by then the password has already proved the caller owns the
+     account. See the next block. */
+  eq(describeAuthError({ message: 'Email not confirmed' }),
+     describeAuthError({ message: 'Invalid login credentials' }),
+     'an unconfirmed address is INDISTINGUISHABLE from a wrong password — the message must be byte-identical')
   ok(describeAuthError({ message: 'Failed to fetch' }).includes('saved on this device'),
      'a network failure reassures rather than alarms — nothing was lost')
-  ok(describeAuthError({ message: 'Kaboom 47' }) === 'Kaboom 47',
-     'an UNMAPPED error is passed through verbatim — hiding it behind "something went wrong" is how the gap survives')
+  /* ALSO FLIPPED. Passing the raw message through was meant to stop unmapped
+     errors from being quietly swallowed — right instinct, wrong channel.
+     GoTrue's unmapped prose includes "For security purposes, you can only
+     request this after 47 seconds", which renders the state of a per-address
+     rate limiter onto the screen: the same oracle again, arriving through the
+     branch built to catch the ones we forgot. It now goes to console.warn,
+     where the person who can fix it is looking. */
+  ok(describeAuthError({ message: 'For security purposes, you can only request this after 47 seconds' })
+       === 'Something went wrong. Try again.',
+     'an unmapped error does NOT reach the screen — GoTrue prose leaks rate-limiter state per address')
   ok(describeAuthError(null).length > 0, 'null does not produce an empty message')
 }
 
@@ -125,7 +156,22 @@ console.log('\n sign up')
   ok(pending.message.includes('a@b.co'), 'and the message names the address to go and check')
 
   const dup = await signUp('a@b.co', 'longenough', fakeClient({ signUp: { data: null, error: { message: 'User already registered' } } }))
-  ok(dup.status === AUTH.REJECTED && dup.message.includes('signing in'), 'a duplicate is rejected with advice')
+  ok(dup.message.includes('inbox') && !/already|exists/i.test(dup.message),
+     'a duplicate signup is indistinguishable from a new one, by message')
+
+  /* Supabase's own anti-enumeration shape, with email confirmation ON: an
+     existing address comes back as a user with an EMPTY identities array and
+     no error. Reporting anything other than an ordinary CONFIRM_EMAIL here
+     would undo that at the last step, in our own code. */
+  const existing = await signUp('a@b.co', 'longenough', fakeClient({
+    signUp: { data: { user: { id: 'u1', identities: [] }, session: null }, error: null },
+  }))
+  ok(existing.status === AUTH.CONFIRM_EMAIL,
+     'an address that already exists reports CONFIRM_EMAIL, exactly like a new one')
+  ok(existing.existing === true,
+     'the fact is still available server-side for logs — the leak is telling the BROWSER, not knowing it')
+  ok(pending.status === existing.status && pending.message.replace(/a@b\.co/, '') === existing.message.replace(/a@b\.co/, ''),
+     'and the two outcomes are byte-identical apart from the address itself')
 
   const down = await signUp('a@b.co', 'longenough', throwingClient('Failed to fetch'))
   ok(down.status === AUTH.OFFLINE, 'and an unreachable server is OFFLINE, not REJECTED — the difference is whether to retry')
@@ -185,6 +231,29 @@ console.log('\n the SDK is loaded lazily, and that has consequences')
   ok(attached === true, 'a client passed directly attaches synchronously')
   stop()
   ok(typeof stop === 'function', 'and the unsubscribe is returned immediately, so an effect can return it')
+}
+
+console.log('\n  the confirm-your-email guidance, moved to where it is safe')
+{
+  /* signIn only reaches this branch when signInWithPassword returns
+     email_not_confirmed, and Supabase returns that ONLY for otherwise-valid
+     credentials. So the caller has already proved they own the account, and
+     naming the reason tells them nothing a glance at their own inbox would
+     not. The oracle needs an answer from someone who does NOT have the
+     password; this branch is unreachable for them. */
+  const unconfirmed = {
+    auth: { signInWithPassword: async () => ({ data: null, error: { message: 'Email not confirmed', code: 'email_not_confirmed' } }) },
+  }
+  const res = await signIn('someone@example.com', 'correct horse battery', unconfirmed)
+  eq(res.status, AUTH.REJECTED, 'still a rejection — no session is issued')
+  ok(/confirm/i.test(res.message), 'and it says to confirm the address')
+
+  const wrongPassword = {
+    auth: { signInWithPassword: async () => ({ data: null, error: { message: 'Invalid login credentials' } }) },
+  }
+  const res2 = await signIn('someone@example.com', 'correct horse battery', wrongPassword)
+  ok(!/confirm|inbox/i.test(res2.message),
+     'while a wrong password says nothing about whether the address exists')
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`)

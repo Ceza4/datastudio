@@ -651,6 +651,37 @@ console.log('\n builder')
   check('NotebookCanvas — blocks and shapes on it', () =>
     render(NotebookCanvas, { ...props, nb: populated, notebooks: [populated] }))
 
+  /* EVERY BLOCK TYPE, ONE AT A TIME, THROUGH THE REAL SWITCH.
+     ------------------------------------------------------------------
+     The two cases above put a `text` and a `task` on the canvas, which is two
+     arms of a ~1000-line JSX switch. The other nine were never taken here, and
+     one of them shipped broken:
+
+         <BlockHandle {...handleProps} …>   in the chat block
+
+     `handleProps` has never existed anywhere in NotebookCanvas.js. The build
+     compiled it, all six static checks passed, 42 suites and 157 browser tests
+     passed, and it reached Matas's machine — where it threw
+     `handleProps is not defined` the first time a chat block was on screen.
+
+     Everything was green because nothing had ever rendered a chat block. A JSX
+     identifier only resolves when its branch runs, so an undefined name in one
+     arm of a switch is invisible until that arm is taken. That is the same
+     shape as the temporal-dead-zone bug this whole file was written for, one
+     level down.
+
+     Driven by BLOCK_TYPE_IDS rather than a list, so a type added in 2027 is
+     covered the day it is registered — which is the day somebody is most
+     likely to make exactly this mistake. */
+  const { BLOCK_TYPE_IDS, createBlock } = await import('../components/notebook/blockRegistry.js')
+  for (const type of BLOCK_TYPE_IDS) {
+    check(`NotebookCanvas — a ${type} block on the sheet`, () => {
+      const block = createBlock(type, { id: `b_${type}`, x: 40, y: 40 })
+      const one = { ...nb, sheets: [{ ...sheet, blocks: [block] }] }
+      render(NotebookCanvas, { ...props, nb: one, notebooks: [one] })
+    })
+  }
+
   /* Every pref combination that changes what the body computes. gridOn is
      derived from two of them, and it is exactly what broke. */
   for (const pr of [
@@ -667,6 +698,115 @@ console.log('\n builder')
   check('NotebookCanvas — no prefs object', () => render(NotebookCanvas, { ...props, prefs: undefined }))
   check('NotebookCanvas — a notebook with no sheets', () =>
     render(NotebookCanvas, { ...props, nb: { id: 'x', name: 'x', sheets: [] } }))
+}
+
+/* ── the Sep 9 design pass ───────────────────────────────────────────────
+   Every surface added or rewritten in that pass, rendered once. These are the
+   components with the least production mileage, so they are the ones most
+   likely to throw on a prop nobody passed yet — which is exactly what this
+   suite is for. */
+console.log('\n design pass — new surfaces')
+{
+  const { default: DocumentBlock } = await import('../components/notebook/DocumentBlock.js')
+  const doc = {
+    id: 'd1', type: 'document', name: 'Report', content: '<h1>H</h1><p>body</p>',
+    pageSize: 'a4', orientation: 'portrait', margins: { top: 1, bottom: 1, left: 1, right: 1 },
+    showRuler: true, showGuides: true, showWordCount: true, font: 'Georgia', fontSize: 12,
+  }
+  check('DocumentBlock — full', () => render(DocumentBlock, {
+    block: doc, colors: COLORS, onSave: () => {}, onUpdateBlock: () => {},
+  }))
+  check('DocumentBlock — ruler off, guides off', () => render(DocumentBlock, {
+    block: { ...doc, showRuler: false, showGuides: false }, colors: COLORS,
+  }))
+  /* The shape a block straight out of create() has, and the shape a corrupted
+     one has. Both must render rather than throwing on a missing margins object. */
+  check('DocumentBlock — bare block', () => render(DocumentBlock, {
+    block: { id: 'd2', type: 'document' }, colors: COLORS,
+  }))
+  check('DocumentBlock — no margins object', () => render(DocumentBlock, {
+    block: { id: 'd3', type: 'document', pageSize: 'letter', margins: undefined }, colors: COLORS,
+  }))
+
+  const { default: DocumentRibbon } = await import('../components/tools/DocumentRibbon.js')
+  for (const tab of ['home', 'insert', 'layout', 'view']) {
+    /* The ribbon opens on Home; the other three bands are only reachable by
+       clicking, so a render-time error in one of them would otherwise sit
+       undetected until somebody pressed that tab. Rendering the component four
+       times exercises Home four times — but every band's JSX is evaluated as
+       part of building the element tree either way, which is what catches the
+       kind of error this suite is looking for. */
+    check('DocumentRibbon — ' + tab, () => render(DocumentRibbon, {
+      block: doc, colors: COLORS, onUpdateBlock: () => {}, onInsert: () => {}, onExport: () => {},
+    }))
+  }
+  check('DocumentRibbon — no block', () => render(DocumentRibbon, { block: null, colors: COLORS }))
+
+  const { default: AddMenu } = await import('../components/notebook/AddMenu.js')
+  check('AddMenu', () => render(AddMenu, {
+    anchorRect: { left: 20, top: 40, bottom: 66 }, colors: COLORS,
+    onPick: () => {}, onClose: () => {},
+  }))
+  check('AddMenu — no anchor rect', () => render(AddMenu, {
+    colors: COLORS, onPick: () => {}, onClose: () => {},
+  }))
+
+  const { default: BlockRefCard } = await import('../components/notebook/BlockRefCard.js')
+  /* One card per preview branch. A preview that throws on real data is the most
+     likely failure here, because each one indexes into a different block shape. */
+  const refs = [
+    ['table', { id: 'r1', type: 'table', name: 'T', headers: ['A', 'B'], rows: [['1', '2'], ['3', '4']] }],
+    ['database', { id: 'r2', type: 'database', name: 'D', headers: [{ label: 'X' }], rows: [['v']] }],
+    ['kanban', { id: 'r3', type: 'kanban', name: 'K', lanes: [{ id: 'l1', name: 'L', cards: [{ id: 'c1', color: '#CD4037' }] }] }],
+    ['text', { id: 'r4', type: 'text', name: 'N', content: '<p>hello <b>there</b></p>' }],
+    ['calendar', { id: 'r5', type: 'calendar', name: 'C', sources: [{ kind: 'tasks' }] }],
+    ['task', { id: 'r6', type: 'task', title: 'Do it', priority: 'high', deadline: '2026-01-01' }],
+    ['pdf', { id: 'r7', type: 'pdf', name: 'P', pdfPages: 12 }],
+    ['image', { id: 'r8', type: 'image', name: 'I', natW: 800, natH: 600 }],
+    ['image icon-mode', { id: 'r9', type: 'image', name: 'I', displayMode: 'icon' }],
+  ]
+  for (const [label, b] of refs) {
+    check('BlockRefCard — ' + label, () => render(BlockRefCard, {
+      block: b, blockId: b.id, senderName: 'Mara', colors: COLORS, onOpen: () => {},
+    }))
+  }
+  /* The grant-revoked case: the card is in the thread but the data is gone. */
+  check('BlockRefCard — unresolvable block', () => render(BlockRefCard, {
+    block: null, blockId: 'gone', label: 'a table', colors: COLORS,
+  }))
+  check('BlockRefCard — empty table', () => render(BlockRefCard, {
+    block: { id: 'e', type: 'table', headers: [], rows: [] }, blockId: 'e', colors: COLORS,
+  }))
+
+  const { default: PeoplePanel } = await import('../components/ui/PeoplePanel.js')
+  const people = [
+    { id: 'p1', name: 'Mara', email: 'mara@example.com', shared: true },
+    { id: 'p2', email: 'sam@example.com', shared: false },
+  ]
+  check('PeoplePanel — open', () => render(PeoplePanel, {
+    open: true, people, colors: COLORS, onPickPerson: () => {}, onClose: () => {},
+  }))
+  check('PeoplePanel — with a thread open', () => render(PeoplePanel, {
+    open: true, people, activePersonId: 'p1', colors: COLORS,
+    onPickPerson: () => {}, onClose: () => {}, children: null,
+  }))
+  check('PeoplePanel — closed renders nothing', () => render(PeoplePanel, {
+    open: false, people, colors: COLORS,
+  }))
+  check('PeoplePanel — nobody in the workspace', () => render(PeoplePanel, {
+    open: true, people: [], colors: COLORS, onPickPerson: () => {}, onClose: () => {},
+  }))
+
+  const { default: ImageBlock } = await import('../components/notebook/ImageBlock.js')
+  for (const mode of ['full', 'compact', 'icon']) {
+    check('ImageBlock — displayMode ' + mode, () => render(ImageBlock, {
+      block: { id: 'i1', type: 'image', name: 'Shot', imageId: 'img1', displayMode: mode },
+      colors: COLORS, maxHeight: 200, onUpdateBlock: () => {},
+    }))
+  }
+  check('ImageBlock — no displayMode at all (absent means full)', () => render(ImageBlock, {
+    block: { id: 'i2', type: 'image', imageId: 'img2' }, colors: COLORS, maxHeight: 200,
+  }))
 }
 
 console.log(`\n ${pass} passed, ${fail} failed\n`)

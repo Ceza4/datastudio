@@ -67,7 +67,7 @@ const shownDate = ms => {
 function SectionLabel({ children }) {
   return (
     <div style={{
-      fontSize: 9, fontFamily: mono, letterSpacing: 0.9, textTransform: 'uppercase',
+      fontSize: 11, fontFamily: mono, letterSpacing: 0.9, textTransform: 'uppercase',
       color: 'var(--ds-text-3)', margin: '0 0 7px',
     }}>
       {children}
@@ -220,15 +220,15 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
       aria-label={`${label} template`}
       style={{
         display: 'flex', alignItems: 'center', gap: 4,
-        padding: '4px 7px', borderRadius: 6, cursor: 'pointer',
+        padding: '4px 8px', borderRadius: 6, cursor: 'pointer',
         border: `1px solid ${border}`, background: 'transparent',
         color: tone === 'danger' ? red : text3,
-        fontFamily: body, fontSize: 10.5, lineHeight: 1,
+        fontFamily: body, fontSize: 11, lineHeight: 1,
       }}
       onMouseEnter={e => { e.currentTarget.style.color = tone === 'danger' ? red : accent; e.currentTarget.style.borderColor = tone === 'danger' ? red : accent }}
       onMouseLeave={e => { e.currentTarget.style.color = tone === 'danger' ? red : text3; e.currentTarget.style.borderColor = border }}
     >
-      <Icon name={icon} size={11} /> {label}
+      <Icon name={icon} size={12} /> {label}
     </button>
   )
 
@@ -267,14 +267,14 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
         aria-expanded={saveOpen}
         data-ds-builder-save
         style={{
-          width: '100%', display: 'flex', alignItems: 'center', gap: 7,
-          padding: '9px 10px', borderRadius: 8, cursor: 'pointer',
+          width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+          padding: '10px 10px', borderRadius: 8, cursor: 'pointer',
           border: `1px solid ${saveOpen ? accent : border}`,
           background: saveOpen ? accentDim : 'transparent',
           color: saveOpen ? accent : text2,
-          fontFamily: body, fontSize: 12, textAlign: 'left',
+          fontFamily: body, fontSize: 13, textAlign: 'left',
         }}>
-        <Icon name="action-add" size={13} />
+        <Icon name="action-add" size={14} />
         <span style={{ flex: 1 }}>Save this workspace as a template</span>
       </button>
 
@@ -299,7 +299,7 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
             style={{
               width: '100%', background: 'transparent', border: 'none',
               borderBottom: `1px solid ${accent}`, color: text,
-              fontFamily: body, fontSize: 12.5, fontWeight: 600,
+              fontFamily: body, fontSize: 13, fontWeight: 600,
               outline: 'none', padding: '3px 0', minWidth: 0,
             }} />
           <input
@@ -314,7 +314,7 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
             style={{
               width: '100%', marginTop: 8, background: 'transparent', border: 'none',
               borderBottom: `1px solid ${border}`, color: text2,
-              fontFamily: body, fontSize: 11.5,
+              fontFamily: body, fontSize: 12,
               outline: 'none', padding: '3px 0', minWidth: 0,
             }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 9 }}>
@@ -325,35 +325,35 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
                 already written down is .ds-btn-primary in globals.css. Reusing
                 it beats adding a seventh hardcoded '#fff'. */}
             <button className="ds-btn ds-btn-primary" onClick={commitSave} disabled={busy}>Save</button>
-            <span style={{ fontSize: 10, color: text2 }}>Enter to save · Esc to cancel</span>
+            <span style={{ fontSize: 11, color: text2 }}>Enter to save · Esc to cancel</span>
           </div>
         </div>
       )}
 
       {notice && (
         <div role="status" data-ds-builder-notice style={{
-          marginTop: 8, padding: '7px 9px', borderRadius: 6,
+          marginTop: 8, padding: '8px 10px', borderRadius: 6,
           background: 'var(--ds-amber-bg)', border: '1px solid var(--ds-amber)',
           /* The sidebar's save-failure banner reaches for a hardcoded brown
              here. On the light amber ground the body text colour is both
              legible and already a token, and the amber icon beside it carries
              the tone — so no seventh hex enters the app for this. */
           color: dark ? 'var(--ds-amber)' : text,
-          fontSize: 10.5, lineHeight: 1.45,
+          fontSize: 11, lineHeight: 1.45,
           display: 'flex', gap: 6,
         }}>
-          <Icon name="status-warning" size={13} style={{ marginTop: 1, flexShrink: 0 }} />
+          <Icon name="status-warning" size={14} style={{ marginTop: 1, flexShrink: 0 }} />
           <span>{notice}</span>
         </div>
       )}
 
       {storeError && (
         <div role="alert" style={{
-          marginTop: 8, padding: '7px 9px', borderRadius: 6,
+          marginTop: 8, padding: '8px 10px', borderRadius: 6,
           background: 'var(--ds-red-bg)', border: `1px solid ${red}`, color: red,
-          fontSize: 10.5, lineHeight: 1.45, display: 'flex', gap: 6,
+          fontSize: 11, lineHeight: 1.45, display: 'flex', gap: 6,
         }}>
-          <Icon name="status-error" size={13} style={{ marginTop: 1, flexShrink: 0 }} />
+          <Icon name="status-error" size={14} style={{ marginTop: 1, flexShrink: 0 }} />
           <span>{storeError}</span>
         </div>
       )}
@@ -364,11 +364,11 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
 
         {!loading && templates.length === 0 && (
           <div data-ds-builder-empty style={{
-            padding: '13px 12px', borderRadius: 8,
+            padding: '14px 12px', borderRadius: 8,
             border: `1px dashed ${border}`,
-            fontSize: 11.5, color: text2, lineHeight: 1.6,
+            fontSize: 12, color: text2, lineHeight: 1.6,
           }}>
-            <Icon name="status-empty" size={15} style={{ color: text3, marginBottom: 6 }} />
+            <Icon name="status-empty" size={16} style={{ color: text3, marginBottom: 6 }} />
             {/* One sentence, and it says what the thing DOES. "No templates
                 yet" would be a label for an empty box, not an explanation. */}
             A template is a copy of a whole workspace — its sheets, blocks and
@@ -379,7 +379,7 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
 
         {templates.map(t => (
           <div key={t.id} data-ds-template-row style={{
-            padding: '9px 10px', marginBottom: 6, borderRadius: 8,
+            padding: '10px 10px', marginBottom: 6, borderRadius: 8,
             border: `1px solid ${border}`, background: 'transparent',
           }}>
             {renamingId === t.id ? (
@@ -396,25 +396,25 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
                 style={{
                   width: '100%', background: 'transparent', border: 'none',
                   borderBottom: `1px solid ${accent}`, color: text,
-                  fontFamily: body, fontSize: 12.5, fontWeight: 600,
+                  fontFamily: body, fontSize: 13, fontWeight: 600,
                   outline: 'none', padding: '1px 0', minWidth: 0,
                 }} />
             ) : (
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {t.name}
               </div>
             )}
 
             {t.description && (
-              <div style={{ marginTop: 3, fontSize: 10.5, color: text2, lineHeight: 1.45 }}>{t.description}</div>
+              <div style={{ marginTop: 3, fontSize: 11, color: text2, lineHeight: 1.45 }}>{t.description}</div>
             )}
 
-            <div style={{ marginTop: 4, fontSize: 10, fontFamily: mono, color: text3, display: 'flex', gap: 8 }}>
+            <div style={{ marginTop: 4, fontSize: 11, fontFamily: mono, color: text3, display: 'flex', gap: 8 }}>
               <span>{describeTemplate(t)}</span>
               <span>{shownDate(t.createdAt)}</span>
             </div>
 
-            <div style={{ marginTop: 8, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {rowBtn('Duplicate', 'action-duplicate', () => duplicate(t))}
               {/* Same press handling as the save opener, for the same reason:
                   this swaps the title for an autoFocus input. */}
@@ -423,14 +423,14 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
                 aria-label="Rename template"
                 style={{
                   display: 'flex', alignItems: 'center', gap: 4,
-                  padding: '4px 7px', borderRadius: 6, cursor: 'pointer',
+                  padding: '4px 8px', borderRadius: 6, cursor: 'pointer',
                   border: `1px solid ${border}`, background: 'transparent',
-                  color: text3, fontFamily: body, fontSize: 10.5, lineHeight: 1,
+                  color: text3, fontFamily: body, fontSize: 11, lineHeight: 1,
                 }}
                 onMouseEnter={e => { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = accent }}
                 onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.borderColor = border }}
               >
-                <Icon name="action-rename" size={11} /> Rename
+                <Icon name="action-rename" size={12} /> Rename
               </button>
               {rowBtn('Delete', 'action-delete', () => remove(t), 'danger')}
             </div>

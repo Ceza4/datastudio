@@ -4,7 +4,7 @@ import Icon from '../ui/Icon'
 import { useToast } from '../ui/Toast'
 import { getPdf, formatPdfSize } from '../../lib/pdfs'
 import { openDocument, closeDocument, pageGeometry, renderPage, documentInfo, translateError, pageTextItems } from '../../lib/pdfdoc'
-import { fitScale, clampScale, canvasSizeFor, rectToScreen, MIN_SCALE, MAX_SCALE } from '../../lib/pdfspace'
+import { fitScale, clampScale, canvasSizeFor, rectToScreen, MIN_SCALE, MAX_SCALE, CANVAS_ZOOM_MAX } from '../../lib/pdfspace'
 import { editableRuns, mergeRunsIntoLines } from '../../lib/pdfreplace'
 import { putPdfEdits, revertPdf } from '../../lib/pdfs'
 import { applyEdits, editedFilename, hasEdits } from '../../lib/pdfexport'
@@ -315,7 +315,13 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
       viewportRef.current = viewport
 
       const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
-      const size = canvasSizeFor(viewport, dpr)
+      /* Over-rendered by the canvas's own maximum zoom, so a page stays sharp
+         all the way to the 3× ceiling instead of softening as you zoom in. The
+         CSS size below is unchanged — only the backing store grows — so nothing
+         about layout, coordinates or the text layer moves. See
+         lib/pdfspace.js's CANVAS_ZOOM_MAX for why a static factor is enough and
+         a dynamic re-render is not needed. */
+      const size = canvasSizeFor(viewport, dpr, CANVAS_ZOOM_MAX)
 
       canvas.width = size.width
       canvas.height = size.height
@@ -610,9 +616,9 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
   if (!block.pdfId) {
     return (
       <Shell colors={colors}>
-        <Icon name="block-pdf" size={30} style={{ opacity: 0.4 }} />
-        <div style={{ fontSize: 12.5, color: text2, fontWeight: 600 }}>No document</div>
-        <div style={{ fontSize: 11, color: text2, lineHeight: 1.5, maxWidth: 240 }}>
+        <Icon name="block-pdf" size={32} style={{ opacity: 0.4 }} />
+        <div style={{ fontSize: 13, color: text2, fontWeight: 600 }}>No document</div>
+        <div style={{ fontSize: 12, color: text2, lineHeight: 1.5, maxWidth: 240 }}>
           Import a PDF from the sidebar, or drop one onto the canvas.
         </div>
       </Shell>
@@ -622,9 +628,9 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
   if (status === 'error') {
     return (
       <Shell colors={colors}>
-        <Icon name="status-error" size={22} style={{ color: red }} />
-        <div style={{ fontSize: 12.5, color: red, fontWeight: 600 }}>Couldn’t open this PDF</div>
-        <div style={{ fontSize: 11, color: text2, lineHeight: 1.55, maxWidth: 300 }}>{error}</div>
+        <Icon name="status-error" size={20} style={{ color: red }} />
+        <div style={{ fontSize: 13, color: red, fontWeight: 600 }}>Couldn’t open this PDF</div>
+        <div style={{ fontSize: 12, color: text2, lineHeight: 1.55, maxWidth: 300 }}>{error}</div>
       </Shell>
     )
   }
@@ -633,7 +639,7 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
     return (
       <Shell colors={colors}>
         <Icon name="status-spinner" size={20} style={{ color: accentText }} />
-        <div style={{ fontSize: 11.5, color: text3 }}>Opening document…</div>
+        <div style={{ fontSize: 12, color: text3 }}>Opening document…</div>
       </Shell>
     )
   }
@@ -666,7 +672,7 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
 
       {/* ── page rail ── */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 5, padding: '5px 8px',
+        display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
         borderBottom: `1px solid ${border}`, background: raised, flexShrink: 0,
         fontFamily: 'var(--ds-font-body)',
       }}>
@@ -674,7 +680,7 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
           onClick={() => go(-1)} colors={colors} />
 
         <span style={{
-          fontFamily: 'var(--ds-font-mono)', fontSize: 10.5, color: text2,
+          fontFamily: 'var(--ds-font-mono)', fontSize: 11, color: text2,
           minWidth: 62, textAlign: 'center', fontVariantNumeric: 'tabular-nums',
         }}>
           {safePage} / {totalPages}
@@ -690,7 +696,7 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
             <button key={mode} onClick={() => { setFitMode(mode); if (mode === 'actual') setScale(1) }}
               title={label} aria-label={label} aria-pressed={fitMode === mode}
               style={{
-                display: 'flex', alignItems: 'center', padding: '3px 5px', borderRadius: 5,
+                display: 'flex', alignItems: 'center', padding: '4px 6px', borderRadius: 6,
                 border: '1px solid transparent', cursor: 'pointer',
                 background: fitMode === mode ? 'var(--ds-accent-dim)' : 'transparent',
                 color: fitMode === mode ? accent : text3,
@@ -703,7 +709,7 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
           <>
             <button onClick={() => setScale(s => clampScale(s / 1.25))} title="Zoom out" aria-label="Zoom out"
               disabled={scale <= MIN_SCALE} style={miniBtn(text3)}>−</button>
-            <span style={{ fontFamily: 'var(--ds-font-mono)', fontSize: 9.5, color: text3, minWidth: 30, textAlign: 'center' }}>
+            <span style={{ fontFamily: 'var(--ds-font-mono)', fontSize: 11, color: text3, minWidth: 30, textAlign: 'center' }}>
               {Math.round(scale * 100)}%
             </span>
             <button onClick={() => setScale(s => clampScale(s * 1.25))} title="Zoom in" aria-label="Zoom in"
@@ -713,11 +719,11 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
 
         <span style={{ flex: 1 }} />
 
-        {rendering && <Icon name="status-spinner" size={11} style={{ color: text3 }} />}
+        {rendering && <Icon name="status-spinner" size={12} style={{ color: text3 }} />}
 
         <span title={`${info.name}${info.size ? ` · ${formatPdfSize(info.size)}` : ''}${info.pdfVersion ? ` · PDF ${info.pdfVersion}` : ''}`}
           style={{
-            fontSize: 9.5, color: text3, fontFamily: 'var(--ds-font-mono)',
+            fontSize: 11, color: text3, fontFamily: 'var(--ds-font-mono)',
             maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
           {info.title || info.name}
@@ -768,12 +774,12 @@ function PdfBlockInner({ block, colors, dark, onUpdateBlock, isSelected, tool = 
             was indistinguishable from a broken build. Now it says so. */}
         {!painted && (
           <div style={{
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
             padding: 24, textAlign: 'center', color: text3, fontFamily: 'var(--ds-font-body)',
           }}>
-            <Icon name="status-spinner" size={18} style={{ color: accentText }} />
-            <div style={{ fontSize: 11.5 }}>Rendering page {safePage}…</div>
-            <div style={{ fontSize: 10, lineHeight: 1.5, maxWidth: 260, opacity: 0.75 }}>
+            <Icon name="status-spinner" size={20} style={{ color: accentText }} />
+            <div style={{ fontSize: 12 }}>Rendering page {safePage}…</div>
+            <div style={{ fontSize: 11, lineHeight: 1.5, maxWidth: 260, opacity: 0.75 }}>
               If this doesn’t clear, the pdf.js worker isn’t loading.
               Run <code style={{ fontFamily: 'var(--ds-font-mono)' }}>npm run pdf:worker</code> and reload.
             </div>
@@ -803,11 +809,11 @@ function NavBtn({ label, icon, flip, disabled, onClick, colors }) {
   return (
     <button onClick={onClick} disabled={disabled} title={label} aria-label={label}
       style={{
-        display: 'flex', alignItems: 'center', padding: '3px 5px', borderRadius: 5,
+        display: 'flex', alignItems: 'center', padding: '4px 6px', borderRadius: 6,
         border: 'none', background: 'transparent', cursor: disabled ? 'default' : 'pointer',
         color: disabled ? colors.border : colors.text2, opacity: disabled ? 0.5 : 1,
       }}>
-      <Icon name={icon} size={13} style={flip ? { transform: 'rotate(180deg)' } : undefined} />
+      <Icon name={icon} size={14} style={flip ? { transform: 'rotate(180deg)' } : undefined} />
     </button>
   )
 }
@@ -815,7 +821,7 @@ function NavBtn({ label, icon, flip, disabled, onClick, colors }) {
 const miniBtn = color => ({
   width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
   borderRadius: 4, border: '1px solid transparent', background: 'transparent',
-  color, cursor: 'pointer', fontFamily: 'var(--ds-font-mono)', fontSize: 12, lineHeight: 1, padding: 0,
+  color, cursor: 'pointer', fontFamily: 'var(--ds-font-mono)', fontSize: 13, lineHeight: 1, padding: 0,
 })
 
 export default memo(PdfBlockInner)

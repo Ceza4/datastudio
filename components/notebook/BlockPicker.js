@@ -86,32 +86,29 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
         position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
         zIndex: Z.popover,
         width: 340, maxHeight: 380, display: 'flex', flexDirection: 'column',
-        background: surface, border: `1px solid ${border}`, borderRadius: 12,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.4)', overflow: 'hidden',
+        background: surface, border: `1px solid ${border}`, borderRadius: 'var(--ds-radius-pan)',
+        boxShadow: 'var(--ds-shadow-lg)', overflow: 'hidden',
         fontFamily: 'var(--ds-font-body)',
       }}>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${border}` }}>
-        <Icon name="share-link" size={14} style={{ color: accentText, flexShrink: 0 }} />
+      {/* Same .ds-searchrow object as the Add menu. The leading icon keeps the
+          accent tint — it is the one thing that differs between the two, and it
+          differs on purpose. */}
+      <div className="ds-searchrow">
+        <Icon name="share-link" size="sm" style={{ color: accentText }} />
         <input
           ref={inputRef}
           value={query}
           onChange={e => { setQuery(e.target.value); setActive(0) }}
           placeholder="Link to a block…"
           aria-label="Search blocks"
-          style={{
-            flex: 1, background: 'transparent', border: 'none', outline: 'none',
-            color: text, fontFamily: 'var(--ds-font-body)', fontSize: 13, minWidth: 0,
-          }} />
-        <kbd style={{
-          fontFamily: 'var(--ds-font-mono)', fontSize: 9, padding: '2px 5px', borderRadius: 4,
-          border: `1px solid ${border}`, color: text3, flexShrink: 0,
-        }}>esc</kbd>
+        />
+        <kbd className="ds-kbd">esc</kbd>
       </div>
 
       <div ref={listRef} role="listbox" style={{ overflowY: 'auto', padding: 5 }}>
         {results.length === 0 && (
-          <div style={{ padding: '18px 12px', textAlign: 'center', color: text2, fontSize: 12, lineHeight: 1.6 }}>
+          <div style={{ padding: '18px 12px', textAlign: 'center', color: text2, fontSize: 13, lineHeight: 1.6 }}>
             {query
               ? <>Nothing matches “{query}”.</>
               : <>No other blocks yet.<br />Links point at blocks, so make one first.</>}
@@ -130,8 +127,8 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
               onMouseEnter={() => setActive(i)}
               onClick={() => onPick(r)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 9, width: '100%',
-                padding: '7px 9px', border: 'none', borderRadius: 7, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                padding: '8px 10px', border: 'none', borderRadius: 6, cursor: 'pointer',
                 background: on ? accentDim : 'transparent',
                 color: on ? accent : text,
                 textAlign: 'left', fontFamily: 'var(--ds-font-body)',
@@ -141,17 +138,17 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 background: on ? accent : raised, color: on ? '#fff' : text2,
               }}>
-                <Icon name={def?.icon || 'block-text'} size={13} />
+                <Icon name={def?.icon || 'block-text'} size={14} />
               </span>
               <span style={{ minWidth: 0, flex: 1 }}>
-                <span style={{ display: 'block', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ display: 'block', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {r.label}
                 </span>
                 {/* The path matters here in a way it wouldn't in a same-sheet
                     picker: two blocks can legitimately share a name across
                     sheets, and this is the only thing telling them apart. */}
                 <span style={{
-                  display: 'block', fontSize: 10, marginTop: 1,
+                  display: 'block', fontSize: 11, marginTop: 1,
                   color: on ? accent : text3, opacity: on ? 0.8 : 1,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>
@@ -165,7 +162,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
 
       <div style={{
         borderTop: `1px solid ${border}`, padding: '6px 12px',
-        fontSize: 9.5, fontFamily: 'var(--ds-font-mono)', color: text3,
+        fontSize: 11, fontFamily: 'var(--ds-font-mono)', color: text3,
         display: 'flex', gap: 10,
       }}>
         <span>↑↓ move</span><span>⏎ link</span><span>esc cancel</span>
@@ -179,7 +176,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
           and a modal with no dismiss target traps anyone reaching for the
           mouse. */}
       <div onMouseDown={onCancel}
-        style={{ position: 'fixed', inset: 0, zIndex: Z.modalScrim, background: 'transparent' }} />
+        style={{ position: 'fixed', inset: 0, zIndex: Z.popoverScrim, background: 'transparent' }} />
       {panel}
     </>,
     document.body

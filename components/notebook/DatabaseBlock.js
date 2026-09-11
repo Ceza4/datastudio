@@ -359,8 +359,8 @@ function DatabaseBlockInner({ block, colors, dark, onUpdateBlock, editingRef }) 
       {/* The summary the model already knows how to phrase, in the mono face
           because it is a count. */}
       <div style={{
-        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 7,
-        padding: '5px 9px', borderTop: `1px solid ${border}`,
+        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 10px', borderTop: `1px solid ${border}`,
         fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-xs)',
         color: text3, letterSpacing: 0.3,
       }}>
@@ -454,7 +454,7 @@ function ViewBar({ db, view, colors, onSelect, onOpenMenu, sortCount, filterCoun
                 else onSelect(v)
               }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+                display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
                 height: 21, padding: '0 8px', cursor: 'pointer',
                 border: 'none', borderRadius: 'var(--ds-radius-sm)',
                 background: on ? accentDim : 'transparent',
@@ -463,7 +463,7 @@ function ViewBar({ db, view, colors, onSelect, onOpenMenu, sortCount, filterCoun
                 fontWeight: on ? 600 : 500, lineHeight: 1, whiteSpace: 'nowrap',
                 transition: 'background var(--ds-transition), color var(--ds-transition)',
               }}>
-              <Icon name={VIEW_KINDS[v.kind]?.icon || 'block-table'} size={11} />
+              <Icon name={VIEW_KINDS[v.kind]?.icon || 'block-table'} size={12} />
               {v.name}
             </button>
           )
@@ -485,7 +485,7 @@ function ViewBar({ db, view, colors, onSelect, onOpenMenu, sortCount, filterCoun
         }}
         onMouseEnter={e => { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = accent }}
         onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.borderColor = border }}>
-        <Icon name="action-add" size={11} />
+        <Icon name="action-add" size={12} />
       </button>
 
       <span style={{ flex: 1 }} />
@@ -508,7 +508,7 @@ function BarBtn({ label, icon, count, colors, onClick }) {
       onMouseDown={e => e.stopPropagation()}
       onClick={e => { e.stopPropagation(); onClick(e) }}
       style={{
-        display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
         height: 22, padding: '0 8px', cursor: 'pointer',
         border: '1px solid transparent', borderRadius: 'var(--ds-radius-sm)',
         background: on ? accentDim : 'transparent',
@@ -518,7 +518,7 @@ function BarBtn({ label, icon, count, colors, onClick }) {
       }}
       onMouseEnter={e => { if (!on) e.currentTarget.style.background = raised }}
       onMouseLeave={e => { if (!on) e.currentTarget.style.background = 'transparent' }}>
-      <Icon name={icon} size={11} />
+      <Icon name={icon} size={12} />
       {label}
       {on && (
         <span style={{ fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-xs)', fontWeight: 600 }}>
@@ -555,7 +555,7 @@ function TableView({
             onPointerDown={openOnPointerDown(e =>
               openMenu({ kind: 'prop', propId: p.id, at: anchorOf(e.currentTarget) }))}
             style={{
-              display: 'flex', alignItems: 'center', gap: 5,
+              display: 'flex', alignItems: 'center', gap: 6,
               height: ROW_H, padding: '0 8px', minWidth: 0, cursor: 'pointer',
               background: 'transparent', border: 'none',
               borderRight: `1px solid ${border}`,
@@ -565,13 +565,13 @@ function TableView({
             }}
             onMouseEnter={e => { e.currentTarget.style.color = accent }}
             onMouseLeave={e => { e.currentTarget.style.color = text2 }}>
-            <Icon name={PROPERTY_TYPES[p.type]?.icon || 'nav-notebook'} size={10}
+            <Icon name={PROPERTY_TYPES[p.type]?.icon || 'nav-notebook'} size={12}
               style={{ color: text3, flexShrink: 0 }} />
             <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {p.name}
             </span>
             {view?.sortBy?.propId === p.id && (
-              <Icon name={view.sortBy.desc ? 'grid-sort-desc' : 'grid-sort-asc'} size={10}
+              <Icon name={view.sortBy.desc ? 'grid-sort-desc' : 'grid-sort-asc'} size={12}
                 style={{ color: accentText, flexShrink: 0, marginLeft: 'auto' }} />
             )}
           </button>
@@ -624,7 +624,7 @@ function TableView({
             }}
             onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = red }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '0.35'; e.currentTarget.style.color = text3 }}>
-            <Icon name="action-delete" size={11} />
+            <Icon name="action-delete" size={12} />
           </button>
         </div>
       ))}
@@ -642,7 +642,7 @@ function TableView({
         }}
         onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = accent }}
         onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = text3 }}>
-        <Icon name="action-add" size={11} />
+        <Icon name="action-add" size={12} />
         New row
       </button>
 
@@ -670,7 +670,7 @@ function Cell({ row, prop, colors, editing, onOpen, onClose, onDraft, onWrite })
   const value = row.values[prop.id]
 
   const base = {
-    display: 'flex', alignItems: 'center', gap: 5,
+    display: 'flex', alignItems: 'center', gap: 6,
     height: ROW_H, padding: '0 8px', minWidth: 0, overflow: 'hidden',
     borderRight: `1px solid ${border}`,
     fontSize: 'var(--ds-fs-md)', color: text,
@@ -825,7 +825,7 @@ function TextCellEditor({ initial, numeric, label, colors, onDraft, onClose, hei
       style={{
         width: '100%', height, minWidth: 0,
         padding: '0 7px', background: surface,
-        border: `1.5px solid ${accent}`, borderRadius: 3, outline: 'none',
+        border: `1.5px solid ${accent}`, borderRadius: 4, outline: 'none',
         color: text,
         fontFamily: numeric ? 'var(--ds-font-mono)' : 'var(--ds-font-body)',
         fontSize: 'var(--ds-fs-md)',
@@ -871,8 +871,8 @@ function OptionChip({ option, colors, onRemove }) {
   const c = optionColor(option.color, colors)
   return (
     <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0, maxWidth: '100%',
-      padding: '1px 6px', borderRadius: 'var(--ds-radius-sm)',
+      display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0, maxWidth: '100%',
+      padding: '2px 6px', borderRadius: 'var(--ds-radius-sm)',
       background: `${c}22`, border: `1px solid ${c}55`, color: c,
       fontSize: 'var(--ds-fs-xs)', fontWeight: 600, lineHeight: 1.7,
       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -890,7 +890,7 @@ function OptionChip({ option, colors, onRemove }) {
           {/* There is no × in the icon set, and hand-adding one would bypass
               `npm run icons` and the spec it enforces. The bin says the same
               thing, and it is the glyph every other delete in the app uses. */}
-          <Icon name="action-delete" size={9} />
+          <Icon name="action-delete" size={12} />
         </button>
       )}
     </span>
@@ -984,7 +984,7 @@ function BoardView({ db, view, groups, rows, colors, editing, onOpenCell, onClos
                 title="Drag to another column · double-click to rename"
                 style={{
                   background: surface, borderRadius: 'var(--ds-radius-sm)',
-                  padding: '7px 9px', marginBottom: 5, cursor: 'grab',
+                  padding: '8px 10px', marginBottom: 5, cursor: 'grab',
                   border: `1px solid ${border}`, borderLeft: `3px solid ${c}`,
                   opacity: drag?.rowId === r.id ? 0.45 : 1,
                   transition: 'opacity var(--ds-transition)',
@@ -1010,7 +1010,7 @@ function BoardView({ db, view, groups, rows, colors, editing, onOpenCell, onClos
                 onAddRow({ [prop.id]: prop.type === 'multi' ? [g.key] : g.key })
               }}
               style={{
-                width: '100%', padding: '4px 5px', cursor: 'pointer',
+                width: '100%', padding: '4px 6px', cursor: 'pointer',
                 background: 'none', border: `1px dashed ${border}`,
                 borderRadius: 'var(--ds-radius-sm)', color: text3,
                 fontFamily: 'var(--ds-font-body)', fontSize: 'var(--ds-fs-sm)',
@@ -1066,8 +1066,8 @@ function MetaValue({ prop, value, colors }) {
   }
   if (prop.type === 'checkbox') {
     return (
-      <span title={prop.name} style={{ display: 'flex', alignItems: 'center', gap: 3, color: accentText, fontSize: 'var(--ds-fs-xs)' }}>
-        <Icon name="action-check" size={9} />{prop.name}
+      <span title={prop.name} style={{ display: 'flex', alignItems: 'center', gap: 4, color: accentText, fontSize: 'var(--ds-fs-xs)' }}>
+        <Icon name="action-check" size={12} />{prop.name}
       </span>
     )
   }
@@ -1104,7 +1104,7 @@ function GalleryView({ db, rows, colors, editing, onOpenCell, onCloseCell, onDra
           title="Double-click to rename"
           style={{
             background: surface, border: `1px solid ${border}`,
-            borderRadius: 'var(--ds-radius-md)', padding: '9px 10px', cursor: 'pointer',
+            borderRadius: 'var(--ds-radius-md)', padding: '10px 10px', cursor: 'pointer',
             transition: 'border-color var(--ds-transition)',
           }}
           onMouseEnter={e => { e.currentTarget.style.borderColor = accent }}
@@ -1125,7 +1125,7 @@ function GalleryView({ db, rows, colors, editing, onOpenCell, onCloseCell, onDra
           minHeight: 54, cursor: 'pointer', background: 'none',
           border: `1px dashed ${border}`, borderRadius: 'var(--ds-radius-md)',
           color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 'var(--ds-fs-md)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
           transition: 'color var(--ds-transition), border-color var(--ds-transition)',
         }}
         onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
@@ -1193,7 +1193,7 @@ function CalendarView({ db, view, rows, colors, dark, editing, onOpenCell, onClo
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 6, padding: '6px 9px',
+        display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
         borderBottom: `1px solid ${border}`, flexShrink: 0,
       }}>
         <NavBtn label="Previous month" colors={colors} flip onClick={() => setCursor(c => addMonths(c, -1))} />
@@ -1245,7 +1245,7 @@ function CalendarView({ db, view, rows, colors, dark, editing, onOpenCell, onClo
                   display: 'flex', flexDirection: 'column', gap: 2,
                 }}>
                   <span style={{
-                    minWidth: 17, height: 17, padding: '0 4px', borderRadius: 9, alignSelf: 'flex-start',
+                    minWidth: 17, height: 17, padding: '0 4px', borderRadius: 8, alignSelf: 'flex-start',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-xs)',
                     fontVariantNumeric: 'tabular-nums',
@@ -1272,7 +1272,7 @@ function CalendarView({ db, view, rows, colors, dark, editing, onOpenCell, onClo
                         onDoubleClick={e => { e.stopPropagation(); onOpenCell({ rowId: r.id, propId: db.titlePropId }) }}
                         style={{
                           display: 'block', width: '100%', textAlign: 'left',
-                          padding: '1px 5px', borderRadius: 4, cursor: 'pointer',
+                          padding: '2px 6px', borderRadius: 4, cursor: 'pointer',
                           background: `${accent}1f`, border: '1px solid transparent', color: text2,
                           fontFamily: 'var(--ds-font-body)', fontSize: 'var(--ds-fs-xs)', lineHeight: 1.35,
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -1371,7 +1371,7 @@ function Popover({ at, width = 236, colors, dark, onClose, label, children }) {
           Escape, and a menu with no dismiss target traps anyone reaching for
           the mouse. */}
       <div onMouseDown={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: Z.modalScrim, background: 'transparent' }} />
+        style={{ position: 'fixed', inset: 0, zIndex: Z.popoverScrim, background: 'transparent' }} />
       <div
         data-ds-db-menu={label}
         role="dialog"
@@ -1443,7 +1443,7 @@ function MenuRow({ icon, children, colors, onClick, tone, active, muted, title, 
 }
 
 const panelInput = colors => ({
-  width: '100%', padding: '5px 7px', minWidth: 0,
+  width: '100%', padding: '6px 8px', minWidth: 0,
   background: colors.surface, border: `1px solid ${colors.border}`,
   borderRadius: 'var(--ds-radius-sm)', outline: 'none', color: colors.text,
   fontFamily: 'var(--ds-font-body)', fontSize: 'var(--ds-fs-md)',
@@ -1721,7 +1721,7 @@ function SortMenu({ db, view, at, colors, dark, onClose, onPatch }) {
             onClick={() => onPatch({ sortBy: { propId: p.id, desc: on ? !sort.desc : false } })}>
             {p.name}
             {on && (
-              <Icon name={sort.desc ? 'grid-sort-desc' : 'grid-sort-asc'} size={11}
+              <Icon name={sort.desc ? 'grid-sort-desc' : 'grid-sort-asc'} size={12}
                 style={{ marginLeft: 'auto', flexShrink: 0 }} />
             )}
           </MenuRow>
@@ -1794,7 +1794,7 @@ function FilterMenu({ db, view, at, colors, dark, onClose, onPatch }) {
               }}
               onMouseEnter={e => { e.currentTarget.style.color = red }}
               onMouseLeave={e => { e.currentTarget.style.color = text3 }}>
-              <Icon name="action-delete" size={11} />
+              <Icon name="action-delete" size={12} />
             </button>
           </div>
         )
@@ -1876,7 +1876,7 @@ function Empty({ colors, icon, title, body }) {
   return (
     <div data-ds-db-empty style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      gap: 9, padding: '30px 26px', textAlign: 'center',
+      gap: 10, padding: '30px 26px', textAlign: 'center',
     }}>
       <span style={{
         width: 34, height: 34, borderRadius: '50%', flexShrink: 0,

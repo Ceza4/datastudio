@@ -46,6 +46,24 @@ for (const f of files) {
   const q = m ? Number(m[2]) : 0
   totalPass += p; totalFail += q
 
+  /* A SUITE THAT DOES NOT PRINT THAT LINE COUNTS AS ZERO, SILENTLY.
+     ------------------------------------------------------------------
+     Found by writing a new suite that ended `${pass} passed` without the
+     `, ${fail} failed` half. It ran, printed 49 green assertions to its own
+     stdout, exited 0 — and the summary went from "40 suites · 2203" to
+     "41 suites · 2203". A whole suite had vanished from the total and the run
+     was still green, which is the same class of bug as the exit-code one
+     directly below: the number CI reads and the number a human reads
+     disagreed, and the wrong one was the trustworthy-looking one.
+
+     An empty suite is a real thing (a file that only defines helpers), so this
+     does not fail the run — but it must not be silent. */
+  if (!m && res.status === 0) {
+    console.log(`✗  ${f.padEnd(38)} printed no "N passed, M failed" line — NOT COUNTED`)
+    failed++
+    continue
+  }
+
   /* A REPORTED failure counts even when the suite exited 0.
      ------------------------------------------------------------------
      Most suites end with `process.exit(fail ? 1 : 0)`. Four of them

@@ -252,7 +252,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
         )}
         <button onClick={onClose} className="ds-btn ds-btn-ghost"
           aria-label="Close Crosscheck"
-          style={{ marginLeft: 'auto', padding: '4px 6px', display: 'flex' }}><Icon name="action-delete" size={13} /></button>
+          style={{ marginLeft: 'auto', padding: '4px 6px', display: 'flex' }}><Icon name="action-delete" size={14} /></button>
       </div>
 
       {/* Step rail */}
@@ -266,7 +266,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
           return (
             <div key={label} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{
-                height: 2, borderRadius: 2,
+                height: 2, borderRadius: 4,
                 background: state === 'todo' ? 'var(--ds-border)' : 'var(--ds-accent)',
                 opacity: state === 'done' ? 0.5 : 1,
               }} />
@@ -312,7 +312,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                       onClick={() => step === 1 ? setColAId(col.id) : setColBId(col.id)}
                       style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <div style={{
-                        width: 7, height: 7, borderRadius: 2, flexShrink: 0,
+                        width: 7, height: 7, borderRadius: 4, flexShrink: 0,
                         background: selected ? 'var(--ds-accent)' : 'var(--ds-text-3)',
                       }} />
                       <div style={{ minWidth: 0, flex: 1 }}>
@@ -340,13 +340,13 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                       className={`ds-btn${sensitivity === key ? ' is-active' : ''}`}
                       style={{ flex: 1, flexDirection: 'column', gap: 2, padding: '6px 4px' }}>
                       <span style={{ fontSize: 'var(--ds-fs-md)', fontWeight: 600 }}>{s.label}</span>
-                      <span style={{ fontSize: 9, opacity: 0.75 }}>{s.match}%+</span>
+                      <span style={{ fontSize: 11, opacity: 0.75 }}>{s.match}%+</span>
                     </button>
                   ))}
                 </div>
 
                 <div className="ds-label" style={{ marginTop: 4 }}>Clean up first</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {[
                     { on: skipBlanks, set: setSkipBlanks, label: 'Skip blank cells' },
                     { on: dedupe, set: setDedupe, label: 'Remove duplicate values' },
@@ -355,12 +355,12 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                       className={`ds-btn${on ? ' is-active' : ''}`}
                       style={{ justifyContent: 'flex-start', gap: 8 }}>
                       <span style={{
-                        width: 13, height: 13, borderRadius: 3, flexShrink: 0,
+                        width: 13, height: 13, borderRadius: 4, flexShrink: 0,
                         border: `1.5px solid ${on ? 'var(--ds-accent)' : 'var(--ds-text-3)'}`,
                         background: on ? 'var(--ds-accent)' : 'transparent',
-                        color: '#fff', fontSize: 9, display: 'flex',
+                        color: '#fff', fontSize: 11, display: 'flex',
                         alignItems: 'center', justifyContent: 'center',
-                      }}>{on ? <Icon name="action-check" size={10} /> : null}</span>
+                      }}>{on ? <Icon name="action-check" size={12} /> : null}</span>
                       {label}
                     </button>
                   ))}
@@ -399,10 +399,10 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                 </div>
               </div>
             </div>
-            <div style={{ height: 4, borderRadius: 2, background: 'var(--ds-raised)', overflow: 'hidden' }}>
+            <div style={{ height: 4, borderRadius: 4, background: 'var(--ds-raised)', overflow: 'hidden' }}>
               <div style={{
                 height: '100%', width: `${pct}%`, background: 'var(--ds-accent)',
-                borderRadius: 2, transition: 'width 0.2s ease',
+                borderRadius: 4, transition: 'width 0.2s ease',
               }} />
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -412,10 +412,10 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                 ['Not found', progress.unmatched, 'var(--ds-red)'],
               ].map(([label, val, color]) => (
                 <div key={label} style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ fontSize: 18, fontWeight: 800, color, fontFamily: 'var(--ds-font-head)' }}>
+                  <div style={{ fontSize: 20, fontWeight: 800, color, fontFamily: 'var(--ds-font-head)' }}>
                     {val.toLocaleString()}
                   </div>
-                  <div style={{ fontSize: 9, color: 'var(--ds-text-3)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  <div style={{ fontSize: 11, color: 'var(--ds-text-3)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
                     {label}
                   </div>
                 </div>
@@ -436,10 +436,10 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                   flex: 1, background: bg, borderRadius: 'var(--ds-radius-md)',
                   padding: '8px 6px', textAlign: 'center', border: `1px solid ${color}33`,
                 }}>
-                  <div style={{ fontSize: 18, fontWeight: 800, color, fontFamily: 'var(--ds-font-head)' }}>
+                  <div style={{ fontSize: 20, fontWeight: 800, color, fontFamily: 'var(--ds-font-head)' }}>
                     {val.toLocaleString()}
                   </div>
-                  <div style={{ fontSize: 9, color, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  <div style={{ fontSize: 11, color, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                     {label}
                   </div>
                 </div>
@@ -450,19 +450,19 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
               className={`ds-btn${matchedOnly ? ' is-active' : ''}`}
               style={{ justifyContent: 'flex-start', gap: 8 }}>
               <span style={{
-                width: 13, height: 13, borderRadius: 3, flexShrink: 0,
+                width: 13, height: 13, borderRadius: 4, flexShrink: 0,
                 border: `1.5px solid ${matchedOnly ? 'var(--ds-accent)' : 'var(--ds-text-3)'}`,
                 background: matchedOnly ? 'var(--ds-accent)' : 'transparent',
-                color: '#fff', fontSize: 9, display: 'flex',
+                color: '#fff', fontSize: 11, display: 'flex',
                 alignItems: 'center', justifyContent: 'center',
-              }}>{matchedOnly ? <Icon name="action-check" size={10} /> : null}</span>
+              }}>{matchedOnly ? <Icon name="action-check" size={12} /> : null}</span>
               Output matched rows only
               <span style={{ marginLeft: 'auto', opacity: 0.7, fontFamily: 'var(--ds-font-mono)' }}>
                 {outputCount.toLocaleString()} rows
               </span>
             </button>
 
-            <div style={{ display: 'flex', gap: 5 }}>
+            <div style={{ display: 'flex', gap: 6 }}>
               {[
                 ['matched', `Matched (${results.matched.length})`],
                 ['unmatched', `Not found (${results.unmatched.length})`],
@@ -485,7 +485,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                 const color = isRejected ? 'var(--ds-red)' : needsReview ? 'var(--ds-amber)' : 'var(--ds-green)'
                 return (
                   <div key={i} style={{
-                    padding: '7px 10px', borderBottom: '1px solid var(--ds-border)',
+                    padding: '8px 10px', borderBottom: '1px solid var(--ds-border)',
                     background: needsReview ? 'var(--ds-amber-bg)' : 'transparent',
                     display: 'flex', alignItems: 'center', gap: 8,
                   }}>
@@ -500,12 +500,12 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                         fontSize: 'var(--ds-fs-sm)', fontFamily: 'var(--ds-font-mono)',
                         color: 'var(--ds-text-2)', marginTop: 2,
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        display: 'flex', alignItems: 'center', gap: 5,
+                        display: 'flex', alignItems: 'center', gap: 6,
                       }}>
                         <span style={{
-                          fontSize: 8, letterSpacing: 0.5, textTransform: 'uppercase',
+                          fontSize: 11, letterSpacing: 0.5, textTransform: 'uppercase',
                           color: 'var(--ds-text-3)', border: '1px solid var(--ds-border)',
-                          borderRadius: 3, padding: '0 3px', flexShrink: 0,
+                          borderRadius: 4, padding: '0 3px', flexShrink: 0,
                           fontFamily: 'var(--ds-font-body)',
                         }}>master</span>
                         {r.bestMatch}
@@ -516,16 +516,16 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                       fontFamily: 'var(--ds-font-mono)', flexShrink: 0,
                     }}>{r.score}%</span>
                     {needsReview ? (
-                      <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                         <button onClick={() => setConfirmed(p => new Set([...p, key]))}
                           aria-label="Confirm match" title="Confirm match"
-                          className="ds-btn" style={{ padding: '3px 6px', color: 'var(--ds-green)' }}><Icon name="cc-confirm" size={12} /></button>
+                          className="ds-btn" style={{ padding: '4px 6px', color: 'var(--ds-green)' }}><Icon name="cc-confirm" size={12} /></button>
                         <button onClick={() => setRejected(p => new Set([...p, key]))}
                           aria-label="Reject match" title="Reject match"
-                          className="ds-btn" style={{ padding: '3px 6px', color: 'var(--ds-red)' }}><Icon name="cc-reject" size={12} /></button>
+                          className="ds-btn" style={{ padding: '4px 6px', color: 'var(--ds-red)' }}><Icon name="cc-reject" size={12} /></button>
                       </div>
                     ) : (
-                      <span style={{ fontSize: 9, color, fontWeight: 700, flexShrink: 0, width: 46, textAlign: 'right' }}>
+                      <span style={{ fontSize: 11, color, fontWeight: 700, flexShrink: 0, width: 46, textAlign: 'right' }}>
                         {isConfirmed ? 'confirmed' : isRejected ? 'rejected' : 'matched'}
                       </span>
                     )}
@@ -534,7 +534,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
               })}
               {activeTab === 'unmatched' && results.unmatched.map((r, i) => (
                 <div key={i} style={{
-                  padding: '7px 10px', borderBottom: '1px solid var(--ds-border)',
+                  padding: '8px 10px', borderBottom: '1px solid var(--ds-border)',
                   fontSize: 'var(--ds-fs-md)', fontFamily: 'var(--ds-font-mono)',
                   color: 'var(--ds-text-3)', overflow: 'hidden',
                   textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -586,7 +586,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                 To column
               </button>
             )}
-            <button onClick={addToNotebook} className="ds-btn ds-btn-primary"><Icon name="action-check" size={13} /> Add to project</button>
+            <button onClick={addToNotebook} className="ds-btn ds-btn-primary"><Icon name="action-check" size={14} /> Add to project</button>
           </>
         )}
       </div>
@@ -599,17 +599,17 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
       {step === 4 && sendOpen && results && (
         <div style={{ borderTop: '1px solid var(--ds-border)', padding: '12px 16px 14px' }}>
           <div style={{ marginBottom: 9 }}>
-            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }}>
               Which values
             </span>
             <select value={sendField} onChange={e => setSendField(e.target.value)}
-              style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-raised)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none' }}>
+              style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-raised)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 13, outline: 'none' }}>
               <option value="match">Matched name from the master list</option>
               <option value="score">Match score</option>
               <option value="status">Status (matched / maybe / unmatched)</option>
               <option value="source">Your original value</option>
             </select>
-            <div style={{ fontSize: 10, color: 'var(--ds-text-2)', marginTop: 5, lineHeight: 1.45 }}>
+            <div style={{ fontSize: 11, color: 'var(--ds-text-2)', marginTop: 5, lineHeight: 1.45 }}>
               Rows follow the same order as the results above
               {matchedOnly ? ' — currently filtered to matches only.' : '.'}
             </div>

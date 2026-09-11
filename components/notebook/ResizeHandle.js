@@ -46,7 +46,7 @@ export default function ResizeHandle({ onResizeStart, border, accent, show }) {
         opacity: show ? 0.95 : 0.5,
         transition: 'opacity .15s, color .15s',
       }}>
-        <Icon name="handle-resize" size={11} />
+        <Icon name="handle-resize" size={12} />
       </div>
     </>
   )

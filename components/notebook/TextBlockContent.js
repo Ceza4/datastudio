@@ -1,7 +1,7 @@
 'use client'
 import { useRef, useEffect, useState, useCallback, memo } from 'react'
 import TextBlockToolbar from './TextBlockToolbar'
-import SlashMenu, { filterCommands } from './SlashMenu'
+import SlashMenu, { filterCommands, SLASH_BLOCK_IDS, COLUMNS_COMMAND_N } from './SlashMenu'
 import BlockPicker from './BlockPicker'
 import {
   LINK_ATTR, DANGLING_ATTR, DANGLING_MESSAGE,
@@ -9,6 +9,11 @@ import {
 } from '../../lib/teleport'
 import { safeLinkUrl } from '../../lib/urls'
 import { sanitizeEditorHtml } from '../../lib/sanitize'
+import {
+  columnsHtml,
+  isColumnsRow, isColumnBody, isCaretAtColumnStart, isColumnsRowEmpty,
+  readWidths, writeWidths,
+} from '../../lib/columns'
 
 /* TextBlockContent — SESSION A (FIXED)
    --------------------------------------------------------------------------
@@ -60,7 +65,30 @@ function TextBlockContentInner({
   onInsertBlock,
 }) {
   const ref = useRef(null)
-  const savedContent = useRef(initialContent || '')
+  /* WHAT WE HAVE WRITTEN INTO THE DOM — `null` until we have written anything.
+
+     THIS USED TO BE SEEDED WITH `initialContent`, AND THAT BLANKED BLOCKS.
+
+     The load effect below skips its write when the sanitised content already
+     equals this ref, on the reasoning that "this is our own save coming back".
+     Seeded with the raw initial content, that comparison is TRUE on the very
+     first mount for any content the sanitiser leaves untouched — which is
+     essentially all of it: `hello`, `<div>hello</div>`, `<b>bold</b>`,
+     `<h1>Title</h1><div>body</div>` and `<ul><li>one</li></ul>` all come back
+     byte-for-byte identical.
+
+     So the effect returned early, `ref.current.innerHTML` was never set, and a
+     freshly mounted block rendered EMPTY. Then the first blur, the first
+     visibilitychange or the unmount cleanup read `''` out of the DOM, found it
+     different from the stored text, and called `onSave('')` — writing the
+     empty string over the user's paragraph. Every remount is a page reload, a
+     sheet switch, or the canvas windowing recycling a row.
+
+     `null` is a value no sanitiser output can ever equal, so the first pass
+     always writes. It also gives the save paths a way to say "nothing has been
+     loaded into this element yet, so whatever is in it is not the user's
+     work" — see persistContent. */
+  const savedContent = useRef(null)
   /** Pending trailing save from handleInput. Cleared on flush and on unmount. */
   const inputSaveRef = useRef(null)
   const [menuPos, setMenuPos] = useState(null)
@@ -154,7 +182,11 @@ function TextBlockContentInner({
          the truth — an undo aimed at a block you are actively typing in is not
          a case worth breaking the caret for. */
       if (clean === savedContent.current) return
-      if (document.activeElement === ref.current) return
+      /* The focus guard is deliberately AFTER the equality check and applies
+         only once something has been loaded. On a first mount this element
+         cannot already hold the caret, and skipping the initial write because
+         of it would reintroduce the blanking above by a different route. */
+      if (savedContent.current !== null && document.activeElement === ref.current) return
       ref.current.innerHTML = clean
       savedContent.current = clean
       checkEmpty()
@@ -185,7 +217,12 @@ function TextBlockContentInner({
       /* ref.current is already null by the time a cleanup runs on unmount, so
          persistContent would no-op. Read the node captured on the way in. */
       if (inputSaveRef.current) { clearTimeout(inputSaveRef.current); inputSaveRef.current = null }
-      if (el) {
+      /* `savedContent.current === null` means the load effect never ran for
+         this element, so its innerHTML is not the user's work — it is an empty
+         div we would otherwise save over their paragraph. Belt to the braces
+         of the seeding fix above: this is the exact line that turned a
+         rendering bug into a data-loss one. */
+      if (el && savedContent.current !== null) {
         const html = el.innerHTML
         if (html !== savedContent.current) { savedContent.current = html; onSave(html) }
       }
@@ -195,6 +232,8 @@ function TextBlockContentInner({
 
   function persistContent() {
     if (!ref.current) return
+    /* Never save out of an element the load effect has not filled yet. */
+    if (savedContent.current === null) return
     const html = ref.current.innerHTML
     if (html !== savedContent.current) {
       savedContent.current = html
@@ -290,14 +329,20 @@ function TextBlockContentInner({
       return
     }
 
-    /* Nor does this one produce markup: it asks the canvas for a new block,
-       beside this one. The "/" text has already been deleted above, so the
-       paragraph is left exactly as it was rather than carrying a stray
-       command nobody typed on purpose. */
-    if (cmdId === 'database') {
+    /* Nor do these produce markup: they ask the canvas for a new block, beside
+       this one. The "/" text has already been deleted above, so the paragraph is
+       left exactly as it was rather than carrying a stray command nobody typed
+       on purpose. */
+    /* Any registry type flagged `inSlashMenu`, not a hardcoded 'database'.
+
+       The id IS the block type for these rows (SLASH_BLOCK_ITEMS aliases it),
+       so one branch handles every one of them and adding another type to the
+       slash menu needs no change here at all — which is the point of deriving
+       the list rather than typing it twice. */
+    if (SLASH_BLOCK_IDS.has(cmdId)) {
       persistContent()
       checkEmpty()
-      onInsertBlock?.('database')
+      onInsertBlock?.(cmdId)
       return
     }
 
@@ -383,6 +428,11 @@ function TextBlockContentInner({
   /* ── Commands ───────────────────────────────────────────── */
 
   function applyCommand(cmdId) {
+    /* Columns aren't a switch-case here because their count is data
+       (COLUMNS_COMMAND_N), not a fixed id per command — four ids, one
+       function, same discipline SLASH_BLOCK_IDS already uses to avoid a
+       hardcoded id check per type. */
+    if (COLUMNS_COMMAND_N[cmdId]) { insertColumns(COLUMNS_COMMAND_N[cmdId]); return }
     switch (cmdId) {
       case 'h1': document.execCommand('formatBlock', false, 'h1'); break
       case 'h2': document.execCommand('formatBlock', false, 'h2'); break
@@ -396,6 +446,88 @@ function TextBlockContentInner({
     }
   }
 
+  /* A fresh N-column row at the caret — same shape as insertChecklist/
+     insertDivider/insertCodeBlock: one execCommand('insertHTML'), a trailing
+     empty paragraph so there's always somewhere sensible for the caret to
+     land after. HTML construction itself lives in lib/columns.js — the one
+     piece genuinely shared with DocumentBlock.js. */
+  function insertColumns(n) {
+    document.execCommand('insertHTML', false, columnsHtml(n) + '<div><br></div>')
+  }
+
+  /* "Turn into N columns" is NOT implemented here. It acts on a real
+     multi-paragraph selection, which by definition can't coexist with the
+     slash menu (that only ever fires at a collapsed caret — see
+     detectSlash() above). It lives in TextBlockToolbar.js's selection rail
+     instead, operating on the same `editableRef` this component hands it —
+     see the comment there for why that's the better home, not a
+     workaround. */
+
+  /* ── Column-divider resize ──────────────────────────────────────────
+     No existing internal-gutter-drag code anywhere in this codebase to
+     lean on — ResizeHandle.js resizes the whole floating block from the
+     outside, a different concept entirely. mousemove/mouseup listen on
+     `window`, not the divider itself, because the pointer routinely leaves
+     the 18px hit area mid-drag; `document.body.style.cursor` is forced for
+     the same reason ResizeHandle.js's own eight grips have to fight this —
+     losing the resize cursor the instant the pointer strays off a narrow
+     target reads as broken. */
+  function startColumnResize(divider, startEvent) {
+    const row = isColumnsRow(divider)
+    if (!row) return
+    const cols = Array.from(row.children).filter(c => c.classList?.contains('ds-col'))
+    const dividers = Array.from(row.children).filter(c => c.dataset?.type === 'col-divider')
+    const idx = dividers.indexOf(divider)
+    if (idx < 0) return
+
+    const rowRect = row.getBoundingClientRect()
+    const startX = startEvent.clientX
+    const startWidths = readWidths(row)
+    if (startWidths.length !== cols.length) return // malformed row, bail rather than corrupt it
+
+    document.body.style.cursor = 'col-resize'
+    divider.setAttribute('data-dragging', 'true')
+
+    function onMove(ev) {
+      const dxPct = ((ev.clientX - startX) / rowRect.width) * 100
+      const w = startWidths.slice()
+      w[idx] = startWidths[idx] + dxPct
+      w[idx + 1] = startWidths[idx + 1] - dxPct
+      writeWidths(row, w)
+    }
+    function onUp() {
+      document.body.style.cursor = ''
+      divider.removeAttribute('data-dragging')
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      persistContent()
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  /* Runs after every input. Cheap in the common case — one closest() call —
+     and it's what catches a columns row being emptied out through ORDINARY
+     typing/backspacing inside a column, as opposed to the boundary case
+     handleKeyDown's Backspace branch intercepts explicitly. Same collapse
+     shape the checklist's own empty-item handling already uses. */
+  function maybeCollapseEmptyColumns() {
+    const sel = window.getSelection()
+    if (!sel?.rangeCount) return
+    const node = sel.getRangeAt(0).startContainer
+    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
+    const row = isColumnsRow(el)
+    if (!row || !isColumnsRowEmpty(row)) return
+    const para = document.createElement('div')
+    para.innerHTML = '<br>'
+    row.replaceWith(para)
+    const r = document.createRange()
+    r.selectNodeContents(para)
+    r.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(r)
+  }
+
   function insertQuote() {
     document.execCommand('formatBlock', false, 'blockquote')
   }
@@ -403,7 +535,7 @@ function TextBlockContentInner({
   function insertChecklist() {
     document.execCommand('insertHTML', false,
       '<div data-type="checklist" style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;">' +
-      '<input type="checkbox" style="margin-top:5px;cursor:pointer;accent-color:#5B5FE8;width:15px;height:15px;flex-shrink:0;" contenteditable="false">' +
+      '<input type="checkbox" style="margin-top:5px;cursor:pointer;width:15px;height:15px;flex-shrink:0;" contenteditable="false">' +
       '<span style="flex:1;min-height:1em;outline:none;"></span></div><div><br></div>'
     )
   }
@@ -518,7 +650,7 @@ function TextBlockContentInner({
           const newItem = document.createElement('div')
           newItem.setAttribute('data-type', 'checklist')
           newItem.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:3px 0;'
-          newItem.innerHTML = '<input type="checkbox" style="margin-top:5px;cursor:pointer;accent-color:#5B5FE8;width:15px;height:15px;flex-shrink:0;" contenteditable="false"><span style="flex:1;min-height:1em;outline:none;"></span>'
+          newItem.innerHTML = '<input type="checkbox" style="margin-top:5px;cursor:pointer;width:15px;height:15px;flex-shrink:0;" contenteditable="false"><span style="flex:1;min-height:1em;outline:none;"></span>'
           checklistItem.after(newItem)
           const span = newItem.querySelector('span')
           if (span) {
@@ -533,6 +665,148 @@ function TextBlockContentInner({
         checkEmpty()
         return
       }
+    }
+
+    /* ── Backspace inside checklists ────────────────────────────────────
+       There was NO Backspace case in this handler at all, so backspace at a
+       checklist boundary fell straight through to native contentEditable —
+       which for a custom `data-type="checklist"` div structure means whatever
+       the browser happens to do at that exact DOM boundary. In practice: it
+       merges items unpredictably, sometimes deletes the checkbox <input> and
+       leaves the text stranded, sometimes does nothing. That is not a
+       browser quirk to work around, it is the absence of any logic.
+
+       WHY NATIVE LISTS ARE LEFT ALONE. <ul>/<ol>/<li> are real list elements
+       and browsers already implement backspace on them correctly. Duplicating
+       that here imperfectly is how a fix becomes a second bug, so this branch
+       returns early for anything that is not one of our custom checklist divs.
+
+       Position 0 is the only case handled. Backspace anywhere else in the text
+       is ordinary deletion and already works; intercepting it would be the
+       change most likely to break something that currently behaves. */
+    if (e.key === 'Backspace') {
+      const sel = window.getSelection()
+      if (!sel?.rangeCount) return
+      const range = sel.getRangeAt(0)
+      /* A selection, not a caret: this is "replace the selected text", which
+         native handling gets right. */
+      if (!range.collapsed) return
+
+      const node = range.startContainer
+      const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
+      const checklistItem = el?.closest?.('[data-type="checklist"]')
+
+      /* ── Backspace at a column boundary ──────────────────────────────
+         Same class of problem the checklist branch below already solves,
+         and the same reason it needs explicit handling: a custom
+         data-type div structure has no native "this is a real boundary"
+         semantics, so an unhandled Backspace at column-start is "whatever
+         the browser happens to do" against a CSS grid track — exactly the
+         undefined behavior the checklist fix's own history warns about.
+         Recommended shape (flagged in the spec as a judgment call): the
+         first column no-ops (nothing above it in the row to go to); any
+         later column moves the caret to the end of the PREVIOUS column
+         rather than letting native contentEditable attempt a cross-track
+         merge. Deletion, if the row ends up fully empty as a result of
+         ordinary typing elsewhere, is handled separately by
+         maybeCollapseEmptyColumns() — this branch only ever moves the
+         caret, it never deletes text itself. */
+      if (!checklistItem) {
+        const colBody = isColumnBody(el)
+        if (colBody && isCaretAtColumnStart(colBody, range)) {
+          e.preventDefault()
+          e.stopPropagation()
+          const prevCol = colBody.previousElementSibling?.previousElementSibling
+          if (prevCol && prevCol.classList?.contains('ds-col')) {
+            const r = document.createRange()
+            r.selectNodeContents(prevCol)
+            r.collapse(false)
+            sel.removeAllRanges()
+            sel.addRange(r)
+          }
+          return
+        }
+        return
+      }
+
+      const textSpan = checklistItem.querySelector('span')
+      if (!textSpan) return
+
+      /* AT THE START? Measured with a Range rather than by comparing offsets,
+         because the span can hold several text nodes (a bold run, a link) and
+         `startOffset === 0` is true at the start of ANY of them, not only the
+         first. A range from the span's start to the caret having no text in it
+         is the real question. */
+      const probe = document.createRange()
+      probe.setStart(textSpan, 0)
+      probe.setEnd(range.startContainer, range.startOffset)
+      if (probe.toString().length > 0) return   // ordinary mid-text deletion
+
+      e.preventDefault()
+      e.stopPropagation()
+
+      const itemText = textSpan.textContent || ''
+      const prev = checklistItem.previousElementSibling
+
+      if (!itemText.trim()) {
+        /* EMPTY ITEM → exit the checklist, become a plain paragraph. Exactly
+           what Enter already does to an empty item a few lines above; reusing
+           that shape rather than inventing a second way to do the same thing
+           is the point. */
+        const para = document.createElement('div')
+        para.innerHTML = '<br>'
+        checklistItem.replaceWith(para)
+        const r = document.createRange()
+        r.selectNodeContents(para)
+        r.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(r)
+      } else if (!prev) {
+        /* FIRST ITEM IN THE DOCUMENT, with text in it. There is nothing above
+           to merge into, so unwrap: keep the words, drop the checkbox. Deleting
+           the item outright here would silently eat the user's text, which is
+           the worst of the outcomes native handling currently produces. */
+        const para = document.createElement('div')
+        while (textSpan.firstChild) para.appendChild(textSpan.firstChild)
+        checklistItem.replaceWith(para)
+        const r = document.createRange()
+        r.setStart(para, 0)
+        r.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(r)
+      } else {
+        /* NON-EMPTY ITEM → merge its text onto the end of whatever is above
+           (another checklist item, a paragraph, a heading) and remove this
+           item's own checkbox and wrapper. Standard list-editing behaviour.
+
+           The caret is placed at the JOIN before the text moves, so it ends up
+           between the old content and the merged content — where the user
+           expects it after a merge, not at the end of the combined line. */
+        const prevIsChecklist = prev.getAttribute?.('data-type') === 'checklist'
+        const target = prevIsChecklist ? prev.querySelector('span') : prev
+        if (!target) return
+
+        const r = document.createRange()
+        /* An empty target has no child nodes to address by index, so anchor to
+           the element itself at offset 0 rather than to a last child that
+           isn't there. */
+        if (target.lastChild) {
+          r.setStartAfter(target.lastChild)
+        } else {
+          r.setStart(target, 0)
+        }
+        r.collapse(true)
+
+        while (textSpan.firstChild) target.appendChild(textSpan.firstChild)
+        checklistItem.remove()
+
+        sel.removeAllRanges()
+        sel.addRange(r)
+      }
+
+      persistContent()
+      checkEmpty()
+      return
     }
 
     /* Tab in code blocks: insert 2 spaces */
@@ -608,6 +882,7 @@ function TextBlockContentInner({
      idempotent — it early-returns when the html has not changed — so a
      trailing call that lands after the user has stopped is free. */
   function handleInput() {
+    maybeCollapseEmptyColumns()
     checkEmpty()
     detectSlash()
     if (inputSaveRef.current) clearTimeout(inputSaveRef.current)
@@ -691,6 +966,15 @@ function TextBlockContentInner({
   /* ── Scoped styles ──────────────────────────────────────── */
 
   const scopedStyles = `
+    /* The caret takes the accent.
+
+       Flagged as blocked on "the actual accent hex" — it isn't: --ds-accent is
+       #1D9E75 light / #5B5FE8 dark and has been for a while. Binding the token
+       rather than either literal is what makes it correct in both themes with
+       no JS, and it is the form the open question should be judged in: look at
+       a 1-2px accent line against the body text in each theme and keep or drop
+       this one line. */
+    [data-ds-text] { caret-color: var(--ds-accent); }
     [data-ds-text] h1 { font-size: 26px; font-weight: 700; font-family: var(--ds-font-head); margin: 14px 0 6px; line-height: 1.3; }
     [data-ds-text] h2 { font-size: 20px; font-weight: 700; font-family: var(--ds-font-head); margin: 12px 0 4px; line-height: 1.3; }
     [data-ds-text] h3 { font-size: 16px; font-weight: 600; font-family: var(--ds-font-head); margin: 10px 0 3px; line-height: 1.4; }
@@ -744,7 +1028,14 @@ function TextBlockContentInner({
     [data-ds-text] [data-type="checklist"] input[type="checkbox"]:checked + span {
       text-decoration: line-through; opacity: 0.45;
     }
-    [data-ds-text] a { color: #5B5FE8; text-decoration: underline; }
+    /* A THIRD instance of the hardcoded dark accent, and the one that was
+       actually rendering wrong: unlike the checkbox tint above there is no
+       !important rule overriding this, so every link in every text block was
+       indigo on the light theme.
+
+       --ds-accent-TEXT, not --ds-accent: link text has to be read, and the
+       plain accent token is a fill/border colour at 2.59:1 on raised. */
+    [data-ds-text] a { color: var(--ds-accent-text); text-decoration: underline; }
     [data-ds-text] a:hover { opacity: 0.75; }
     [data-ds-text] blockquote {
       margin: 10px 0; padding: 4px 0 4px 14px;
@@ -769,7 +1060,7 @@ function TextBlockContentInner({
             pointerEvents: 'none', userSelect: 'none', lineHeight: 1.7,
           }}>
             Type <span style={{
-              fontFamily: 'var(--ds-font-mono)', fontSize: 12,
+              fontFamily: 'var(--ds-font-mono)', fontSize: 13,
               background: 'rgba(128,128,128,0.12)', padding: '2px 6px', borderRadius: 4,
             }}>/</span> for commands or just start writing
           </div>
@@ -806,7 +1097,17 @@ function TextBlockContentInner({
           onPaste={handlePaste}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
-          onMouseDown={e => e.stopPropagation()}
+          onMouseDown={e => {
+            /* Divider hit is checked before the ordinary stopPropagation —
+               same delegated-listener idiom handleLinkClick already uses for
+               teleport links, for the same reason: dividers come and go as
+               columns are inserted/removed, so a per-node listener would
+               silently stop working the moment contentEditable recreates a
+               node (undo, retyping). */
+            const divider = e.target.closest?.('[data-type="col-divider"]')
+            if (divider) { e.preventDefault(); e.stopPropagation(); startColumnResize(divider, e); return }
+            e.stopPropagation()
+          }}
           onClick={handleClick}
           onContextMenu={handleContextMenu}
           style={{
@@ -863,15 +1164,19 @@ function TextBlockContentInner({
         />
       )}
 
-      {/* The format rail is shown whenever this text block is the active one,
-          not only after a right-click. A formatting toolbar you have to
-          summon is a toolbar most people never find — and now that it's
-          docked on the right instead of popping up at the cursor, there's no
-          reason to hide it. Right-click still opens it, for anyone used to
-          that. */}
+      {/* MOUNTED whenever this block is the active one; VISIBLE only when
+          there is a non-collapsed text selection inside it. Those are two
+          different questions now, and the toolbar answers the second one
+          itself off `selectionchange` — see TextBlockToolbar v4.
+
+          Keeping the mount tied to the block (rather than to the selection)
+          is what lets the toolbar own its own show/hide without this
+          component having to mirror the selection state as well. Right-click
+          still forces it up via menuPos, for anyone used to that. */}
       {(showRail || menuPos) && colors && (
         <TextBlockToolbar
           colors={colors}
+          editableRef={ref}
           onClose={handleToolbarClose}
         />
       )}

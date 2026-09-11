@@ -63,8 +63,8 @@ function FileBlockInner({ block, colors, dark, onUpdateBlock }) {
 
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 11,
-      width: '100%', padding: '12px 13px',
+      display: 'flex', alignItems: 'center', gap: 12,
+      width: '100%', padding: '12px 14px',
       fontFamily: 'var(--ds-font-body)',
     }}>
       <div style={{
@@ -74,7 +74,7 @@ function FileBlockInner({ block, colors, dark, onUpdateBlock }) {
         border: `1px solid ${missing ? red : border}`,
         color: missing ? red : text2,
       }}>
-        <Icon name={missing ? 'action-delete' : fileIcon(name)} size={15} />
+        <Icon name={missing ? 'action-delete' : fileIcon(name)} size={16} />
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -83,10 +83,10 @@ function FileBlockInner({ block, colors, dark, onUpdateBlock }) {
             the one part that says what the thing IS. Ellipsis at the end plus
             the kind shown separately below keeps both. */}
         <div style={{
-          fontSize: 12.5, fontWeight: 600, color: missing ? red : text,
+          fontSize: 13, fontWeight: 600, color: missing ? red : text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }} title={name}>{name}</div>
-        <div style={{ fontSize: 10.5, color: text3, marginTop: 1 }}>
+        <div style={{ fontSize: 11, color: text3, marginTop: 1 }}>
           {loading ? 'Reading…'
             : missing ? 'Missing — the stored copy is gone'
               : `${fileKind(name)} · ${formatSize(size)}`}
@@ -99,17 +99,17 @@ function FileBlockInner({ block, colors, dark, onUpdateBlock }) {
         disabled={loading || missing || busy}
         title={missing ? 'The stored copy of this file is gone' : `Download ${name}`}
         style={{
-          display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
-          padding: '6px 11px', borderRadius: 8,
+          display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+          padding: '6px 12px', borderRadius: 8,
           border: `1px solid ${border}`, background: surface,
           color: loading || missing ? text3 : text2,
           cursor: loading || missing ? 'default' : 'pointer',
-          fontFamily: 'var(--ds-font-body)', fontSize: 11,
+          fontFamily: 'var(--ds-font-body)', fontSize: 12,
           opacity: loading || missing ? 0.5 : 1,
         }}
         onMouseEnter={e => { if (!loading && !missing) { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = accent } }}
         onMouseLeave={e => { e.currentTarget.style.color = loading || missing ? text3 : text2; e.currentTarget.style.borderColor = border }}>
-        <Icon name="action-export" size={11} />
+        <Icon name="action-export" size={12} />
         Download
       </button>
     </div>

@@ -222,20 +222,56 @@ console.log('\n sanitiser — does the output actually run?')
     ['svg onload', '<svg onload=window.__pwned=1>'],
   ]
 
-  for (const [label, payload] of payloads) {
-    const fired = await page.evaluate(async raw => {
-      window.__pwned = 0
+  /* RUN THE MATRIX TWICE, ONCE PER PROFILE.
+
+     This used to test `sanitizeHtml` only — the EXPORT profile — while the one
+     that runs on every text-block render and every paste is
+     `sanitizeEditorHtml`, which is strictly more permissive (it additionally
+     allows `input`, `data-type`, and `style` on twenty-one elements). The only
+     profile with a live-execution proof was the profile users never see. */
+  for (const profile of ['__sanitize', '__sanitizeEditor']) {
+    const label2 = profile === '__sanitize' ? 'export' : 'editor'
+    for (const [label, payload] of payloads) {
+      const fired = await page.evaluate(async ([raw, fn]) => {
+        window.__pwned = 0
+        const host = document.createElement('div')
+        document.body.appendChild(host)
+        host.innerHTML = window[fn](raw)
+        /* Give an onerror or a decoder a turn — image loads and the microtask
+           queue both resolve after the assignment returns. */
+        await new Promise(r => setTimeout(r, 60))
+        const out = host.innerHTML
+        host.remove()
+        return { pwned: window.__pwned, out }
+      }, [payload, profile])
+      ok(fired.pwned === 0, `[${label2}] ${label} does not execute in a live document`)
+    }
+  }
+
+  /* And the exfiltration channel, which needs a live document to prove: a
+     style attribute that reaches the network fires on RENDER, with no
+     interaction and no script. `image-set()` did exactly that until the CSS
+     function allowlist landed — it never contains the string `url(`, which was
+     the only thing the value filter looked for. */
+  for (const [label, decl] of [
+    ['image-set',         "background:image-set('/__probe.png?leak=1' 1x)"],
+    ['-webkit-image-set', "background:-webkit-image-set('/__probe.png?leak=1' 1x)"],
+    ['cross-fade',        "background:cross-fade(url('/__probe.png?leak=1') 50%)"],
+  ]) {
+    const requested = await page.evaluate(async style => {
+      const seen = []
+      const obs = new PerformanceObserver(list => {
+        for (const e of list.getEntries()) if (e.name.includes('__probe.png')) seen.push(e.name)
+      })
+      obs.observe({ entryTypes: ['resource'] })
       const host = document.createElement('div')
       document.body.appendChild(host)
-      host.innerHTML = window.__sanitize(raw)
-      /* Give an onerror or a decoder a turn — image loads and the microtask
-         queue both resolve after the assignment returns. */
-      await new Promise(r => setTimeout(r, 60))
-      const out = host.innerHTML
-      host.remove()
-      return { pwned: window.__pwned, out }
-    }, payload)
-    ok(fired.pwned === 0, `${label} does not execute in a live document`)
+      host.innerHTML = window.__sanitizeEditor(`<span style="${style}">x</span>`)
+      await new Promise(r => setTimeout(r, 250))
+      host.remove(); obs.disconnect()
+      return seen.length
+    }, decl)
+    ok(requested === 0, `[editor] ${label} in a style attribute fetches nothing`)
   }
 
   /* And the counterpart: real content still renders as real elements, not as

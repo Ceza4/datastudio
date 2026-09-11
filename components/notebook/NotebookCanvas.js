@@ -3,6 +3,8 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import TextBlockContent from './TextBlockContent'
 import ResizeHandle from './ResizeHandle'
 import BlockHandle from './BlockHandle'
+import AddMenu from './AddMenu'
+import { REF_DRAG_TYPE } from './BlockRefCard'
 import KanbanBlock from './KanbanBlock'
 import SheetGrid from './SheetGrid'
 import ImageBlock from './ImageBlock'
@@ -10,7 +12,10 @@ import FileBlock from './FileBlock'
 import PdfBlock from './PdfBlock'
 import TaskBlock from './TaskBlock'
 import CalendarBlock from './CalendarBlock'
+import ChatBlock from './ChatBlock'
+import DocumentBlock, { PAGE_BREAK_HTML } from './DocumentBlock'
 import DatabaseBlock from './DatabaseBlock'
+import CountdownBlock from './CountdownBlock'
 import ExportPanel from '../tools/ExportPanel'
 import SheetToolbar from '../tools/SheetToolbar'
 import CurveFitPanel from '../tools/CurveFitPanel'
@@ -18,11 +23,15 @@ import ImageToolbar from '../tools/ImageToolbar'
 import PdfToolbar from '../tools/PdfToolbar'
 import TaskToolbar from '../tools/TaskToolbar'
 import CalendarToolbar from '../tools/CalendarToolbar'
+import DocumentRibbon from '../tools/DocumentRibbon'
 import Icon from '../ui/Icon'
+import { attributionMap, attributionFor, onAttribution } from '../../lib/attribution'
+import { presenceFor, presenceMap, onPresence, escalationRing, presenceHue } from '../../lib/presence'
 import { useToast } from '../ui/Toast'
 import BlockErrorBoundary from './BlockErrorBoundary'
 import {
   ADD_ITEMS, TYPE_BY_KEY, getType as getBlockType, isContainer, railFor,
+  blockMinDims, blockFootprint, displayModeOf, ICON_FOOTPRINT, COMPACT_FOOTPRINT,
   blockDims as registryDims, blockHasContent as registryHasContent,
   clonepatch, cloneArgs,
 } from './blockRegistry'
@@ -43,7 +52,7 @@ import { serializeSelection, parseClipboard, materialise, splitCopyable } from '
 const EMPTY_SHAPES = Object.freeze([])
 import { LINK_COLOR, LINK_LABEL, LINK_KINDS, wouldCycle, rollup } from '../../lib/tasks'
 import { extractLinks, blockLabel } from '../../lib/teleport'
-import { Z } from '../../lib/theme'
+import { Z, MOTION } from '../../lib/theme'
 
 /* The freeform infinite-canvas notebook view. Hosts text/table/kanban blocks
    that the user drags around on a dot-grid background. Right-click drag pans.
@@ -196,7 +205,22 @@ export default function NotebookCanvas({
   revealRequest,
   onRevealHandled,
   onAddBlock,
+  /* Given a block id shared into a chat thread, the block's DATA — or null if
+     the grant is gone. Owned by app/app/page.js, which is the only layer that
+     may touch lib/shares.js (check:tree enforces that boundary), and passed
+     down for the same reason onSend and onEdit are. */
+  onResolveSharedBlock,
+  /* Same shape, for an image reference's thumbnail: the bytes live in
+     IndexedDB and only the app layer resolves object URLs. */
+  onResolveRefThumb,
+  /* (personId, blockId) — a block dropped on a row in the People panel. */
+  onShareBlockWithPerson,
+  /* (block, 'docx'|'pdf'|'save') — the Document ribbon's export actions. */
+  onExportDocument,
   onUpdateBlock,
+  /* The chat block's three writes. Props rather than imports — see the note
+     where the threads are deliberately NOT loaded. */
+  onChatSend, onChatEdit, onChatUnsend, onChatShareBlock,
   onDeleteBlock,
   /* Resolves to `{ undo, count }`, or null when nothing was removed —
      including when a section's "what about the children?" dialog was
@@ -247,6 +271,55 @@ export default function NotebookCanvas({
   const [renamingNb, setRenamingNb] = useState(false)
   const [nbLabel, setNbLabel] = useState(nb.name)
   const [renamingSheet, setRenamingSheet] = useState(false)
+  /* WHO CHANGED WHAT — ONE SUBSCRIPTION FOR THE WHOLE CANVAS.
+
+     Seven block types render a BlockHandle. If each one subscribed to
+     attribution itself that would be seven listeners per block and a re-render
+     of every block on the canvas whenever any single flag arrived. This holds
+     the map once and hands each handle the one entry it needs, which is the
+     same reasoning that moved the backlink walk up here.
+
+     Seeded from attributionMap() rather than from an empty Map so a canvas
+     mounted AFTER a pull already has the flags — otherwise switching notebooks
+     showed no attribution until the next pull happened to land.
+
+     FILTERED THROUGH attributionFor, NOT READ RAW. The raw map holds every
+     stamp including your own, and attributionFor is what drops those. Passing
+     the raw entry would flag every block you had ever touched — the exact
+     confetti lib/blocks.js is written to avoid — and it would have looked
+     correct in every test that only had one user in it. */
+  const buildAttribution = useCallback(() => {
+    const out = new Map()
+    for (const id of attributionMap().keys()) {
+      const row = attributionFor(id)
+      if (row) out.set(id, row)
+    }
+    return out
+  }, [])
+  const [attribution, setAttribution] = useState(buildAttribution)
+  useEffect(() => onAttribution(() => setAttribution(buildAttribution())), [buildAttribution])
+
+  /* WHO IS IN WHICH BLOCK RIGHT NOW — same one-subscription-for-the-canvas
+     shape as attribution above, for the same reason: seven block types render a
+     BlockHandle, and a per-handle subscription would be seven listeners per
+     block plus a re-render of every block whenever any single signal arrived.
+
+     Filtered through presenceFor, not read raw, exactly as attribution is: the
+     raw map holds your own presence too, and a block that glows because YOU are
+     in it is chrome carrying no information. presenceFor also drops rows whose
+     last signal has gone stale, so this map is only ever "somebody else, right
+     now". */
+  const buildPresence = useCallback(() => {
+    const out = new Map()
+    for (const id of presenceMap().keys()) {
+      const row = presenceFor(id)
+      if (row) out.set(id, row)
+    }
+    return out
+  }, [])
+  const [presence, setPresence] = useState(buildPresence)
+  useEffect(() => onPresence(() => setPresence(buildPresence())), [buildPresence])
+
   const [sheetLabel, setSheetLabel] = useState('')
   const editingRef = useRef(false)
   const [renamingBlockId, setRenamingBlockId] = useState(null)
@@ -339,6 +412,12 @@ const [selectedIds, setSelectedIds] = useState(new Set())
   // Kept in a ref because the wheel listener is registered once, natively.
   const selectionLockRef = useRef(false)
   const [hoverSectionId, setHoverSectionId] = useState(null)
+  /* The chat block a dragged block is currently over. Separate from
+     hoverSectionId because the two gestures MEAN different things: hovering a
+     section re-parents the block, hovering a chat leaves it exactly where it
+     was and posts a reference. Sharing one piece of state would make the drop
+     handler decide which it was, at the point where it is least able to. */
+  const [hoverChatId, setHoverChatId] = useState(null)
   const [hoveredConnId, setHoveredConnId] = useState(null)
   const [selectedConnId, setSelectedConnId] = useState(null)
   // Live link being dragged out of a port: { fromId, fromSide, x, y, overId }
@@ -484,6 +563,11 @@ const drawPanelRef = useRef(null)
   const cropWrapRef = useRef(null)
   const [cropHost, setCropHost] = useState(null)
   const [addMenuOpen, setAddMenuOpen] = useState(false)
+  /* The +Add button's rect in SCREEN space, captured on open. A fixed-position
+     panel needs screen coordinates, and re-measuring on every render would fight
+     the canvas transform for no reason — the button does not move while the menu
+     is open. */
+  const [addAnchor, setAddAnchor] = useState(null)
   const addMenuRef = useRef(null)
   const ctxMenuRef = useRef(null)
 
@@ -498,7 +582,57 @@ const drawPanelRef = useRef(null)
   // Stable empty-array fallback. `activeSheet?.blocks || []` minted a new
   // array on every render whenever the sheet was missing, which made any
   // effect depending on `blocks` re-run forever.
-  const blocks = activeSheet?.blocks || EMPTY_BLOCKS
+  /* ── FLOATING BLOCKS ARE REAL BLOCKS THAT ARE NOT ON THE CANVAS ──────────
+     A direct-message thread opened from the People panel needs a real block id:
+     `chat_messages` (migration 0009) keys on one, and grants are checked
+     against one. But it must not be PLACED on the sheet — the decision was
+     explicit that tapping a person opens a floating window, never a block
+     somebody then has to tidy off their canvas.
+
+     Both are satisfied by one flag. The block exists in the document, so every
+     id, grant and membership check works exactly as it does for any other chat
+     block; it is simply not drawn here, and the People panel renders its thread
+     instead. That is a smaller and more honest mechanism than a parallel
+     "threads" store that would have to re-derive its own permissions.
+
+     Filtered out of `blocks` rather than skipped at the render site, so it is
+     also invisible to hit-testing, marquee selection, snap targets, section
+     containment and export — a block you cannot see must not be selectable by
+     dragging a box over where it is not.
+
+     Nothing in this component needs the unfiltered list: the thread lookup lives
+     in app/app/page.js, which reads the notebook directly, and persistence never
+     passes through here at all. */
+  /* A PLAIN FILTER IN A useMemo, and both halves of that matter.
+
+     The memo is what keeps identity stable: `blocks` is a dependency of a dozen
+     memos and effects below, and a fresh array every render would drop every one
+     of them. Keyed on `activeSheet?.blocks`, it changes exactly when `blocks`
+     used to — this line WAS that expression — so nothing downstream re-runs more
+     often than it did before.
+
+     Written as one expression on purpose. A first version short-circuited with
+     `.some()` and returned the original array when nothing was floating, to
+     avoid even allocating; the React compiler cannot preserve a memo with a
+     conditional return, and losing compilation of the surrounding code is a far
+     worse trade than one array allocation per sheet change. */
+  const blocks = useMemo(() => (activeSheet?.blocks || EMPTY_BLOCKS).filter(b => !b.floating), [activeSheet?.blocks])
+
+  /* THREADS ARE NOT LOADED HERE, AND THAT IS THE SECOND TIME THIS LESSON HAS
+     BEEN LEARNED IN THIS CODEBASE.
+     ------------------------------------------------------------------
+     The first draft imported lib/chat.js right here, under a comment
+     explaining that a BLOCK RENDERER must not, because it drags
+     supabaseClient.js into the graph and supabaseClient reads process.env at
+     module scope. The comment was correct and the import was one level too
+     high: tests/browser mounts this canvas, so the harness went from 157
+     passing to a blank page and `process is not defined`.
+
+     lib/attribution.js was split from lib/blocks.js for exactly this, and the
+     rule it implies is one level broader than it was written: NOTHING IN THE
+     RENDER TREE TALKS TO A SERVER. app/app/page.js owns the network — it
+     already creates the sync engine — and hands the chat writes down as
+     props, the same way it hands down onAddBlock and onUpdateBlock. */
 
   /* Id → block, for the handful of places that need one block out of the
      sheet. Each of them used to run its own blocks.find(), which is a linear
@@ -808,6 +942,7 @@ const soleSelectedShape = selectedShapeList.length === 1 ? selectedShapeList[0] 
   const solePdfBlock = soleSelected?.type === 'pdf' ? soleSelected : null
   const soleTaskBlock = soleSelected?.type === 'task' ? soleSelected : null
   const soleCalendarBlock = soleSelected?.type === 'calendar' ? soleSelected : null
+  const soleDocumentBlock = soleSelected?.type === 'document' ? soleSelected : null
   /* Which annotation tool is armed, and what the block reports back about its
      overlay. Held here because the RAIL needs both and the rail is a sibling
      of the block, not a child. */
@@ -911,7 +1046,12 @@ const soleSelectedShape = selectedShapeList.length === 1 ? selectedShapeList[0] 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
     kids.forEach(k => {
       const pos = overrides[k.id] || k
-      const { w, h } = blockDims(k)
+      /* blockFootprint, NOT blockDims. An image collapsed to an icon keeps its
+         stored w/h (so expanding restores the size you had), so blockDims would
+         report 360×260 for a 200×40 chip — and a section grown around phantom
+         boxes leaves huge holes exactly where somebody has just tidied up. This
+         one substitution is the whole reason blockFootprint exists. */
+      const { w, h } = blockFootprint(k)
       minX = Math.min(minX, pos.x); minY = Math.min(minY, pos.y)
       maxX = Math.max(maxX, pos.x + w); maxY = Math.max(maxY, pos.y + h)
     })
@@ -1058,15 +1198,13 @@ function addBlockAnimated(type, x, y) {
   // animate every block on arrival.
   useEffect(() => { seenBlockIds.current = null }, [activeSheet?.id])
 
-  // Close add menu when clicking outside
-  useEffect(() => {
-    if (!addMenuOpen) return
-    function handleClick(e) {
-      if (addMenuRef.current && !addMenuRef.current.contains(e.target)) setAddMenuOpen(false)
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [addMenuOpen])
+  /* The Add menu's own click-outside listener USED to live here, testing
+     containment against addMenuRef — the button's wrapper. That stopped being
+     correct the moment the panel started portalling to <body>: the panel is no
+     longer a descendant of that wrapper, so every click inside the menu counted
+     as "outside" and closed it before the row could fire. AddMenu owns its own
+     dismissal now, against its own element, which is the only element that knows
+     where it actually is. */
   useEffect(() => {
     if (!showDrawPanel) return
     function handleClick(e) {
@@ -1119,6 +1257,21 @@ function addBlockAnimated(type, x, y) {
      whatever room is left, and the title island is the only thing that
      shrinks. */
   const ROW_LEFT = 284      // 16 sidebar inset + 252 sidebar + 16 gutter
+
+  /* WHERE THE TOP ROW SITS WITH THE SIDEBAR HIDDEN.
+     ------------------------------------------------------------------
+     Not 16, and not zero. The sidebar's reopen handle lives at left:18 in
+     app/app/page.js and ends at x=77: 18 left + 12 pad + 12 chevron + 7 gap
+     + 14 logo + 12 pad + 2 border. It occupies the
+     SAME horizontal band as this row. 93 clears it by the 16px gutter every
+     other island uses. If that handle changes size, this number is wrong —
+     which is why the arithmetic is written out rather than the answer.
+
+     NOTE this is the only ROW_LEFT that moves. `usableL`, block placement and
+     `leftPx` keep the full 284 on purpose: a block dropped into the space the
+     sidebar will reoccupy is a block that vanishes the moment it reopens. */
+  const ROW_LEFT_COLLAPSED = 93
+  const sidebarHidden = !!prefs?.sidebarCollapsed
   const ROW_RIGHT = 162     // profile island (~130) + its 16 inset + 16 gutter
 
   /* Keep the viewport-lock ref in step with the selection. A block being
@@ -1696,6 +1849,7 @@ function addBlockAnimated(type, x, y) {
     const { w: bw, h: bh } = sizeOf(block, measured)
     let dragging = false
     let currentHoverSection = null
+    let currentHoverChat = null
 
     /* Follow rate: the pointer moves `target`, a rAF loop walks the block
        toward it.
@@ -1867,6 +2021,67 @@ function addBlockAnimated(type, x, y) {
       if (committed) return
       committed = true
       if (raf != null) { cancelAnimationFrame(raf); raf = null }
+
+      /* DROPPED INTO A CONVERSATION.
+         ------------------------------------------------------------------
+         THE BLOCK GOES BACK WHERE IT WAS. That is the whole interaction, and
+         it is the thing Matas asked for by name: dragging a block into a chat
+         must not MOVE it, or the chat becomes a place work goes to get lost —
+         and the person who loses it is the one who shared it.
+
+         So the position is reverted to where the drag started, and what the
+         chat receives is a REFERENCE. One block, two views. */
+      if (currentHoverChat) {
+        for (const m of movers) {
+          m.el.style.left = `${origX + m.dx}px`
+          m.el.style.top = `${origY + m.dy}px`
+          m.el.style.translate = ''
+        }
+        for (const w of wires) if (w.dot) w.dot.style.display = ''
+        setHoverChatId(null)
+        detach()
+        latestRef.current.onChatShareBlock?.(currentHoverChat, block.id)
+        return
+      }
+
+      /* ── DROPPED ON A PERSON IN THE PEOPLE PANEL ──────────────────────
+         Same interaction, different target: share this block with that person
+         and drop a reference card into their thread. The block goes back where
+         it was, for exactly the reason above — sharing is not moving.
+
+         elementFromPoint rather than a rect comparison, because the panel is
+         portalled to <body> and lives entirely outside the canvas's coordinate
+         space. This is the only honest way for a canvas-space drag to hit-test
+         screen-space chrome, and it is checked once on release rather than per
+         frame: a hover highlight on the row would need the same call sixty
+         times a second for a target the user is already aiming at deliberately.
+
+         The row id is read off the DOM at the moment of the drop, so the panel
+         can open, close or scroll mid-drag without this holding a stale
+         reference to a row that has moved. */
+      const overPerson = (() => {
+        if (typeof document === 'undefined') return null
+        /* lastPointer is the edge-pan tracker this drag already keeps, updated
+           on every mousemove. Reused rather than adding a second variable
+           holding the same number — two trackers for one pointer is how they
+           end up disagreeing. */
+        const p = lastPointer.current
+        const el = document.elementFromPoint(p.x, p.y)
+        return el?.closest?.('[data-ds-person-row]')?.getAttribute('data-ds-person-row') || null
+      })()
+      if (overPerson) {
+        for (const m of movers) {
+          m.el.style.left = `${origX + m.dx}px`
+          m.el.style.top = `${origY + m.dy}px`
+          m.el.style.translate = ''
+        }
+        for (const w of wires) if (w.dot) w.dot.style.display = ''
+        setHoverChatId(null)
+        detach()
+        latestRef.current.onShareBlockWithPerson?.(overPerson, block.id)
+        return
+      }
+
       const fx = target.x, fy = target.y
 
       const patch = { x: fx, y: fy }
@@ -2163,11 +2378,30 @@ function addBlockAnimated(type, x, y) {
           currentHoverSection = hit
           setHoverSectionId(hit)
         }
+
+        /* And is the cursor over a CHAT block? Same cursor-based hit test, a
+           different verb. A chat block dragged onto another chat block is
+           excluded: nesting a conversation inside a conversation has no
+           meaning, and allowing it would only produce a reference nobody can
+           open. */
+        let chatHit = null
+        if (block.type !== 'chat') {
+          blocks.forEach(cb => {
+            if (cb.type !== 'chat' || cb.id === block.id) return
+            const { w: cw, h: ch } = blockDims(cb)
+            if (cx >= cb.x && cx <= cb.x + cw && cy >= cb.y && cy <= cb.y + ch) chatHit = cb.id
+          })
+        }
+        if (chatHit !== currentHoverChat) {
+          currentHoverChat = chatHit
+          setHoverChatId(chatHit)
+        }
       }
     }
     /* Everything that ends the gesture goes through here, so a drag can never
        leave a listener, a rAF loop or a guide behind. */
     function detach() {
+      setHoverChatId(null)
       stopEdgePan()
       lastSnapSig.current = ''
       lastSpacingSig.current = ''
@@ -2433,6 +2667,8 @@ function addBlockAnimated(type, x, y) {
     }
   }, [])
 
+  /* The canvas's global floor. Per-type floors override it upward through
+     blockMinDims — the calendar's sidebar is why that exists. */
   const MIN_W = 200, MIN_H = 100
 
   /* Directional resize. `dir` is any combination of n/s/e/w.
@@ -2447,6 +2683,9 @@ function addBlockAnimated(type, x, y) {
     const startX = e.clientX
     const startY = e.clientY
     const { w: baseW, h: baseH } = blockDims(block)
+    /* Per-type floor, never below the canvas's own. A calendar cannot be
+       dragged narrower than its sidebar plus a usable grid. */
+    const min = blockMinDims(block, { w: MIN_W, h: MIN_H })
     const baseX = block.x, baseY = block.y
     /* The live size, held here and mirrored into `resizing` for the render.
        The commit reads THIS, not the state, so a mouseup that arrives between
@@ -2459,10 +2698,10 @@ function addBlockAnimated(type, x, y) {
       const dy = (ev.clientY - startY) / z
       let w = baseW, h = baseH, x = baseX, y = baseY
 
-      if (dir.includes('e')) w = Math.max(MIN_W, baseW + dx)
-      if (dir.includes('s')) h = Math.max(MIN_H, baseH + dy)
-      if (dir.includes('w')) { w = Math.max(MIN_W, baseW - dx); x = baseX + (baseW - w) }
-      if (dir.includes('n')) { h = Math.max(MIN_H, baseH - dy); y = baseY + (baseH - h) }
+      if (dir.includes('e')) w = Math.max(min.w, baseW + dx)
+      if (dir.includes('s')) h = Math.max(min.h, baseH + dy)
+      if (dir.includes('w')) { w = Math.max(min.w, baseW - dx); x = baseX + (baseW - w) }
+      if (dir.includes('n')) { h = Math.max(min.h, baseH - dy); y = baseY + (baseH - h) }
 
       /* The block's own state, not the document's.
          This used to be onUpdateBlock per mousemove, which paid the same
@@ -2534,6 +2773,31 @@ function addBlockAnimated(type, x, y) {
     }
     onUpdateBlock(block.id, natural)
     setCtxMenu(null)
+  }
+
+  /* Insert → Table / Image / Columns / Page break, from the Document ribbon.
+
+     A page break is CONTENT and goes into the document's own markup; the other
+     three are BLOCKS and go onto the canvas beside the document. Keeping that
+     split explicit here rather than inside the ribbon is what stops the ribbon
+     needing to know anything about the canvas. */
+  function insertIntoDocument(block, what) {
+    if (what === 'pagebreak') {
+      /* Straight into the focused editable, so it lands at the caret rather
+         than at the end. If the document is not focused there is no caret to
+         insert at, and silently appending would put a page break somewhere the
+         user was not looking. */
+      const el = document.querySelector(`[data-ds-doc]`)
+      if (el && document.activeElement === el) {
+        document.execCommand('insertHTML', false, PAGE_BREAK_HTML)
+      } else {
+        toast('Click into the document first, then insert a page break.', { tone: 'warn' })
+      }
+      return
+    }
+    if (what === 'image') { onPickImage?.(); return }
+    const { w } = blockDims(block)
+    addBlockAnimated(what, block.x + w + 40, block.y)
   }
 
   function startSheetRename() {
@@ -2803,7 +3067,16 @@ function addBlockAnimated(type, x, y) {
      response to a user event, which is always after the commit that updated
      this. */
   useEffect(() => {
-    latestRef.current = { onUpdateBlock, onTeleport, extractFromPdf, addBlockAnimated, byId }
+    latestRef.current = {
+      onUpdateBlock, onTeleport, extractFromPdf, addBlockAnimated, byId,
+      /* The chat block's "open this" needs a full teleport address, and
+         teleportTo() silently returns on a partial one — so the notebook and
+         sheet ids ride along here rather than being closed over by a callback
+         blockCb has cached since the last sheet change. */
+      notebookId: nb?.id, sheetId: activeSheet?.id,
+      onChatSend, onChatEdit, onChatUnsend, onChatShareBlock,
+      onResolveSharedBlock, onResolveRefThumb, onShareBlockWithPerson,
+    }
   })
 
   /* One object per (notebook, sheet), not one per render — an inline object
@@ -3218,28 +3491,34 @@ function addBlockAnimated(type, x, y) {
           the notebook name got longer. Padding lives inside the outer cells, so
           it clears the sidebar and profile island without shifting the centre. */}
       <div ref={topRowRef} data-kbd-zone style={{ position: 'absolute', top: 16, left: 0, right: 0, zIndex: Z.chrome, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'start', pointerEvents: 'none' }}>
-      <div style={{ minWidth: 0, paddingLeft: ROW_LEFT, paddingRight: 16, display: 'flex', justifyContent: 'flex-start', overflow: 'hidden' }}>
+      {/* PADDING, not a transform. Translating the column would drag its right
+          edge left with it, and this column has `overflow: hidden` — a long
+          notebook name would start clipping at exactly the moment the sidebar
+          gave it more room. Animating padding reflows, but it reflows three
+          elements once per click, which is not a frame budget anyone will
+          notice. */}
+      <div style={{ minWidth: 0, paddingLeft: sidebarHidden ? ROW_LEFT_COLLAPSED : ROW_LEFT, paddingRight: 16, display: 'flex', justifyContent: 'flex-start', overflow: 'hidden', transition: `padding-left ${MOTION.enter} ${MOTION.standard}` }}>
 
       <div style={{ flex: '0 1 auto', minWidth: 0, pointerEvents: 'auto', display: 'flex', gap: 2, height: 46, padding: '0 12px', overflow: 'hidden', background: `${surface}dd`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
         {renamingNb ? (
           <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
         ) : (
           <span onDoubleClick={() => setRenamingNb(true)} title={nb.name}
-            style={{ fontFamily: 'var(--ds-font-head)', fontSize: 15, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, flex: '1 1 auto', minWidth: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
+            style={{ fontFamily: 'var(--ds-font-head)', fontSize: 16, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, flex: '1 1 auto', minWidth: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
         )}
         {activeSheet && !renamingSheet && (
           <span onDoubleClick={() => { setSheetLabel(activeSheet.name); setRenamingSheet(true) }}
             title={`${activeSheet.name || 'Sheet 1'} · ${blocks.length} blocks`}
-            style={{ fontSize: 11, color: text3, cursor: 'text', marginRight: 6, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            style={{ fontSize: 12, color: text3, cursor: 'text', marginRight: 6, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             · {activeSheet.name || 'Sheet 1'} · {blocks.length} block{blocks.length !== 1 ? 's' : ''}
           </span>
         )}
         {renamingSheet && (
-          <input autoFocus value={sheetLabel} onChange={e => setSheetLabel(e.target.value)} onBlur={commitSheetRename} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text2, fontSize: 10, outline: 'none', minWidth: 60, marginRight: 4 }} />
+          <input autoFocus value={sheetLabel} onChange={e => setSheetLabel(e.target.value)} onBlur={commitSheetRename} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text2, fontSize: 11, outline: 'none', minWidth: 60, marginRight: 4 }} />
         )}
 
         <div style={{ width: 1, height: 22, background: border, margin: '0 8px', flexShrink: 0 }} />
-        <span style={{ fontSize: 11, color: text3, fontFamily: 'var(--ds-font-body)', fontVariantNumeric: 'tabular-nums', padding: '0 4px', cursor: 'pointer', flexShrink: 0 }}
+        <span style={{ fontSize: 12, color: text3, fontFamily: 'var(--ds-font-body)', fontVariantNumeric: 'tabular-nums', padding: '0 4px', cursor: 'pointer', flexShrink: 0 }}
           onClick={() => { nbZoomRef.current = 1; setNbZoom(1); panRef.current = { x: 60, y: 60 }; setPan({ x: 60, y: 60 }) }}
           title="Click to reset the view">{Math.round(nbZoom * 100)}%</span>
 
@@ -3248,7 +3527,7 @@ function addBlockAnimated(type, x, y) {
             and there'd otherwise be nothing explaining why. */}
         {selectedIds.size > 0 && (
           <span title="Canvas is frozen while a block is selected — press Esc to release"
-            style={{ fontSize: 9, color: accentText, background: accentDim, padding: '3px 7px', borderRadius: 4, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6, flexShrink: 0, marginLeft: 6, whiteSpace: 'nowrap' }}>
+            style={{ fontSize: 11, color: accentText, background: accentDim, padding: '4px 8px', borderRadius: 4, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6, flexShrink: 0, marginLeft: 6, whiteSpace: 'nowrap' }}>
             LOCKED
           </span>
         )}
@@ -3262,35 +3541,67 @@ function addBlockAnimated(type, x, y) {
 
       </div>
 
+      {addMenuOpen && (
+        <AddMenu
+          anchorRect={addAnchor}
+          colors={colors}
+          onClose={() => setAddMenuOpen(false)}
+          onPick={type => {
+            setAddMenuOpen(false)
+            /* Image goes straight to the file picker. Creating an empty image
+               block first would leave a placeholder on the canvas that does
+               nothing until you find another way to fill it. */
+            if (getBlockType(type).createOpensPicker) { onPickImage?.(); return }
+            /* Placed in the middle of what you are looking at — the same rule
+               paste already uses, and for the same reason.
+
+               It used to be a hardcoded screen point, (200, 120). That is
+               220px from the left of the workspace, which put every new block
+               under the 280px sidebar: a Document block (880 wide) opened with
+               its ruler, its left margin and a third of its page hidden behind
+               the file tree, and you had to pan the canvas to discover it had
+               been created at all. A fixed offset cannot know where the
+               chrome is; the view centre does not need to. */
+            const z = nbZoomRef.current
+            /* Horizontally centred, vertically near the TOP of the view rather
+               than its middle: the tallest blocks are about as tall as the
+               workspace, so centring one vertically ran its bottom half off
+               the screen. 14% down clears the floating toolbar island and
+               still leaves the whole block in view. */
+            const cx = (viewSize.w / 2 - panRef.current.x) / z
+            const topY = (Math.max(96, viewSize.h * 0.14) - panRef.current.y) / z
+            addBlockAnimated(type, cx - 300 + Math.random() * 40, topY + Math.random() * 30)
+          }}
+        />
+      )}
+
       {/* ── Floating Island Toolbar — centre column, so it's screen-centred ── */}
-      <div style={{ pointerEvents: 'auto', display: 'flex', gap: 5, height: 46, padding: '0 10px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
-        {/* Add block dropdown */}
+      <div style={{ pointerEvents: 'auto', display: 'flex', gap: 6, height: 46, padding: '0 10px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
+        {/* Add block menu.
+
+            PORTALLED, not absolutely positioned inside this island — which is
+            why the panel is a component rather than a nested div now. The island
+            lives inside the canvas's CSS transform, so an absolutely-positioned
+            child is SCALED by the zoom level: at 0.25× the old dropdown rendered
+            as an unreadable 35px-wide sliver, and at 3× it overflowed the
+            screen. Same reason BlockPicker, SlashMenu and the format toolbar all
+            portal to <body>.
+
+            The anchor rect is measured from the button in SCREEN space, which is
+            exactly what a fixed-position panel needs. */}
         <div ref={addMenuRef} style={{ position: 'relative' }}>
-          <button onClick={() => setAddMenuOpen(!addMenuOpen)}
+          <button
+            onClick={e => {
+              if (addMenuOpen) { setAddMenuOpen(false); return }
+              const r = e.currentTarget.getBoundingClientRect()
+              setAddAnchor({ left: r.left, top: r.top, bottom: r.bottom })
+              setAddMenuOpen(true)
+            }}
+            aria-expanded={addMenuOpen}
             className={`ds-tbtn${addMenuOpen ? ' is-on' : ''}`}>
             <Icon name="action-add" size={14} />
             Add
           </button>
-          {addMenuOpen && (
-            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: surface, border: `1px solid ${border}`, borderRadius: 8, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}`, overflow: 'hidden', minWidth: 140, zIndex: Z.menu }}>
-              {ADD_ITEMS.map(({ type, label }) => (
-                <button key={type} onClick={() => {
-                  setAddMenuOpen(false)
-                  // Image goes straight to the file picker. Creating an empty
-                  // image block first would leave a placeholder on the canvas
-                  // that does nothing until you find another way to fill it.
-                  if (getBlockType(type).createOpensPicker) { onPickImage?.(); return }
-                  const z = nbZoomRef.current
-                  addBlockAnimated(type, (200 - panRef.current.x) / z + Math.random() * 40, (120 - panRef.current.y) / z + Math.random() * 30)
-                }}
-                  style={{ display: 'flex', alignItems: 'center', width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, fontFamily: 'var(--ds-font-body)', cursor: 'pointer', textAlign: 'left' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = text }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = text2 }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
         <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
@@ -3366,14 +3677,14 @@ function addBlockAnimated(type, x, y) {
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
                   background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                  fontFamily: 'var(--ds-font-body)', fontSize: 12, color: text,
+                  fontFamily: 'var(--ds-font-body)', fontSize: 13, color: text,
                 }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Icon name="tool-draw" size={12} style={{ color: smartPen ? accent : text3 }} />
                   Smart pen
                 </span>
                 <span style={{
-                  width: 28, height: 16, borderRadius: 9, flexShrink: 0,
+                  width: 28, height: 16, borderRadius: 8, flexShrink: 0,
                   background: smartPen ? accent : border,
                   position: 'relative', transition: 'background 0.15s ease',
                 }}>
@@ -3386,7 +3697,7 @@ function addBlockAnimated(type, x, y) {
               </button>
 
               <div>
-                <div style={{ fontSize: 10, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Color</div>
+                <div style={{ fontSize: 11, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Color</div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {['#5B5FE8', '#1D9E75', '#f87171', '#E8B85B', '#E8E6E1'].map(c => (
                     <div key={c} onClick={() => setDrawColor(c)}
@@ -3395,7 +3706,7 @@ function addBlockAnimated(type, x, y) {
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: 10, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Size</div>
+                <div style={{ fontSize: 11, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Size</div>
                 {/* Brushes render at 20px, not 14. draw-brush-sm is a 1.6-weight
                     stroke — below 16px it lands on a sub-pixel and washes out to
                     nothing, so the three sizes stop reading as a family. */}
@@ -3411,18 +3722,18 @@ function addBlockAnimated(type, x, y) {
               </div>
               <div style={{ display: 'flex', gap: 6, borderTop: `1px solid ${border}`, paddingTop: 8 }}>
                 <button onClick={undoLastDrawing}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
-                  <Icon name="draw-undo" size={13} /> Undo
+                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
+                  <Icon name="draw-undo" size={14} /> Undo
                 </button>
                 <button onClick={clearAllDrawings}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}
+                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}
                   onMouseEnter={e => { e.currentTarget.style.color = '#f87171'; e.currentTarget.style.borderColor = '#f87171' }}
                   onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
-                  <Icon name="draw-clear" size={13} /> Clear
+                  <Icon name="draw-clear" size={14} /> Clear
                 </button>
                 <button onClick={() => { setDrawMode(false); setShowDrawPanel(false) }}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
-                  <Icon name="draw-exit" size={13} /> Exit
+                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
+                  <Icon name="draw-exit" size={14} /> Exit
                 </button>
               </div>
             </div>
@@ -3537,15 +3848,15 @@ function addBlockAnimated(type, x, y) {
         <div role="status" aria-live="polite" style={{
           position: 'absolute', bottom: 18, left: '50%', transform: 'translateX(-50%)',
           zIndex: Z.hint, display: 'flex', alignItems: 'center', gap: 10,
-          padding: '7px 14px', borderRadius: 9,
+          padding: '8px 14px', borderRadius: 8,
           background: accentDim, border: `1px solid ${accent}`,
-          color: accentText, fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 600,
+          color: accentText, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600,
           boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`,
         }}>
           <span>
             {kbMode === 'toolbar' ? 'Toolbar' : kbMode === 'grab' ? 'Moving block' : 'Keyboard'}
           </span>
-          <span style={{ fontSize: 10.5, fontWeight: 400, opacity: 0.85, fontFamily: 'var(--ds-font-mono)' }}>
+          <span style={{ fontSize: 11, fontWeight: 400, opacity: 0.85, fontFamily: 'var(--ds-font-mono)' }}>
             {kbMode === 'toolbar'
               ? 'tab or ← → to choose · enter to use · esc to go back'
               : kbMode === 'grab'
@@ -3569,16 +3880,16 @@ function addBlockAnimated(type, x, y) {
             {SHORTCUT_GROUPS.map(({ title, note, rows }) => (
               <div key={title} style={{ marginBottom: 14 }}>
                 <div className="ds-label" style={{ marginBottom: 4 }}>{title}</div>
-                {note && <div style={{ fontSize: 10.5, color: text3, marginBottom: 6 }}>{note}</div>}
+                {note && <div style={{ fontSize: 11, color: text3, marginBottom: 6 }}>{note}</div>}
                 {rows.map(([k, d]) => (
-                  <div key={k} style={{ display: 'flex', alignItems: 'baseline', gap: 12, padding: '3px 0', fontSize: 12 }}>
-                    <span style={{ flex: '0 0 148px', fontFamily: 'var(--ds-font-mono)', fontSize: 10.5, color: accentText }}>{k}</span>
+                  <div key={k} style={{ display: 'flex', alignItems: 'baseline', gap: 12, padding: '3px 0', fontSize: 13 }}>
+                    <span style={{ flex: '0 0 148px', fontFamily: 'var(--ds-font-mono)', fontSize: 11, color: accentText }}>{k}</span>
                     <span style={{ color: text2 }}>{d}</span>
                   </div>
                 ))}
               </div>
             ))}
-            <div style={{ fontSize: 10.5, color: text3, borderTop: `1px solid ${border}`, paddingTop: 9 }}>
+            <div style={{ fontSize: 11, color: text3, borderTop: `1px solid ${border}`, paddingTop: 9 }}>
               Press <b style={{ color: text2 }}>?</b> any time to reopen this.
             </div>
           </div>
@@ -3586,12 +3897,12 @@ function addBlockAnimated(type, x, y) {
       )}
 
       {mindMapMode && (
-        <div style={{ position: 'absolute', top: 120, left: '50%', transform: 'translateX(-50%)', zIndex: Z.hint, padding: '8px 16px', background: accentDim, border: `1px solid ${accent}`, borderRadius: 8, boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: accentText, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Icon name="tool-mindmap" size={15} />
+        <div style={{ position: 'absolute', top: 120, left: '50%', transform: 'translateX(-50%)', zIndex: Z.hint, padding: '8px 16px', background: accentDim, border: `1px solid ${accent}`, borderRadius: 8, boxShadow: `0 4px 20px ${dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 13, color: accentText, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Icon name="tool-mindmap" size={16} />
           <span>{mindMapMaster ? 'Now click the target block · Esc to finish' : 'Click a source block — or just drag from any block’s port dot'}</span>
           <button onClick={() => { setMindMapMode(false); setMindMapMaster(null) }} aria-label="Exit mind map mode"
             style={{ background: 'none', border: 'none', color: accentText, cursor: 'pointer', padding: 0, lineHeight: 1, opacity: 0.7, display: 'flex' }}>
-            <Icon name="action-delete" size={13} />
+            <Icon name="action-delete" size={14} />
           </button>
         </div>
       )}
@@ -3611,14 +3922,14 @@ function addBlockAnimated(type, x, y) {
             { label: `Delete (${selectedIds.size})`, icon: 'action-delete', color: red, action: deleteSelected },
           ].map((item, i) => (
             <button key={i} onClick={item.action}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: item.color, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: item.color, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
               onMouseEnter={e => e.currentTarget.style.background = raised} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
               <Icon name={item.icon} size={14} />{item.label}
             </button>
           ))}
           {singleConns.length > 0 && (<>
             <div style={{ borderTop: `1px solid ${border}`, margin: '2px 0' }} />
-            <div style={{ padding: '6px 12px 2px', fontSize: 10, color: text3, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase', letterSpacing: 1 }}>Delete mind map</div>
+            <div style={{ padding: '6px 12px 2px', fontSize: 11, color: text3, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase', letterSpacing: 1 }}>Delete mind map</div>
             {singleConns.map(conn => {
               const otherId = conn.fromBlockId === singleBlockId ? conn.toBlockId : conn.fromBlockId
               const other = blocks.find(b => b.id === otherId)
@@ -3626,7 +3937,7 @@ function addBlockAnimated(type, x, y) {
               const arrow = conn.fromBlockId === singleBlockId ? '→' : '←'
               return (
                 <button key={conn.id} onClick={() => { deleteConnection(conn.id); setCtxMenu(null) }}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 12px', background: 'none', border: 'none', color: text2, fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', color: text2, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)' }}
                   onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = red }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = text2 }}>
                   <span style={{ width: 16, textAlign: 'center', color: accentText }}>{arrow}</span>{label}
@@ -3735,12 +4046,106 @@ function addBlockAnimated(type, x, y) {
              app/page.js importing the same file a second time at a default
              position — you would get two blocks, one under the cursor and one
              in the corner. */
+          /* ── A REFERENCE CARD DRAGGED OUT OF A CHAT THREAD ──────────
+             Checked FIRST, before files: a card drag carries no
+             dataTransfer.files, but reading a custom type is cheap and
+             ordering the branches by specificity is what keeps the handler
+             readable as it grows.
+
+             What lands is a REAL, NATIVE, EDITABLE BLOCK — not a special
+             render path, not a live link. The mechanism is the one duplicating
+             a block on your own canvas already uses: take the source data,
+             run it through clonepatch()'s existing deep copy, and createBlock()
+             a new block of that type at the drop point. The only differences
+             are where the source data came from (someone else's document,
+             already fetched through lib/shares.js) and the name suffix.
+
+             SNAPSHOT, NOT LINK. It does not update when the source changes,
+             for exactly the same reason a duplicate does not. See
+             BlockRefCard's header — that is the claim this makes, deliberately,
+             and it is why no NotebookCanvas render path needed touching. */
+          const refRaw = (() => {
+            try { return e.dataTransfer?.getData(REF_DRAG_TYPE) } catch { return '' }
+          })()
+          if (refRaw) {
+            e.stopPropagation()
+            let payload = null
+            try { payload = JSON.parse(refRaw) } catch { /* not ours after all */ }
+            const src = payload?.blockId ? onResolveSharedBlock?.(payload.blockId) : null
+            if (!src) {
+              /* The card was dropped but its data could not be resolved —
+                 usually a grant revoked between the message arriving and the
+                 drop. Say so; silently doing nothing is the worst outcome,
+                 because the gesture visibly succeeded. */
+              toast('That block is no longer shared with you.', { tone: 'warn' })
+              return
+            }
+            const p = getCanvasPoint(e)
+            const suffix = payload.senderName ? ` (from ${payload.senderName})` : ' (copy)'
+            onAddBlock?.(
+              src.type,
+              Math.max(0, p.x - 40), Math.max(0, p.y - 20),
+              null, null, undefined, undefined,
+              clonepatch(src, { suffix }),
+            )
+            return
+          }
+
           const dropped = e.dataTransfer?.files
           if (dropped && dropped.length) {
             if (!onDropFiles) return
             e.stopPropagation()
             const p = getCanvasPoint(e)
-            onDropFiles(dropped, p.x, p.y)
+            /* ── THE BUG THIS FIXES ──────────────────────────────────────
+               The INTERNAL block drag hit-tests sections and calls
+               growSectionToFit() when a block lands in one. This handler —
+               a file dragged in from the desktop — did NEITHER. So dropping
+               an image squarely inside a section produced a block that
+               visually overlapped the section, was not its child, and did
+               not make it grow: it just sat on top, and moving the section
+               left it behind.
+
+               Same hit test as the internal drag: cursor position against
+               every container's box, not the block's centre. Reusing the
+               rule rather than a second approximation of it is the point —
+               two containment tests that disagree is a worse bug than
+               having none. */
+            let sectionId = null
+            blocks.forEach(sec => {
+              if (!isContainer(sec)) return
+              const { w: sw, h: sh } = blockDims(sec)
+              if (p.x >= sec.x && p.x <= sec.x + sw && p.y >= sec.y && p.y <= sec.y + sh) sectionId = sec.id
+            })
+            onDropFiles(dropped, p.x, p.y, {
+              sectionId,
+              /* SHIFT, NOT ALT. lib/shortcuts.js states outright that no
+                 shortcut needs a modifier and names Alt-alone in
+                 RESERVED_COMBOS as unsafe on Windows — and Alt is ALREADY
+                 bound to "suspend magnetic snapping" during a drag. Reusing
+                 one modifier for two meanings depending on where the drag
+                 started is exactly how a keyboard model stops being
+                 learnable.
+
+                 One-directional: Shift forces icon, and does NOT force full
+                 when the Settings default is already icon. That reverse was
+                 not asked for, and a modifier that means two opposite things
+                 depending on a setting is unpredictable by construction.
+
+                 CAVEAT WORTH TESTING ON BOTH PLATFORMS: this is a native
+                 OS-to-browser file drag, so shiftKey comes off the DragEvent
+                 rather than through lib/shortcuts.js, and Windows Explorer
+                 and Finder both assign their own meaning to Shift during a
+                 drag. If it turns out unreliable anywhere, the Settings
+                 preference already covers the real use case on its own —
+                 this key is a convenience on top, not a dependency. */
+              forceIcon: !!e.shiftKey,
+            })
+            /* The section grows around whatever just landed in it. One call
+               after the import settles, not one per file: growSectionToFit
+               reads the current children each time, so the last call sees
+               them all and the earlier ones would just be doing the same
+               work with less information. */
+            if (sectionId) setTimeout(() => growSectionToFit(sectionId), 0)
             return
           }
           if (!onDropColumn) return
@@ -3823,21 +4228,21 @@ function addBlockAnimated(type, x, y) {
             backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
             border: `1px solid ${border}`, borderRadius: 10,
             boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
-            fontFamily: 'var(--ds-font-body)', fontSize: 12, color: text2,
+            fontFamily: 'var(--ds-font-body)', fontSize: 13, color: text2,
             animation: 'dsToastIn 0.16s ease',
           }}>
             <span><b style={{ color: text, fontWeight: 600 }}>{pendingSnap.label}</b> snapped</span>
             <button onClick={keepAsDrawn}
               title="Put the stroke back exactly as you drew it"
               style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                background: 'none', border: `1px solid ${border}`, borderRadius: 7,
-                padding: '4px 9px', color: text2, cursor: 'pointer',
-                fontFamily: 'var(--ds-font-body)', fontSize: 11,
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: 'none', border: `1px solid ${border}`, borderRadius: 6,
+                padding: '4px 10px', color: text2, cursor: 'pointer',
+                fontFamily: 'var(--ds-font-body)', fontSize: 12,
               }}
               onMouseEnter={e => { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = accent }}
               onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
-              <Icon name="action-undo" size={11} />
+              <Icon name="action-undo" size={12} />
               Keep as drawn
             </button>
           </div>
@@ -3849,7 +4254,7 @@ function addBlockAnimated(type, x, y) {
               position: 'absolute', left: marquee.x, top: marquee.y,
               width: marquee.w, height: marquee.h,
               border: `1px solid ${accent}`, background: `${accent}1a`,
-              borderRadius: 2, pointerEvents: 'none', zIndex: Z.marquee,
+              borderRadius: 4, pointerEvents: 'none', zIndex: Z.marquee,
             }} />
           )}
 
@@ -3864,8 +4269,8 @@ function addBlockAnimated(type, x, y) {
                 position: 'absolute', left: b.x + w, top: b.y + h,
                 transform: `scale(${1 / nbZoom})`, transformOrigin: '0 0',
                 marginLeft: 8, marginTop: 6, zIndex: Z.sizeTag, pointerEvents: 'none',
-                background: accent, color: '#fff', borderRadius: 5,
-                padding: '3px 7px', fontSize: 10.5, fontWeight: 600,
+                background: accent, color: '#fff', borderRadius: 6,
+                padding: '4px 8px', fontSize: 11, fontWeight: 600,
                 fontFamily: 'var(--ds-font-mono)', whiteSpace: 'nowrap',
                 boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
               }}>
@@ -3915,7 +4320,7 @@ function addBlockAnimated(type, x, y) {
                       <line x1={x1} y1={y - tick} x2={x1} y2={y + tick} stroke={amber} strokeWidth={1.3 / nbZoom} />
                       <line x1={x2} y1={y - tick} x2={x2} y2={y + tick} stroke={amber} strokeWidth={1.3 / nbZoom} />
                       <text x={(x1 + x2) / 2} y={y - 6 / nbZoom} fill={amber} textAnchor="middle"
-                        style={{ fontSize: 10 / nbZoom, fontFamily: 'var(--ds-font-mono)' }}>{l.gap}</text>
+                        style={{ fontSize: 11 / nbZoom, fontFamily: 'var(--ds-font-mono)' }}>{l.gap}</text>
                     </g>
                   )
                 }
@@ -3926,7 +4331,7 @@ function addBlockAnimated(type, x, y) {
                     <line x1={x - tick} y1={y1} x2={x + tick} y2={y1} stroke={amber} strokeWidth={1.3 / nbZoom} />
                     <line x1={x - tick} y1={y2} x2={x + tick} y2={y2} stroke={amber} strokeWidth={1.3 / nbZoom} />
                     <text x={x + 8 / nbZoom} y={(y1 + y2) / 2 + 3 / nbZoom} fill={amber}
-                      style={{ fontSize: 10 / nbZoom, fontFamily: 'var(--ds-font-mono)' }}>{l.gap}</text>
+                      style={{ fontSize: 11 / nbZoom, fontFamily: 'var(--ds-font-mono)' }}>{l.gap}</text>
                   </g>
                 )
               })}
@@ -3941,7 +4346,7 @@ function addBlockAnimated(type, x, y) {
                     <line x1={x1} y1={y - tick} x2={x1} y2={y + tick} stroke={amber} strokeWidth={1.2 / nbZoom} />
                     <line x1={x2} y1={y - tick} x2={x2} y2={y + tick} stroke={amber} strokeWidth={1.2 / nbZoom} />
                     <text x={(x1 + x2) / 2} y={y - 5 / nbZoom} fill={amber} textAnchor="middle"
-                      style={{ fontSize: 10 / nbZoom, fontFamily: 'var(--ds-font-mono)' }}>{t.label}</text>
+                      style={{ fontSize: 11 / nbZoom, fontFamily: 'var(--ds-font-mono)' }}>{t.label}</text>
                   </g>
                 )
               })}
@@ -4026,13 +4431,13 @@ function addBlockAnimated(type, x, y) {
                                 : LINK_LABEL[k]}
                               onClick={() => onUpdateConnection?.(conn.id, { kind: k })}
                               style={{
-                                flex: 1, height: 21, borderRadius: 5,
+                                flex: 1, height: 21, borderRadius: 6,
                                 cursor: cyclic ? 'not-allowed' : 'pointer',
                                 border: `1px solid ${on ? LINK_COLOR[k] : 'transparent'}`,
                                 background: on ? `${LINK_COLOR[k]}22` : 'transparent',
                                 color: on ? LINK_COLOR[k] : text3,
                                 opacity: cyclic ? 0.35 : 1,
-                                fontSize: 9, fontFamily: 'var(--ds-font-body)', padding: 0,
+                                fontSize: 11, fontFamily: 'var(--ds-font-body)', padding: 0,
                                 whiteSpace: 'nowrap',
                               }}>
                               {LINK_LABEL[k].split(' ')[0]}
@@ -4163,6 +4568,27 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 const isDragging = draggingBlockId === block.id
                 const isSnapTarget = snapTargets.includes(block.id)
                 const isLinkTarget = linking?.overId === block.id
+                /* STATE C — ESCALATED PRESENCE.
+
+                   Somebody else is in this block AND so are you. Only then: a
+                   ring in THEIR hue plus a soft ambient glow. State B (the
+                   pulsing dot in the header) is the passive case and gets no
+                   chrome on the block at all — see lib/presence.js for why the
+                   two are separated rather than glowing on mere co-presence.
+
+                   `isSelected` is the local half of the test. Selecting a block
+                   is what focusing or typing in it does on this canvas, and it
+                   de-escalates the moment you click away, which is exactly the
+                   lifetime the model calls for — no extra focus listener needed.
+
+                   Drawn as a box-shadow on THIS wrapper rather than by editing
+                   the border of each of the nine block-type style objects
+                   below. One implementation instead of nine, no chance of
+                   breaking a block type's own hover/selected chrome, and
+                   visually identical since the wrapper's border box is the
+                   block's own edge. escalationRing() owns the layer order. */
+                const remote = presence.get(block.id)
+                const escalated = !!remote && isSelected
                 return {
                   position: 'absolute', left: block.x, top: block.y,
                   zIndex: isContainer(block)
@@ -4224,7 +4650,12 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : (kbMode === 'grab' && soleSelected?.id === block.id) ? 3
                     : isSnapTarget ? 0
                     : 2,
-                  borderRadius: 11,
+                  borderRadius: 10,
+                  /* The wrapper had no box-shadow of its own — the drag lift is
+                     a filter: drop-shadow above and each block type owns its own
+                     resting shadow — so this adds a layer rather than replacing
+                     one. `transition` already lists box-shadow. */
+                  boxShadow: escalated ? escalationRing(presenceHue(remote)) : undefined,
                   cursor: isDragging ? 'grabbing' : undefined,
                   animation: isDeleting ? 'dsBlockDelete 0.2s ease forwards' : isNew ? 'dsBlockAppear 0.3s cubic-bezier(0.34,1.56,0.64,1)' : 'none',
                 }
@@ -4253,6 +4684,68 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 height={blockDims(block).h}
                 onDelete={() => onDeleteBlock(block.id)}>
 
+              {/* ── DOCUMENT BLOCK ──
+                  The heavier writing surface. Its ribbon is pinned INSIDE the
+                  block's own frame rather than floating like the other rails —
+                  it is Word's chrome, and Word's chrome belongs to the page. It
+                  shows while the block is selected, which is the same lifetime
+                  every other `rail` has. */}
+              {block.type === 'document' && (
+                <div style={{
+                  width: block.w || 720, height: block.h || 620,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 2px ${accentDim}, 0 8px 32px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : 'var(--ds-shadow-sm), var(--ds-shadow-md)',
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="document"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  {isSelected && !mindMapMode && !drawMode && (
+                    <DocumentRibbon
+                      block={block}
+                      colors={colors}
+                      onUpdateBlock={onUpdateBlock}
+                      onInsert={what => insertIntoDocument(block, what)}
+                      onExport={what => onExportDocument?.(block, what)}
+                    />
+                  )}
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <DocumentBlock
+                      block={block}
+                      colors={colors}
+                      zoom={nbZoom}
+                      onUpdateBlock={onUpdateBlock}
+                      onSave={blockCb(block.id, 'docSave', () => html =>
+                        latestRef.current.onUpdateBlock(block.id, { content: html }))}
+                      onEditStart={onBlockEditStart}
+                      onEditEnd={onBlockEditEnd}
+                    />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
               {/* TEXT BLOCK */}
               {block.type === 'text' && (
                 <div style={{
@@ -4272,6 +4765,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
                     label="text"
                     colors={colors}
                     renaming={renamingBlockId === block.id}
@@ -4330,6 +4825,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
                     label="table"
                     colors={colors}
                     renaming={renamingBlockId === block.id}
@@ -4355,9 +4852,21 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 </div>
               )}
               {/* IMAGE BLOCK */}
-              {block.type === 'image' && (
+              {block.type === 'image' && (() => {
+                /* THE RENDERED BOX COMES FROM THE FOOTPRINT, the stored w/h come
+                   from the user. They are the same number for a 'full' image and
+                   deliberately different for the other two modes: collapsing must
+                   not overwrite the size somebody chose, or expanding again would
+                   snap to a default instead of back to where they had it. */
+                const fp = blockFootprint(block)
+                const mode = displayModeOf(block)
+                /* The handle is 30px and the accent bar up to 3; what is left is
+                   the picture. Icon mode's own row is exactly ICON_FOOTPRINT.h,
+                   so the chip is not asked to fill a 260px box. */
+                const contentH = Math.max(24, fp.h - 30)
+                return (
                 <div style={{
-                  width: block.w || 360, minHeight: block.h || 260,
+                  width: fp.w, minHeight: fp.h,
                   background: isSelected ? `linear-gradient(135deg, ${raised}, ${surface})` : surface,
                   border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
@@ -4372,6 +4881,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
                     label="image"
                     colors={colors}
                     renaming={renamingBlockId === block.id}
@@ -4389,6 +4900,12 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onMouseDown={e => {
                       // Crop drag. Only active while armed, and only on the
                       // selected image, so it can't hijack a normal click.
+                      /* Not while collapsed. Crop measures against the painted
+                         <img>, and in icon mode there is no <img> at all — the
+                         handler would fall back to the chip's own rect and
+                         produce a crop rectangle bearing no relation to the
+                         picture. Expanding first is the honest requirement. */
+                      if (mode === 'icon') return
                       if (!cropping || soleImageBlock?.id !== block.id || e.button !== 0) return
                       e.stopPropagation(); e.preventDefault()
 
@@ -4439,15 +4956,15 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                        overlay is absolutely positioned against. */
                     style={{
                       position: 'relative',
-                      cursor: cropping && soleImageBlock?.id === block.id ? 'crosshair' : 'default',
+                      cursor: cropping && mode !== 'icon' && soleImageBlock?.id === block.id ? 'crosshair' : 'default',
                     }}>
                     <ImageBlock
                       block={block}
                       colors={colors}
-                      maxHeight={Math.max(100, (block.h || 260) - 30)}
+                      maxHeight={contentH}
                       onUpdateBlock={onUpdateBlock}
                     />
-                    {cropping && soleImageBlock?.id === block.id && (
+                    {cropping && mode !== 'icon' && soleImageBlock?.id === block.id && (
                       /* Anchored to the painted image, not the block. */
                       <div style={{
                         position: 'absolute', pointerEvents: 'none',
@@ -4475,7 +4992,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                               left: `${pendingCrop.x * 100}%`,
                               top: `calc(${(pendingCrop.y + pendingCrop.h) * 100}% + 4px)`,
                               background: accent, color: '#fff', borderRadius: 4,
-                              padding: '2px 6px', fontSize: 9.5, fontFamily: 'var(--ds-font-mono)',
+                              padding: '2px 6px', fontSize: 11, fontFamily: 'var(--ds-font-mono)',
                               whiteSpace: 'nowrap',
                             }}>
                               {Math.round(pendingCrop.w * (block.natW || 0))} × {Math.round(pendingCrop.h * (block.natH || 0))}
@@ -4483,18 +5000,26 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                           </>
                         )}
                         {(!pendingCrop || !pendingCrop.w) && (
-                          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 11, fontFamily: 'var(--ds-font-body)' }}>
+                          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12, fontFamily: 'var(--ds-font-body)' }}>
                             Drag to select an area
                           </div>
                         )}
                       </div>
                     )}
                   </div>
+                  {/* Resize stays available in every mode, and it edits the
+                      STORED w/h — which is what a collapsed image restores to
+                      when expanded. Resizing a chip therefore looks like it does
+                      nothing until you expand it; that is the correct behaviour
+                      for a model where the stored size is the user's and the
+                      footprint is the mode's, and it is why the handle is not
+                      hidden here. */}
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
                 </div>
-              )}
+                )
+              })()}
 
               {/* PDF BLOCK */}
               {block.type === 'pdf' && (
@@ -4504,15 +5029,29 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   background: surface,
                   border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  /* AT REST, TWO SHADOWS RATHER THAN ONE.
+
+                     --ds-shadow-sm is a tight contact shadow and --ds-shadow-md
+                     is a soft ambient one; stacking them reads as an object
+                     RESTING on the canvas, where either alone reads as a flat
+                     panel with a blur under it. Same tokens as everywhere else,
+                     just combined — this is the calendar's depth pass, not a new
+                     elevation scale.
+
+                     The selected state keeps its accent ring and its own deeper
+                     shadow: "selected" is a stronger statement than "resting"
+                     and should not be quieter than it. */
                   boxShadow: isSelected
                     ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
-                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                    : 'var(--ds-shadow-sm), var(--ds-shadow-md)',
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
                 }}>
                   <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
                     label="pdf"
                     colors={colors}
                     renaming={renamingBlockId === block.id}
@@ -4633,6 +5172,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
                     label="calendar"
                     colors={colors}
                     renaming={renamingBlockId === block.id}
@@ -4664,6 +5205,86 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 </div>
               )}
 
+              {/* CHAT BLOCK — the conversation about this sheet.
+                  Fixed height like the database block, and for the same
+                  reason: the thread scrolls its own body, and a block that
+                  grew taller with every message would push the rest of the
+                  canvas around while people talked. */}
+              {block.type === 'chat' && (
+                <div style={{
+                  width: block.w || 340, height: block.h || 380,
+                  display: 'flex', flexDirection: 'column',
+                }}>
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="chat"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <ChatBlock
+                      block={block}
+                      colors={colors}
+                      dark={dark}
+                      dropping={hoverChatId === block.id}
+                      /* blockCb memoises per block id, so these three do not
+                         become new function identities on every canvas render
+                         and defeat ChatBlock's memo — the same treatment the
+                         calendar's onTeleport gets above. */
+                      onSend={blockCb(block.id, 'chatSend', () => (body) =>
+                        latestRef.current.onChatSend?.(block.id, body))}
+                      onEdit={blockCb(block.id, 'chatEdit', () => (id, body) =>
+                        latestRef.current.onChatEdit?.(id, block.id, body))}
+                      onUnsend={blockCb(block.id, 'chatUnsend', () => (id) =>
+                        latestRef.current.onChatUnsend?.(id, block.id))}
+                      /* A reference names a block by id; the thread has no way
+                         to know what it was called. Resolved against THIS
+                         sheet, which covers the common case, and falls back to
+                         a noun rather than printing an id at somebody. */
+                      refLabel={blockCb(block.id, 'chatRefLabel', () => (refId) => {
+                        const found = latestRef.current.byId?.get(refId)
+                        return found ? (found.name || getBlockType(found.type).label) : null
+                      })}
+                      onOpenRef={blockCb(block.id, 'chatOpenRef', () => (refId) => {
+                        const L = latestRef.current
+                        if (!L.byId?.get(refId)) return   // not on this sheet — §9.3 opens it
+                        L.onTeleport?.({ notebookId: L.notebookId, sheetId: L.sheetId, blockId: refId })
+                      })}
+                      /* THE BLOCK ITSELF, for the card's preview.
+
+                         Looks on this sheet first — a block shared with someone
+                         who also has it is the common case for a team working in
+                         one project — and falls back to the shared-block cache
+                         lib/shares.js's fetchSharedBlocks fills, which is the
+                         only path to a block in somebody else's document.
+
+                         Null is a fine answer: BlockRefCard degrades to a chip
+                         and says the preview is unavailable, rather than
+                         rendering a skeleton that implies it is still loading. */
+                      refBlock={blockCb(block.id, 'chatRefBlock', () => (refId) =>
+                        latestRef.current.byId?.get(refId)
+                        || latestRef.current.onResolveSharedBlock?.(refId)
+                        || null)}
+                      refThumb={blockCb(block.id, 'chatRefThumb', () => (refId) =>
+                        latestRef.current.onResolveRefThumb?.(refId) || null)}
+                    />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
               {/* DATABASE BLOCK — §9.2 Builder.
                   A fixed height, not a minHeight: the four views inside it
                   scroll their own body and the view bar has to stay put while
@@ -4685,6 +5306,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
                     label="database"
                     colors={colors}
                     renaming={renamingBlockId === block.id}
@@ -4715,7 +5338,156 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 </div>
               )}
 
+              {/* COUNTDOWN BLOCK — time left until a date, ticking.
+
+                  NO WIDTH AND NO <ResizeHandle>, unlike every branch above it.
+                  The block is as wide as the units still on the clock and it
+                  narrows on its own as they drop off (YR, then MO, then DAY),
+                  so `width: fit-content` on the frame is the whole sizing
+                  story — see CountdownBlock.js and `resizable: null` in
+                  blockRegistry.js. The wrapper this sits inside is
+                  position:absolute with no width of its own, so fit-content
+                  has something to resolve against.
+
+                  maxWidth caps it inside a section that has been dragged
+                  narrow; nothing else here differs from the task/file frame. */}
+              {block.type === 'countdown' && (
+                <div style={{
+                  width: 'fit-content', maxWidth: '100%',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 6px 22px ${dark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.10)'}`
+                    : `0 2px 8px ${dark ? 'rgba(0,0,0,0.28)' : 'rgba(0,0,0,0.05)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
+                  {/* The real BlockHandle, not a bespoke title bar: rename,
+                      delete, attribution, presence and backlinks all behave
+                      exactly as they do on a calendar or a chat block, and
+                      none of it had to be reimplemented here. */}
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="countdown"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  <CountdownBlock
+                    block={block}
+                    colors={colors}
+                    isSelected={isSelected}
+                    onUpdateBlock={onUpdateBlock}
+                  />
+                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                </div>
+              )}
+
               {/* SECTION BLOCK — always sits behind other blocks */}
+              {/* ── COLUMNS ──────────────────────────────────────────────
+                  A MINIMAL BUT REAL RENDERER, deliberately.
+
+                  Columns' runtime behaviour is genuinely undecided — whether
+                  inserting prompts for a count, whether columns can be added or
+                  removed afterwards, whether it nests with `section` — and none
+                  of that blocked putting it in the two menus. But a menu entry
+                  that produces an INVISIBLE block is worse than no menu entry:
+                  the user has added something, nothing appeared, and there is
+                  no way to tell a not-yet-built feature from a broken one.
+
+                  So it renders as what it already is in the registry: a
+                  container, drawn like a section, with `columnCount` guide
+                  lines showing where the columns fall. Children attach to it
+                  through the same parentSectionId path every container uses —
+                  which works today with no extra code, since containment is
+                  keyed on isContainer, not on the type name.
+
+                  WHAT IT DOES NOT DO YET, and should not fake: it does not
+                  LAY OUT its children into the columns. The guides are guides.
+                  Snapping blocks into real column tracks is the part that needs
+                  the open questions answered first, and pretending otherwise
+                  would be a layout engine nobody specified. */}
+              {block.type === 'columns' && (
+                <div style={{
+                  width: block.w || 600, height: block.h || 350,
+                  background: `${accent}06`,
+                  border: `2px dashed ${hoverSectionId === block.id ? accent : `${accent}44`}`,
+                  borderRadius: 12, position: 'relative',
+                  boxShadow: isSelected ? `0 0 0 2px ${accent}22, 0 4px 20px ${dark ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.08)'}` : 'none',
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', height: 38, background: `${accent}18`, borderBottom: `1px solid ${accent}22`, cursor: 'grab' }}
+                    onMouseDown={e => startBlockDrag(e, block)}>
+                    <Icon name="block-section" size={14} style={{ color: accent, flexShrink: 0 }} />
+                    {renamingBlockId === block.id ? (
+                      <input autoFocus defaultValue={block.name || 'Columns'}
+                        onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Columns' }); setRenamingBlockId(null) }}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+                        onMouseDown={e => e.stopPropagation()} maxLength={40}
+                        style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 0 }} />
+                    ) : (
+                      <span onDoubleClick={e => { e.stopPropagation(); setRenamingBlockId(block.id) }}
+                        style={{ flex: 1, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {block.name || 'Columns'}
+                      </span>
+                    )}
+                    {/* The count is editable here rather than through a rail,
+                        because two buttons is the whole control and a rail for
+                        two buttons is chrome for its own sake. Clamped 2–4: one
+                        column is not columns, and five in a 600px frame is
+                        120px each. */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                      {[2, 3, 4].map(n => (
+                        <button key={n}
+                          onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { columnCount: n }) }}
+                          onMouseDown={e => e.stopPropagation()}
+                          aria-pressed={(block.columnCount || 2) === n}
+                          title={`${n} columns`}
+                          style={{
+                            width: 20, height: 20, borderRadius: 4, cursor: 'pointer',
+                            border: `1px solid ${(block.columnCount || 2) === n ? accent : 'transparent'}`,
+                            background: (block.columnCount || 2) === n ? `${accent}22` : 'transparent',
+                            color: (block.columnCount || 2) === n ? accent : text3,
+                            fontFamily: 'var(--ds-font-mono)', fontSize: 11, lineHeight: 1,
+                          }}>{n}</button>
+                      ))}
+                    </div>
+                    <button onClick={e => { e.stopPropagation(); deleteBlock(block) }}
+                      onMouseDown={e => e.stopPropagation()}
+                      aria-label="Delete columns"
+                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}
+                      onMouseEnter={e => (e.currentTarget.style.color = red)}
+                      onMouseLeave={e => (e.currentTarget.style.color = text3)}>
+                      <Icon name="action-delete" size={12} />
+                    </button>
+                  </div>
+                  {/* pointerEvents:none — these are guides drawn UNDER the
+                      children, and a divider that swallows a click on the block
+                      sitting over it would be a very confusing bug. */}
+                  <div style={{ position: 'absolute', inset: '38px 0 0 0', display: 'flex', pointerEvents: 'none' }}>
+                    {Array.from({ length: Math.min(4, Math.max(2, block.columnCount || 2)) }, (_, i) => (
+                      <div key={i} style={{
+                        flex: 1,
+                        borderRight: i === Math.min(4, Math.max(2, block.columnCount || 2)) - 1 ? 'none' : `1px dashed ${accent}33`,
+                      }} />
+                    ))}
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                </div>
+              )}
+
               {block.type === 'section' && (
                 <div style={{
                   width: block.w || 500, height: block.h || 350,
@@ -4731,13 +5503,75 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', height: 38, background: `${block.sectionColor || accent}18`, borderBottom: `1px solid ${block.sectionColor || accent}22`, cursor: 'grab' }}
                     onMouseDown={e => startBlockDrag(e, block)}>
-                    <div style={{ width: 4, height: 18, borderRadius: 2, background: block.sectionColor || accent }} />
+                    <div style={{ width: 4, height: 18, borderRadius: 4, background: block.sectionColor || accent }} />
                     {renamingBlockId === block.id ? (
                       <input autoFocus defaultValue={block.name || 'Section'} onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Section' }); setRenamingBlockId(null) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} onMouseDown={e => e.stopPropagation()} maxLength={40}
                         style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${block.sectionColor || accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 0 }} />
                     ) : (
                       <span onDoubleClick={e => { e.stopPropagation(); setRenamingBlockId(block.id) }} style={{ flex: 1, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.name || 'Section'}</span>
                     )}
+                    {/* COMPACT — a per-section, bulk density switch for the
+                        photo-dump case: a section holding twenty reference shots
+                        where each one at 360×260 is a wall you have to scroll
+                        past rather than a set you can see.
+
+                        It shows REAL PIXELS, just smaller. That distinction is
+                        the whole reason it is separate from the per-image Icon
+                        override: Compact keeps the workspace open, Icon closes
+                        one specific thing on purpose.
+
+                        PRECEDENCE, and it matters enough to be explicit: Compact
+                        only ever touches images still at 'full' (→ 'compact') and
+                        only ever restores ones at 'compact' (→ 'full'). An image
+                        someone deliberately set to 'icon' is LEFT ALONE in both
+                        directions, so ICON WINS whenever it is set. A Compact
+                        section containing three icon-mode images therefore shows
+                        those three as chips and everything else as small real
+                        thumbnails — genuine three-way mixing, and it falls out of
+                        two independent toggles rather than needing its own rule.
+
+                        Rendered only when the section actually holds images: a
+                        density control on a section of tables does nothing, and a
+                        button that does nothing is worse than no button. */}
+                    {(() => {
+                      const imgs = blocks.filter(b => b.parentSectionId === block.id && b.type === 'image')
+                      if (imgs.length === 0) return null
+                      const on = !!block.compact
+                      return (
+                        <button
+                          onClick={e => {
+                            e.stopPropagation()
+                            const next = !on
+                            onUpdateBlock(block.id, { compact: next })
+                            for (const img of imgs) {
+                              const m = displayModeOf(img)
+                              if (next && m === 'full') onUpdateBlock(img.id, { displayMode: 'compact' })
+                              else if (!next && m === 'compact') onUpdateBlock(img.id, { displayMode: 'full' })
+                              /* m === 'icon' falls through untouched. */
+                            }
+                          }}
+                          onMouseDown={e => e.stopPropagation()}
+                          aria-pressed={on}
+                          title={on
+                            ? 'Show every image in this section at full size'
+                            : 'Shrink every image in this section to a small thumbnail (images set to Icon are left alone)'}
+                          style={{
+                            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4,
+                            height: 20, padding: '0 7px', borderRadius: 'var(--ds-radius-sm)',
+                            cursor: 'pointer',
+                            border: `1px solid ${on ? (block.sectionColor || accent) : 'transparent'}`,
+                            background: on ? `${block.sectionColor || accent}22` : 'transparent',
+                            color: on ? (block.sectionColor || accent) : text3,
+                            fontFamily: 'var(--ds-font-mono)', fontSize: 11,
+                            letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1,
+                            transition: 'background var(--ds-transition), color var(--ds-transition), border-color var(--ds-transition)',
+                          }}>
+                          <Icon name={on ? 'size-fit-screen' : 'size-reset'} size={12} />
+                          Compact
+                        </button>
+                      )
+                    })()}
+
                     {/* Rollup. Rendered only when the section actually holds
                         tasks, so a section of tables shows nothing rather than
                         "0 done" — a count of a thing you aren't tracking is
@@ -4750,14 +5584,14 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                         <span
                           title={`${r.done} done · ${r.doing} doing · ${r.todo} to do${r.blocked ? ` · ${r.blocked} blocked` : ''}${r.overdue ? ` · ${r.overdue} overdue` : ''}`}
                           style={{
-                            display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
-                            fontFamily: 'var(--ds-font-mono)', fontSize: 9.5,
+                            display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+                            fontFamily: 'var(--ds-font-mono)', fontSize: 11,
                             color: block.sectionColor || accent,
                           }}>
                           {/* A bar, because "7 of 12" is a number you have to
                               read and a bar is a shape you can see. */}
                           <span style={{
-                            width: 34, height: 4, borderRadius: 2, overflow: 'hidden',
+                            width: 34, height: 4, borderRadius: 4, overflow: 'hidden',
                             background: `${block.sectionColor || accent}33`,
                           }}>
                             <span style={{
@@ -4769,7 +5603,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                           <span>{r.done}/{r.total}</span>
                           {r.overdue > 0 && (
                             <span style={{ display: 'flex', alignItems: 'center', gap: 2, color: red }}>
-                              <Icon name="status-warning" size={9} />
+                              <Icon name="status-warning" size={12} />
                               {r.overdue}
                             </span>
                           )}
@@ -4777,7 +5611,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       )
                     })()}
 
-                    <div style={{ display: 'flex', gap: 3 }}>
+                    <div style={{ display: 'flex', gap: 4 }}>
                       {['#5B5FE8','#1D9E75','#E8B85B','#f87171','#a78bfa','#38bdf8','#fb923c'].map(hex => (
                         <div key={hex} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { sectionColor: hex }) }} onMouseDown={e => e.stopPropagation()}
                           style={{ width: 9, height: 9, borderRadius: '50%', background: hex, cursor: 'pointer', border: hex === (block.sectionColor || accent) ? `2px solid ${text}` : '2px solid transparent' }} />
@@ -4791,7 +5625,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     </button>
                   </div>
                   {blocks.filter(b => b.parentSectionId === block.id).length === 0 && (
-                    <div style={{ position: 'absolute', top: 38, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', color: `${block.sectionColor || accent}77`, fontSize: 11, fontStyle: 'italic', fontFamily: 'var(--ds-font-body)' }}>
+                    <div style={{ position: 'absolute', top: 38, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', color: `${block.sectionColor || accent}77`, fontSize: 12, fontStyle: 'italic', fontFamily: 'var(--ds-font-body)' }}>
                       Drag blocks here
                     </div>
                   )}
@@ -4816,6 +5650,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
                     label="kanban"
                     colors={colors}
                     renaming={renamingBlockId === block.id}
@@ -4858,7 +5694,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 <Icon name="nav-notebook" size={40} strokeWidth={3.6} />
               </div>
               <div style={{ fontSize: 16, fontWeight: 700, color: text2, fontFamily: 'var(--ds-font-head)', marginBottom: 8 }}>Click anywhere to write</div>
-              <div style={{ fontSize: 12, lineHeight: 1.9 }}>Or pick a block type from <b style={{ color: text2, fontWeight: 600 }}>Add</b> in the toolbar<br />Drag a header to move · right-click drag to pan · Esc to deselect</div>
+              <div style={{ fontSize: 13, lineHeight: 1.9 }}>Or pick a block type from <b style={{ color: text2, fontWeight: 600 }}>Add</b> in the toolbar<br />Drag a header to move · right-click drag to pan · Esc to deselect</div>
             </div>
           </div>
         )}

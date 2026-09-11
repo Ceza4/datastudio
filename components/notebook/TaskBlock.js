@@ -78,8 +78,8 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
 
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', gap: 7,
-      padding: '10px 11px', height: '100%', boxSizing: 'border-box',
+      display: 'flex', flexDirection: 'column', gap: 8,
+      padding: '10px 12px', height: '100%', boxSizing: 'border-box',
       background: surface, fontFamily: 'var(--ds-font-body)',
       /* A finished task recedes rather than disappearing. It's still evidence
          that the work happened, which on a research canvas is worth keeping. */
@@ -98,7 +98,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
           title={done ? 'Mark as not done' : 'Mark as done'}
           style={{
             width: BOX, height: BOX, flexShrink: 0, marginTop: 1,
-            borderRadius: 5, cursor: 'pointer', padding: 0,
+            borderRadius: 6, cursor: 'pointer', padding: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             border: `1.5px solid ${done ? green : border}`,
             background: done ? green : 'transparent',
@@ -110,7 +110,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
           }}
           onMouseEnter={e => { if (!done) e.currentTarget.style.borderColor = green }}
           onMouseLeave={e => { if (!done) e.currentTarget.style.borderColor = border }}>
-          {done && <Icon name="action-check" size={11} />}
+          {done && <Icon name="action-check" size={12} />}
         </button>
 
         {/* Priority is a dot, not a word. It has to be readable at a glance
@@ -179,7 +179,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
               fontSize: 'var(--ds-fs-sm)', fontFamily: 'var(--ds-font-mono)',
               fontVariantNumeric: 'tabular-nums',
               fontWeight: dl.state === 'overdue' ? 600 : 500,
-              padding: '2px 7px', borderRadius: 'var(--ds-radius-sm)', lineHeight: 1.4,
+              padding: '2px 8px', borderRadius: 'var(--ds-radius-sm)', lineHeight: 1.4,
               color: DEADLINE_COLOR[dl.state],
               /* Overdue and soon are filled, later is bare text — different in
                  kind, so the three don't rely on hue alone to be told apart. */
@@ -187,7 +187,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
               background: dl.state === 'overdue' ? 'var(--ds-red-bg)'
                 : dl.state === 'soon' ? 'var(--ds-amber-bg)' : 'transparent',
             }}>
-            <Icon name={dl.state === 'overdue' ? 'status-warning' : 'status-info'} size={11} />
+            <Icon name={dl.state === 'overdue' ? 'status-warning' : 'status-info'} size={12} />
             {dl.label}
           </span>
         )}
@@ -201,10 +201,10 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
               display: 'flex', alignItems: 'center', gap: 4,
               fontSize: 'var(--ds-fs-xs)', fontFamily: 'var(--ds-font-body)',
               fontWeight: 600, letterSpacing: 0.2,
-              padding: '2px 7px', borderRadius: 'var(--ds-radius-sm)', lineHeight: 1.5,
+              padding: '2px 8px', borderRadius: 'var(--ds-radius-sm)', lineHeight: 1.5,
               color: 'var(--ds-amber)', background: 'var(--ds-amber-bg)',
             }}>
-            <Icon name="state-lock" size={10} />
+            <Icon name="state-lock" size={12} />
             {/* Title case, like every other status in the app. The lowercase
                 'blocked' was the only one of the four spelled its own way. */}
             {blockers.length === 1 ? STATUS_LABEL.blocked : `${STATUS_LABEL.blocked} ×${blockers.length}`}
@@ -215,7 +215,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
           <span style={{
             fontSize: 'var(--ds-fs-xs)', fontFamily: 'var(--ds-font-body)',
             fontWeight: 600, letterSpacing: 0.2,
-            padding: '2px 7px', borderRadius: 'var(--ds-radius-sm)', lineHeight: 1.5,
+            padding: '2px 8px', borderRadius: 'var(--ds-radius-sm)', lineHeight: 1.5,
             color: accentText, background: accentDim,
           }}>
             {STATUS_LABEL.doing}
@@ -228,7 +228,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
             fontSize: 'var(--ds-fs-xs)', color: text3, lineHeight: 1.5,
             /* No border and no fill. Whitespace does what a box was doing. */
           }}>
-            <Icon name="share-people" size={11} style={{ flexShrink: 0 }} />
+            <Icon name="share-people" size={12} style={{ flexShrink: 0 }} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {block.assignee}
             </span>
@@ -238,7 +238,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
 
       {/* ── expanded ── */}
       {isSelected && (
-        <div style={{ paddingLeft: INDENT, display: 'flex', flexDirection: 'column', gap: 9 }}>
+        <div style={{ paddingLeft: INDENT, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <textarea
             defaultValue={block.notes || ''}
             /* One handler: committing and un-highlighting are the same event,
@@ -254,7 +254,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               background: raised, border: `1px solid ${border}`,
               borderRadius: 'var(--ds-radius-sm)',
-              padding: '7px 9px', color: text2, outline: 'none',
+              padding: '8px 10px', color: text2, outline: 'none',
               fontFamily: 'var(--ds-font-body)', fontSize: 'var(--ds-fs-sm)', lineHeight: 1.55,
               transition: 'border-color var(--ds-transition)',
             }} />
@@ -274,7 +274,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
                   title={`Open ${b.title || 'this task'}`}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6, width: '100%',
-                    minHeight: 26, padding: '4px 7px',
+                    minHeight: 26, padding: '4px 8px',
                     borderRadius: 'var(--ds-radius-sm)', textAlign: 'left',
                     background: 'transparent', border: `1px solid ${border}`,
                     color: text2, cursor: 'pointer',
@@ -298,7 +298,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {b.title || 'Untitled task'}
                   </span>
-                  <Icon name="share-link" size={11} style={{ flexShrink: 0 }} />
+                  <Icon name="share-link" size={12} style={{ flexShrink: 0 }} />
                 </button>
               ))}
             </div>

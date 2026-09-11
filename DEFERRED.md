@@ -114,3 +114,125 @@ What is left is one real category, worth doing properly rather than silencing:
     that should be computed during render instead.
 
 Neither is a defect today. Both are why those two files are hard to optimise.
+
+---
+
+## Sep 9 design pass — what shipped, and what is still open
+
+All ten surfaces from `claude/DESIGN_PASS_SEP09_INDEX.md` are built. This
+section records only the parts that were deliberately NOT built, so nobody
+re-derives a decision that was already made — or assumes something is done
+because its surface is.
+
+### Genuinely open, needs a decision before it can be built
+
+  · **Columns' runtime behaviour.** The type is registered, in both menus, and
+    renders as a container with `columnCount` guide lines — enough that
+    inserting it is not an invisible no-op. It does NOT lay its children out
+    into the columns. Three questions block that: does inserting prompt for a
+    count or default to 2; can columns be added or removed after creation; does
+    it nest inside a `section` or are the two mutually exclusive containers?
+
+  · **The "Teams" affordance** in the People panel — an org-wide member list,
+    one-click group-chat-everyone, or something else. Declared and SOON-chipped.
+
+  · **"Add a friend"** — email, username or link. Same treatment.
+
+  · **Group chat through existing grants.** The chat model already follows
+    whoever holds a live grant on a block, which MAY mean sharing one block with
+    several people produces a group thread for free. Not verified against the
+    real grant/membership code, so not claimed.
+
+  · **The escalation notice.** A transient SyncChip-styled "You and {name} are
+    both editing this" the first time a block escalates. Recommended, not in the
+    original doc, and flagged there as the first thing to cut. Cut. The border
+    and glow carry the signal on their own.
+
+  · **Caret colour.** `caret-color: var(--ds-accent)` is now bound on both
+    editable surfaces. The open question was never the hex — it is whether a
+    1-2px accent line reads well at that colour, which is answered by looking at
+    it in both themes, not by a spec. Keep or delete one line.
+
+### Deliberately not copied, with reasons
+
+  · **A zoom slider in the Document's status bar.** Word has one; it scales the
+    page independently of everything else. On an infinite canvas "how big does
+    this block look" is already answered by the canvas's own zoom (0.25×–3×),
+    and a second differently-scoped zoom on the same block creates a question a
+    user has to learn the answer to. See the note in `DocumentRibbon.js`.
+
+  · **Dynamic PDF re-render on zoom.** Unnecessary: the canvas zoom is hard-
+    capped at 3× in the wheel handler, so a fixed 3× over-render covers every
+    level the UI allows. See `CANVAS_ZOOM_MAX` in `lib/pdfspace.js`.
+
+  · **Live-linked (auto-updating) shared blocks.** A reference card dragged onto
+    a canvas becomes a real editable block via `clonepatch`/`createBlock` — a
+    SNAPSHOT. It does not update when the source changes, for the same reason a
+    duplicate does not. Auto-updating is a separate, bigger ask and nothing in
+    this pass builds toward it; it still needs the NotebookCanvas renderer-switch
+    extraction the original note described.
+
+  · **Lane colour on kanban.** The confirmed prototype had a coloured dot beside
+    one lane with no handler and no state behind it. Read as prototype flavour
+    rather than a specified feature; building it means a new `lane.color` field
+    and a picker nothing has asked for.
+
+### Corrections to the handoff, found by grounding it in the code
+
+  · **A `.docx` writer was already in the stack.** The handoff proposed
+    evaluating the `docx` npm package on the basis that none existed.
+    `lib/exporters.js` has had a real OOXML writer since the export panel
+    shipped, on `lib/zip.js`. `lib/docexport.js` extends it; no dependency was
+    added. See that file's header.
+
+  · **PDF export does not use pdf-lib, and should not.** pdf-lib draws text at
+    coordinates; flowing headings, wrapped paragraphs and lists across pages
+    with correct metrics means writing a layout engine — the exact thing the
+    continuous-scroll design exists to avoid. It goes through the browser's
+    print engine, which already has the metrics and does the real breaking.
+
+  · **There was never an "auto-extract" feature to remove from the PDF block.**
+    Extraction has always required an explicit Add-block click. What read as
+    sloppy was `detectTable`'s column-clustering heuristic behind the panel's
+    Auto/Table tabs, and that is what was cut.
+
+  · **The hardcoded `#5B5FE8` checklist accent was not actually rendering
+    wrong.** A `!important` rule in `TextBlockContent`'s scoped stylesheet has
+    been overriding it for stored checklists all along. The literals are gone
+    from both call sites so that rule's own comment is true — but the third
+    instance, `[data-ds-text] a { color: #5B5FE8 }`, had no such rule saving it
+    and WAS wrong in light mode. Now `var(--ds-accent-text)`.
+
+  · **`create()` does NOT write `displayMode: 'full'`,** despite the spec asking
+    for it. `tests/registry.equivalence.test.mjs` exists to catch exactly that
+    kind of persisted-shape change, and absent already means 'full' via
+    `displayModeOf()` — so there is no migration and no shape change.
+
+  · **Columns' `order` appends (12), it is not 4.5.** The registry test asserts
+    the original five keep their exact menu positions. The adjacency a
+    fractional order was reaching for is `menuGroup: 'organize'` instead: group
+    expresses meaning, order expresses stability.
+
+### Icons still to draw
+
+Everything below ships with a deliberate placeholder and a comment saying so.
+None blocks anything; swap through the usual pipeline (`SVG → icons folder →
+npm run icons`, never hand-edit `icon-paths.js`).
+
+  · Columns — using `block-section`.
+  · Document — using `format-word`.
+  · Image display toggle — using `format-image` / `block-image`.
+  · Alignment × 4 — drawn inline as CSS bars in `DocumentRibbon.js` rather than
+    reusing one existing icon four times, which would have said the four
+    controls do the same thing.
+  · Superscript / subscript — drawn as `x²`/`x₂` letterforms, same reasoning as
+    the B/I/U/S glyphs.
+
+### One new lint report
+
+`npm run lint` goes from 45 errors to 46. The extra one is a second
+`preserve-manual-memoization` report on `NotebookCanvas.js`, from the `useMemo`
+that filters floating chat blocks out of the sheet. It is another report of a
+condition the file already had — that component was already "Compilation
+Skipped" in the baseline — not a new defect. Written as a single expression
+specifically because a `.some()` short-circuit version made it worse.

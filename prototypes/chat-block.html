@@ -1,0 +1,742 @@
+<title>Linked Blocks</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+
+/* ── tokens, lifted verbatim from lib/theme.js ───────────────────────────
+   This prototype is meant to be judged as DataStudio, not as a mockup that
+   happens to be about DataStudio, so the palette is the app's own rather
+   than something chosen to look nice here. Warm neutrals, green accent in
+   light, indigo in dark. */
+:root {
+  --base: #F5F3EE;
+  --raised: #E4E1D8;
+  --border: #D5D1C7;
+  --border-dim: #E0DCD3;
+  --text: #1A1917;
+  --text-2: #6B6860;
+  --text-3: #83807B;
+  --accent: #1D9E75;
+  --accent-text: #147154;
+  --accent-dim: #D0F0E4;
+  --red: #C0392B;
+  --amber: #8A6410;
+  --shadow: 0 1px 2px rgba(26,25,23,.05), 0 8px 24px rgba(26,25,23,.07);
+  --shadow-lift: 0 2px 6px rgba(26,25,23,.10), 0 18px 40px rgba(26,25,23,.16);
+
+  /* Attribution hues. Deliberately not the accent: the accent means "this is
+     selected / this is yours", and a person's flag has to be readable as a
+     different kind of statement. Each clears 3.8:1 on both grounds. */
+  --who-a: #B45309;
+  --who-b: #7C3AED;
+  --who-c: #0E7490;
+
+  --fs-xs: 10px; --fs-sm: 11px; --fs-md: 12px; --fs-lg: 13px; --fs-xl: 15px;
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px;
+  --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+:root:not([data-theme="light"]) { }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --base: #1A1917;
+    --raised: #262522;
+    --border: #2E2D29;
+    --border-dim: #252420;
+    --text: #E8E6E1;
+    --text-2: #9A9790;
+    --text-3: #706E6A;
+    --accent: #5B5FE8;
+    --accent-text: #7D81ED;
+    --accent-dim: #1E2057;
+    --red: #F87171;
+    --amber: #E8B85B;
+    --shadow: 0 1px 2px rgba(0,0,0,.30), 0 8px 24px rgba(0,0,0,.36);
+    --shadow-lift: 0 2px 6px rgba(0,0,0,.40), 0 18px 40px rgba(0,0,0,.50);
+    --who-a: #F0A868;
+    --who-b: #C4A5FF;
+    --who-c: #67C7DE;
+  }
+}
+:root[data-theme="dark"] {
+  --base: #1A1917;
+  --raised: #262522;
+  --border: #2E2D29;
+  --border-dim: #252420;
+  --text: #E8E6E1;
+  --text-2: #9A9790;
+  --text-3: #706E6A;
+  --accent: #5B5FE8;
+  --accent-text: #7D81ED;
+  --accent-dim: #1E2057;
+  --red: #F87171;
+  --amber: #E8B85B;
+  --shadow: 0 1px 2px rgba(0,0,0,.30), 0 8px 24px rgba(0,0,0,.36);
+  --shadow-lift: 0 2px 6px rgba(0,0,0,.40), 0 18px 40px rgba(0,0,0,.50);
+  --who-a: #F0A868;
+  --who-b: #C4A5FF;
+  --who-c: #67C7DE;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--base);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-lg);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 40px 28px 72px; }
+
+header.page { max-width: 62ch; margin-bottom: 34px; }
+.eyebrow {
+  font-size: var(--fs-sm); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-3); font-weight: 600; margin-bottom: 10px;
+}
+h1 {
+  font-size: clamp(26px, 3.4vw, 38px); line-height: 1.14; margin: 0 0 12px;
+  font-weight: 700; letter-spacing: -.022em; text-wrap: balance;
+}
+header.page p { margin: 0; color: var(--text-2); font-size: 15px; }
+header.page p + p { margin-top: 10px; }
+code.k {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .88em; background: var(--raised); border: 1px solid var(--border-dim);
+  border-radius: 4px; padding: 1px 5px; color: var(--text);
+}
+
+/* ── the stage ───────────────────────────────────────────────────────── */
+.stage {
+  display: grid;
+  grid-template-columns: 1fr 320px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 980px) { .stage { grid-template-columns: 1fr; } }
+
+.pane {
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  min-height: 380px;
+  display: flex; flex-direction: column;
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+.pane.drop { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+
+.pane-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 13px; border-bottom: 1px solid var(--border-dim);
+}
+.pane-title { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.pane-sub { font-size: var(--fs-sm); color: var(--text-3); margin-left: auto; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+.canvas {
+  flex: 1; padding: 13px; display: flex; flex-direction: column; gap: 10px;
+  min-height: 0;
+}
+.empty {
+  border: 1px dashed var(--border); border-radius: var(--r-md);
+  padding: 22px 14px; text-align: center; color: var(--text-3);
+  font-size: var(--fs-md); line-height: 1.5;
+}
+
+/* ── a block ─────────────────────────────────────────────────────────── */
+.block {
+  position: relative;
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px 11px;
+  cursor: grab;
+  user-select: none;
+  box-shadow: var(--shadow);
+  transition: transform .14s ease, box-shadow .14s ease, border-color .14s ease;
+}
+.block:active { cursor: grabbing; }
+.block.dragging { opacity: .35; }
+.block.linked { border-color: var(--accent); }
+/* The link stripe. A whole border says "selected"; a stripe down one edge
+   says "this one goes somewhere", which is a different fact and needs a
+   different mark. */
+.block.linked::before {
+  content: ''; position: absolute; left: -1px; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 3px; background: var(--accent);
+}
+.block-top { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+.block-kind {
+  font-size: var(--fs-xs); letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-3); font-weight: 600;
+}
+.block-name { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.block-body { font-size: var(--fs-md); color: var(--text-2); }
+.block-body table { border-collapse: collapse; width: 100%; font-size: var(--fs-sm); }
+.block-body td, .block-body th {
+  padding: 3px 7px 3px 0; text-align: left; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.block-body th { color: var(--text-3); font-weight: 600; font-size: var(--fs-xs);
+  text-transform: uppercase; letter-spacing: .06em; }
+.block-body td.n { text-align: right; }
+
+/* The attribution flag. A dot and a name, in that person's hue — the same
+   thing lib/attribution.js computes and BlockHandle draws. */
+.flag {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-left: auto; font-size: var(--fs-xs); font-weight: 600;
+  color: var(--who); white-space: nowrap;
+}
+.flag .dot { background: var(--who); width: 6px; height: 6px; }
+
+.pill {
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em;
+  padding: 2px 6px; border-radius: 999px;
+  background: var(--accent-dim); color: var(--accent-text);
+  border: 1px solid transparent; white-space: nowrap;
+}
+
+/* ── chat ────────────────────────────────────────────────────────────── */
+.chat { display: flex; flex-direction: column; min-height: 380px; }
+.thread {
+  flex: 1; padding: 13px; display: flex; flex-direction: column; gap: 11px;
+  overflow-y: auto; max-height: 420px;
+}
+.msg { display: flex; gap: 8px; align-items: flex-start; }
+.who {
+  width: 22px; height: 22px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  font-size: var(--fs-xs); font-weight: 700; color: var(--base);
+}
+.bubble {
+  background: var(--base); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: 7px 10px;
+  font-size: var(--fs-md); color: var(--text-2); max-width: 100%;
+}
+.msg-meta { font-size: var(--fs-xs); color: var(--text-3); margin-top: 3px; }
+
+/* The reference card — the thing a block becomes when it is dragged into a
+   conversation. It is NOT a copy of the block: it is an address, drawn as a
+   card, and the difference is the whole design. */
+.ref {
+  border: 1px solid var(--accent); border-radius: var(--r-md);
+  background: var(--base); padding: 9px 10px; cursor: grab;
+  box-shadow: var(--shadow); user-select: none;
+}
+.ref:active { cursor: grabbing; }
+.ref-top { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.ref-name { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.ref-hint { font-size: var(--fs-xs); color: var(--text-3); }
+.ref-foot {
+  display: flex; align-items: center; gap: 8px; margin-top: 7px;
+  padding-top: 7px; border-top: 1px solid var(--border-dim);
+}
+.lvl {
+  appearance: none; -webkit-appearance: none;
+  font-family: var(--font); font-size: var(--fs-xs); font-weight: 600;
+  color: var(--text-2); background: var(--raised);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 2px 5px; cursor: pointer;
+}
+.revoke {
+  margin-left: auto; background: none; border: 1px solid transparent;
+  color: var(--text-3); font-family: var(--font); font-size: var(--fs-xs);
+  font-weight: 600; cursor: pointer; border-radius: var(--r-sm); padding: 2px 6px;
+}
+.revoke:hover { color: var(--red); }
+
+.composer {
+  border-top: 1px solid var(--border-dim); padding: 10px 13px;
+  display: flex; gap: 8px; align-items: center;
+}
+.composer input {
+  flex: 1; min-width: 0; font-family: var(--font); font-size: var(--fs-md);
+  background: var(--base); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 7px 9px;
+}
+.composer button, .btn {
+  font-family: var(--font); font-size: var(--fs-md); font-weight: 600;
+  background: var(--accent); color: #fff;
+  border: 1px solid var(--accent); border-radius: var(--r-sm);
+  padding: 7px 11px; cursor: pointer;
+}
+.btn.quiet {
+  background: var(--raised); color: var(--text); border-color: var(--border);
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── ghost that follows the pointer ──────────────────────────────────── */
+#ghost {
+  position: fixed; z-index: 90; pointer-events: none;
+  background: var(--base); border: 1px solid var(--accent);
+  border-radius: var(--r-md); padding: 8px 11px;
+  box-shadow: var(--shadow-lift); font-size: var(--fs-md); font-weight: 600;
+  color: var(--text); display: none; transform: translate(-50%, -50%);
+}
+
+/* ── the running commentary ──────────────────────────────────────────── */
+.log {
+  margin-top: 18px; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--raised); overflow: hidden;
+}
+.log-head {
+  padding: 9px 13px; border-bottom: 1px solid var(--border-dim);
+  display: flex; align-items: center; gap: 8px;
+}
+.log-title {
+  font-size: var(--fs-sm); letter-spacing: .08em; text-transform: uppercase;
+  font-weight: 600; color: var(--text-3);
+}
+.log-list { margin: 0; padding: 0; list-style: none; max-height: 190px; overflow-y: auto; }
+.log-list li {
+  padding: 8px 13px; border-bottom: 1px solid var(--border-dim);
+  font-size: var(--fs-md); color: var(--text-2);
+  display: flex; gap: 9px; align-items: baseline;
+}
+.log-list li:last-child { border-bottom: none; }
+.log-sql {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-sm); color: var(--text-3); margin-left: auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 46%; flex: none;
+}
+
+.notes { margin-top: 34px; max-width: 68ch; }
+.notes h2 {
+  font-size: 19px; font-weight: 700; letter-spacing: -.012em;
+  margin: 26px 0 8px;
+}
+.notes p { color: var(--text-2); margin: 0 0 10px; font-size: 14px; }
+.notes ul { color: var(--text-2); margin: 0 0 10px; padding-left: 20px; font-size: 14px; }
+.notes li { margin-bottom: 5px; }
+.notes strong { color: var(--text); font-weight: 600; }
+
+.rule { height: 1px; background: var(--border); margin: 30px 0 0; border: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="page">
+    <div class="eyebrow">DataStudio · prototype</div>
+    <h1>A block you can hand someone without handing over the sheet</h1>
+    <p>Drag a block from <strong>your canvas</strong> into the chat. The original stays where it is — the chat gets a reference, not a copy. Drag that reference onto <strong>Mara's canvas</strong> and the block opens there. Edit either side and both move.</p>
+    <p>Everything below is backed by real schema: <code class="k">shares</code> and <code class="k">blocks.data</code> from migration&nbsp;0008. The log underneath each action names the row that would change.</p>
+  </header>
+
+  <div class="stage">
+
+    <!-- ── your canvas ── -->
+    <section class="pane" id="mine">
+      <div class="pane-head">
+        <span class="dot" style="background:var(--accent)"></span>
+        <span class="pane-title">Q3 forecast</span>
+        <span class="pane-sub">your project · Sheet 1</span>
+      </div>
+      <div class="canvas" id="mine-canvas"></div>
+    </section>
+
+    <!-- ── the chat block ── -->
+    <section class="pane chat" id="chat">
+      <div class="pane-head">
+        <span class="dot" style="background:var(--who-b)"></span>
+        <span class="pane-title">Chat block</span>
+        <span class="pane-sub">you + Mara</span>
+      </div>
+      <div class="thread" id="thread"></div>
+      <div class="composer">
+        <input id="say" placeholder="Message Mara…" aria-label="Message" autocomplete="off">
+        <button id="send">Send</button>
+      </div>
+    </section>
+
+    <!-- ── their canvas ── -->
+    <section class="pane" id="theirs">
+      <div class="pane-head">
+        <span class="dot" style="background:var(--who-a)"></span>
+        <span class="pane-title">Mara's canvas</span>
+        <span class="pane-sub">different workspace</span>
+      </div>
+      <div class="canvas" id="theirs-canvas"></div>
+    </section>
+
+  </div>
+
+  <div class="log">
+    <div class="log-head">
+      <span class="log-title">What the database would do</span>
+      <button class="btn quiet" id="reset" style="margin-left:auto;font-size:var(--fs-sm);padding:4px 9px">Reset</button>
+    </div>
+    <ul class="log-list" id="log"></ul>
+  </div>
+
+  <div class="notes">
+    <hr class="rule">
+
+    <h2>Why the original stays on the canvas</h2>
+    <p>You asked for this explicitly, and it is the decision the whole model hangs off. If dragging a block into a conversation <em>moved</em> it, the chat would become a place work goes to get lost — and the person who shared it would be the one who lost it. So a drag creates a <strong>reference</strong>: one block, two views.</p>
+    <p>That is why <code class="k">blocks</code> exists as a table at all. A block is a row with an id, so a chat message can point at it. Before migration 0007 a notebook was one JSON blob and there was nothing smaller than the whole project to point at.</p>
+
+    <h2>The three levels, and which one this is</h2>
+    <ul>
+      <li><strong>Block</strong> — what the drag above creates. One block, nothing around it.</li>
+      <li><strong>Sheet</strong> — from the sidebar. That sheet's blocks, and no other sheet in the project.</li>
+      <li><strong>Project</strong> — everything, including sheets you add later.</li>
+    </ul>
+    <p>Use the dropdown on a reference card to widen or narrow a live share and watch what appears on Mara's side. Widening from block to sheet is one <code class="k">UPDATE</code>; it does not create a second grant.</p>
+
+    <h2>What revoking actually does</h2>
+    <p>Press <strong>Revoke</strong> on a card. The block disappears from Mara's canvas — but so does the stored copy. <code class="k">blocks.data</code> is populated <em>only</em> while a live share reaches the block, and set back to <code class="k">NULL</code> the moment it does not. A revoke that leaves the bytes behind is a revoke in the interface only.</p>
+    <p>That is also why sharing does not double anybody's storage. A workspace with no shares stores exactly what it stored before the feature existed.</p>
+
+    <h2>The one thing that is faked here</h2>
+    <p>Attribution flags appear instantly in this prototype. In the real app the stamp comes from a trigger reading <code class="k">auth.uid()</code>, so it arrives on the next pull rather than on the next keystroke — and it cannot be forged by a client, which is the entire reason it is worth drawing.</p>
+    <p>Everything else — which blocks appear, what a revoke removes, what widening a grant changes — matches what the schema does today.</p>
+  </div>
+</div>
+
+<div id="ghost"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── model ──────────────────────────────────────────────────────────
+     Kept deliberately close to the real tables, so that reading this
+     prototype tells you something true about the schema rather than about
+     a demo's convenient shortcuts.
+
+       blocks : id, sheetId, kind, name, body, editedBy
+       shares : id, blockId, sheetId, level, revoked
+  */
+  const PEOPLE = {
+    you:  { name: 'You',  initial: 'Y', hue: 'var(--accent)' },
+    mara: { name: 'Mara', initial: 'M', hue: 'var(--who-a)' },
+  };
+
+  const SEED = [
+    { id: 'blk_rev',  sheetId: 'sh_1', kind: 'table', name: 'Revenue by region',
+      body: table([['Region','Q3','Q4'],['EMEA','412','480'],['NA','681','702'],['APAC','229','310']]) },
+    { id: 'blk_note', sheetId: 'sh_1', kind: 'text',  name: 'Assumptions',
+      body: 'Headcount flat through Q4. APAC assumes the Singapore office opens on time.' },
+    { id: 'blk_burn', sheetId: 'sh_2', kind: 'chart', name: 'Burn rate',
+      body: spark([38, 41, 39, 44, 47, 45, 52, 49]) },
+  ];
+
+  let blocks, shares, messages, seq;
+
+  function reset() {
+    blocks = SEED.map(b => ({ ...b, editedBy: null }));
+    shares = [];
+    seq = 1;
+    messages = [
+      { from: 'mara', text: 'Can you send me the regional split? I only need that one.' },
+      { from: 'you',  text: 'Dragging it in now — I am not sending you the whole forecast.' },
+    ];
+    logLines = [];
+    render();
+    log('ready', 'three blocks on your canvas, no grants');
+  }
+
+  /* ── log ────────────────────────────────────────────────────────────── */
+  let logLines = [];
+  function log(what, sql) {
+    logLines.unshift({ what, sql });
+    logLines = logLines.slice(0, 40);
+    const ul = document.getElementById('log');
+    ul.innerHTML = '';
+    for (const l of logLines) {
+      const li = document.createElement('li');
+      const a = document.createElement('span'); a.textContent = l.what;
+      const b = document.createElement('span'); b.className = 'log-sql'; b.textContent = l.sql;
+      li.append(a, b); ul.append(li);
+    }
+  }
+
+  /* ── content helpers ────────────────────────────────────────────────── */
+  function table(rows) {
+    const head = rows[0], body = rows.slice(1);
+    return '<table><thead><tr>' + head.map((h, i) =>
+      '<th' + (i ? ' class="n"' : '') + '>' + h + '</th>').join('') +
+      '</tr></thead><tbody>' + body.map(r => '<tr>' + r.map((c, i) =>
+      '<td' + (i ? ' class="n"' : '') + '>' + c + '</td>').join('') + '</tr>').join('') +
+      '</tbody></table>';
+  }
+  function spark(vals) {
+    const w = 168, h = 34, max = Math.max(...vals), min = Math.min(...vals);
+    const pts = vals.map((v, i) => {
+      const x = (i / (vals.length - 1)) * w;
+      const y = h - ((v - min) / (max - min || 1)) * (h - 6) - 3;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h +
+      '" role="img" aria-label="Burn rate trending up"><polyline points="' + pts +
+      '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+      'stroke-linejoin="round" opacity=".75"/></svg>';
+  }
+
+  /* ── share queries, mirroring 0008 §5 ───────────────────────────────── */
+  const live = () => shares.filter(s => !s.revoked);
+  function shareForBlock(id) {
+    const b = blocks.find(x => x.id === id);
+    return live().find(s =>
+      (s.level === 'block' && s.blockId === id) ||
+      (s.level === 'sheet' && b && s.sheetId === b.sheetId) ||
+      (s.level === 'doc'));
+  }
+  /* Which blocks Mara can see. This is my_shared_block_ids() with the same
+     three branches, in the same order. */
+  function visibleToMara() {
+    return blocks.filter(b => !!shareForBlock(b.id));
+  }
+
+  /* ── render ─────────────────────────────────────────────────────────── */
+  function blockEl(b, side) {
+    const el = document.createElement('div');
+    el.className = 'block' + (shareForBlock(b.id) ? ' linked' : '');
+    el.dataset.block = b.id;
+    el.dataset.side = side;
+
+    const top = document.createElement('div'); top.className = 'block-top';
+    const kind = document.createElement('span'); kind.className = 'block-kind'; kind.textContent = b.kind;
+    const name = document.createElement('span'); name.className = 'block-name'; name.textContent = b.name;
+    top.append(kind, name);
+
+    /* The flag, and the rule from lib/attribution.js: your OWN edits never
+       get one. A marker on everything you have touched is confetti and it
+       buries the case the feature exists for. */
+    const otherSide = side === 'mine' ? 'mara' : 'you';
+    if (b.editedBy && b.editedBy === otherSide) {
+      const f = document.createElement('span');
+      f.className = 'flag';
+      f.style.setProperty('--who', PEOPLE[b.editedBy].hue);
+      f.innerHTML = '<span class="dot"></span>' + PEOPLE[b.editedBy].name + ' edited';
+      top.append(f);
+    }
+    el.append(top);
+
+    const body = document.createElement('div');
+    body.className = 'block-body';
+    body.innerHTML = b.body;
+    el.append(body);
+
+    el.addEventListener('pointerdown', e => startDrag(e, { type: 'block', id: b.id, from: side }));
+    el.addEventListener('dblclick', () => edit(b.id, side));
+    el.title = 'Drag into the chat · double-click to edit';
+    return el;
+  }
+
+  function refEl(s) {
+    const b = blocks.find(x => x.id === s.blockId);
+    if (!b) return document.createTextNode('');
+    const el = document.createElement('div');
+    el.className = 'ref';
+    el.dataset.share = s.id;
+
+    const top = document.createElement('div'); top.className = 'ref-top';
+    const n = document.createElement('span'); n.className = 'ref-name'; n.textContent = b.name;
+    const p = document.createElement('span'); p.className = 'pill'; p.textContent = 'live link';
+    top.append(n, p);
+
+    const hint = document.createElement('div'); hint.className = 'ref-hint';
+    hint.textContent = 'Drag onto a canvas to open it there';
+
+    const foot = document.createElement('div'); foot.className = 'ref-foot';
+    const sel = document.createElement('select');
+    sel.className = 'lvl';
+    sel.setAttribute('aria-label', 'How much of the project this shares');
+    for (const [v, label] of [['block', 'this block'], ['sheet', 'this sheet'], ['doc', 'whole project']]) {
+      const o = document.createElement('option'); o.value = v; o.textContent = label;
+      if (s.level === v) o.selected = true;
+      sel.append(o);
+    }
+    sel.addEventListener('change', () => {
+      s.level = sel.value;
+      s.sheetId = b.sheetId;
+      log('widened the grant to ' + sel.options[sel.selectedIndex].text,
+          "update shares set subject_kind='" + s.level + "'");
+      render();
+    });
+    sel.addEventListener('pointerdown', e => e.stopPropagation());
+
+    const rev = document.createElement('button');
+    rev.className = 'revoke'; rev.textContent = 'Revoke';
+    rev.addEventListener('pointerdown', e => e.stopPropagation());
+    rev.addEventListener('click', () => {
+      s.revoked = true;
+      log('revoked — and the mirrored content went with it',
+          'update shares set revoked_at=now() → blocks.data = NULL');
+      render();
+    });
+
+    foot.append(sel, rev);
+    el.append(top, hint, foot);
+    el.addEventListener('pointerdown', e => startDrag(e, { type: 'ref', id: s.blockId, from: 'chat' }));
+    return el;
+  }
+
+  function render() {
+    /* your canvas — everything, always */
+    const mine = document.getElementById('mine-canvas');
+    mine.innerHTML = '';
+    for (const b of blocks) mine.append(blockEl(b, 'mine'));
+
+    /* chat */
+    const th = document.getElementById('thread');
+    th.innerHTML = '';
+    for (const m of messages) {
+      const row = document.createElement('div'); row.className = 'msg';
+      const av = document.createElement('div'); av.className = 'who';
+      av.style.background = PEOPLE[m.from].hue;
+      av.textContent = PEOPLE[m.from].initial;
+      const col = document.createElement('div'); col.style.minWidth = '0';
+      if (m.text) {
+        const bub = document.createElement('div'); bub.className = 'bubble'; bub.textContent = m.text;
+        col.append(bub);
+      }
+      if (m.shareId) {
+        const s = shares.find(x => x.id === m.shareId);
+        if (s && !s.revoked) col.append(refEl(s));
+        else {
+          const gone = document.createElement('div');
+          gone.className = 'msg-meta';
+          gone.textContent = 'This link was revoked.';
+          col.append(gone);
+        }
+      }
+      row.append(av, col); th.append(row);
+    }
+    th.scrollTop = th.scrollHeight;
+
+    /* Mara's canvas — only what a live grant reaches */
+    const theirs = document.getElementById('theirs-canvas');
+    theirs.innerHTML = '';
+    const vis = visibleToMara();
+    if (!vis.length) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = 'Nothing shared yet. Drag a block into the chat, then drag the card here.';
+      theirs.append(e);
+    } else {
+      for (const b of vis) theirs.append(blockEl(b, 'theirs'));
+    }
+  }
+
+  /* ── editing ────────────────────────────────────────────────────────── */
+  function edit(id, side) {
+    const b = blocks.find(x => x.id === id);
+    if (!b) return;
+    const who = side === 'theirs' ? 'mara' : 'you';
+    if (b.kind === 'text') {
+      const next = window.prompt('Edit "' + b.name + '"', stripTags(b.body));
+      if (next === null) return;
+      b.body = escapeHtml(next);
+    } else {
+      b.name = b.name.endsWith(' ✎') ? b.name : b.name + ' ✎';
+    }
+    b.editedBy = who;
+    log(PEOPLE[who].name + ' edited "' + b.name.replace(' ✎', '') + '" — both views move',
+        who === 'mara'
+          ? 'update blocks set data=… → jsonb_set(docs.doc, …)'
+          : 'update docs set doc=… → project_blocks()');
+    render();
+  }
+  function stripTags(h) { const d = document.createElement('div'); d.innerHTML = h; return d.textContent || ''; }
+  function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  /* ── drag ───────────────────────────────────────────────────────────── */
+  let drag = null;
+  const ghost = document.getElementById('ghost');
+
+  function startDrag(e, payload) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const b = blocks.find(x => x.id === payload.id);
+    drag = payload;
+    ghost.textContent = b ? b.name : 'block';
+    ghost.style.display = 'block';
+    moveGhost(e);
+    document.body.style.cursor = 'grabbing';
+    window.addEventListener('pointermove', moveGhost);
+    window.addEventListener('pointerup', endDrag, { once: true });
+  }
+
+  function moveGhost(e) {
+    ghost.style.left = e.clientX + 'px';
+    ghost.style.top = e.clientY + 'px';
+    const over = paneUnder(e);
+    for (const id of ['mine', 'chat', 'theirs']) {
+      document.getElementById(id).classList.toggle('drop', over === id);
+    }
+  }
+
+  function paneUnder(e) {
+    for (const id of ['mine', 'chat', 'theirs']) {
+      const r = document.getElementById(id).getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return id;
+    }
+    return null;
+  }
+
+  function endDrag(e) {
+    window.removeEventListener('pointermove', moveGhost);
+    ghost.style.display = 'none';
+    document.body.style.cursor = '';
+    for (const id of ['mine', 'chat', 'theirs']) document.getElementById(id).classList.remove('drop');
+    const target = paneUnder(e);
+    const d = drag; drag = null;
+    if (!d || !target) return;
+
+    /* canvas → chat : the block STAYS, and a reference appears */
+    if (d.from === 'mine' && target === 'chat') {
+      const b = blocks.find(x => x.id === d.id);
+      if (shareForBlock(d.id)) { log('already shared — no second grant', '(unique index on live grants)'); return; }
+      const s = { id: 'shr_' + (seq++), blockId: d.id, sheetId: b.sheetId, level: 'block', revoked: false };
+      shares.push(s);
+      messages.push({ from: 'you', text: '', shareId: s.id });
+      log('shared "' + b.name + '" into the chat — the original stayed put',
+          "insert into shares (subject_kind='block')");
+      render();
+      return;
+    }
+
+    /* chat → a canvas : the block OPENS there. Not a copy. */
+    if (d.from === 'chat' && (target === 'theirs' || target === 'mine')) {
+      const b = blocks.find(x => x.id === d.id);
+      if (target === 'theirs') {
+        log('"' + b.name + '" opened on Mara\'s canvas — one block, two views',
+            'select … from blocks where data is not null');
+      } else {
+        log('it is already on your canvas — a reference cannot duplicate it', '(no write)');
+      }
+      render();
+      return;
+    }
+
+    if (d.from === 'theirs' && target === 'chat') {
+      log('Mara can share it onward only if her grant says editor', '(policy: shares insertable)');
+    }
+  }
+
+  /* ── composer ───────────────────────────────────────────────────────── */
+  function send() {
+    const input = document.getElementById('say');
+    const t = input.value.trim();
+    if (!t) return;
+    messages.push({ from: 'you', text: t });
+    input.value = '';
+    log('message sent', 'insert into chat_messages (…)');
+    render();
+  }
+  document.getElementById('send').addEventListener('click', send);
+  document.getElementById('say').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+  document.getElementById('reset').addEventListener('click', reset);
+
+  reset();
+})();
+</script>

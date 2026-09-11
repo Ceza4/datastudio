@@ -1,5 +1,7 @@
 'use client'
 import { useState } from 'react'
+import { attributionLabel, personHue } from '../../lib/attribution'
+import { presenceLabel } from '../../lib/presence'
 import Icon from '../ui/Icon'
 import { Z } from '../../lib/theme'
 
@@ -30,6 +32,21 @@ export default function BlockHandle({
   backlinks = NO_BACKLINKS,
   onTeleport,
   onGoToSource,
+  /* { by, at, name } from lib/blocks.js, or null. Passed in rather than read
+     here so this component stays presentational and one subscription serves
+     every block on the canvas — six BlockHandles each opening their own would
+     be six listeners per block. */
+  attribution,
+  /* { by, at, name } from lib/presence.js, or null — SOMEBODY ELSE IS IN THIS
+     BLOCK RIGHT NOW. Same reasoning for passing it in rather than subscribing:
+     one canvas-level subscription, not one per handle per block.
+
+     LIVE REPLACES HISTORICAL in this slot when both exist. They are the same
+     one piece of header chrome and "Mara is editing" strictly supersedes "Mara
+     changed this" — showing both would be two dots saying almost the same thing
+     about the same person, and it would double the width of the flag exactly
+     when the header is busiest. */
+  presence,
 }) {
   const { raised, border, text2, text3, red, accent, accentText, accentDim, surface } = colors
   const [showBacklinks, setShowBacklinks] = useState(false)
@@ -86,7 +103,7 @@ export default function BlockHandle({
             border: 'none',
             color: text2,
             fontFamily: 'var(--ds-font-body)',
-            fontSize: 12.5,
+            fontSize: 13,
             fontWeight: 600,
             letterSpacing: '-0.005em',
             outline: 'none',
@@ -116,7 +133,7 @@ export default function BlockHandle({
             flex: 1,
             color: block.name ? text2 : text3,
             fontFamily: 'var(--ds-font-body)',
-            fontSize: 12.5,
+            fontSize: 13,
             fontWeight: block.name ? 600 : 400,
             letterSpacing: '-0.005em',
             minWidth: 0,
@@ -127,6 +144,89 @@ export default function BlockHandle({
           }}
         >
           {block.name || 'Untitled'}
+        </span>
+      )}
+
+      {/* WHO CHANGED THIS, WHEN IT WAS NOT YOU.
+
+          Reads the `blocks` projection from migration 0007, where `edited_by`
+          is stamped by a SECURITY DEFINER trigger from auth.uid(). So this is
+          the server's answer, not a claim the client is repeating — which is
+          the whole reason the column is not writable: a flag that can be
+          forged is a false statement about a colleague, rendered as fact.
+
+          THREE THINGS IT DELIBERATELY DOES NOT DO.
+
+          It does not flag YOUR edits. A marker on every block you have touched
+          is confetti, and it buries the one case the feature exists for.
+          lib/blocks.js returns null for your own changes so this component
+          never has to remember.
+
+          It does not flag what it does not know. 0007's backfill leaves
+          `edited_by` NULL for work that predates attribution rather than
+          guessing the owner, and unknown renders as nothing at all.
+
+          It is not a border, a glow or a tint on the block. Every one of those
+          fights the block's own content for the same pixels — and a data tool
+          whose tables change colour because somebody edited them is a tool
+          that has made attribution more important than data. It is a dot in
+          the header, in the one place the block already spends chrome. */}
+      {/* STATE B — LIVE CO-PRESENCE.
+
+          Same 7px dot, same personHue, same slot, same mono 9.5px label. The
+          idiom is deliberately NOT changed: a person's colour means the same
+          thing whether it is flagging their last edit or their presence, so
+          identity stays consistent across both signals instead of the app
+          having two palettes for "who".
+
+          The ONE difference is that the dot pulses. That single piece of motion
+          carries "live" versus "historical" on its own, which is why nothing
+          else needed to change — and it is why there is no border, no glow and
+          no tint at this stage. Those belong to state C, where there is an
+          actual collision to report.
+
+          Opacity is held steady through the pulse and only scale moves: a dot
+          fading in and out reads as a loading indicator, and a 7px dot at
+          reduced opacity against a raised header is close to invisible at the
+          bottom of the cycle. */}
+      {presence ? (
+        <span
+          title={presenceLabel(presence)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            flexShrink: 0, maxWidth: 140, overflow: 'hidden',
+            fontFamily: 'var(--ds-font-mono)', fontSize: 11,
+            color: text3, whiteSpace: 'nowrap',
+          }}>
+          <span
+            className="ds-presence-dot"
+            style={{
+              width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+              background: personHue(presence.by),
+            }} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {presenceLabel(presence)}
+          </span>
+        </span>
+      ) : attribution && (
+        <span
+          title={`${attributionLabel(attribution)}${attribution.at ? ' · ' + new Date(attribution.at).toLocaleString() : ''}`}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            flexShrink: 0, maxWidth: 120, overflow: 'hidden',
+            fontFamily: 'var(--ds-font-mono)', fontSize: 11,
+            color: text3, whiteSpace: 'nowrap',
+          }}>
+          {/* The dot carries the identity and the text carries the name, so the
+              flag still reads for anyone who cannot separate the hues. Colour
+              is never the only channel. */}
+          <span style={{
+            width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+            background: personHue(attribution.by),
+          }} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {attribution.name || 'Someone'}
+          </span>
         </span>
       )}
 
@@ -144,14 +244,14 @@ export default function BlockHandle({
           onMouseDown={e => e.stopPropagation()}
           title={`Extracted from page ${block.source.page} — click to go back to it`}
           style={{
-            display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0,
-            background: 'none', border: 'none', borderRadius: 4, padding: '2px 5px',
+            display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+            background: 'none', border: 'none', borderRadius: 4, padding: '2px 6px',
             color: text3, cursor: 'pointer',
-            fontFamily: 'var(--ds-font-mono)', fontSize: 9, lineHeight: 1,
+            fontFamily: 'var(--ds-font-mono)', fontSize: 11, lineHeight: 1,
           }}
           onMouseEnter={e => (e.currentTarget.style.color = accent)}
           onMouseLeave={e => (e.currentTarget.style.color = text3)}>
-          <Icon name="block-pdf" size={10} />
+          <Icon name="block-pdf" size={12} />
           p{block.source.page}
         </button>
       )}
@@ -166,13 +266,13 @@ export default function BlockHandle({
             aria-expanded={showBacklinks}
             title={`${backlinks.length} block${backlinks.length > 1 ? 's link' : ' links'} here`}
             style={{
-              display: 'flex', alignItems: 'center', gap: 3,
+              display: 'flex', alignItems: 'center', gap: 4,
               background: showBacklinks ? accentDim : 'none',
-              border: 'none', borderRadius: 4, padding: '2px 5px',
+              border: 'none', borderRadius: 4, padding: '2px 6px',
               color: showBacklinks ? accent : text3, cursor: 'pointer',
-              fontFamily: 'var(--ds-font-mono)', fontSize: 9, lineHeight: 1,
+              fontFamily: 'var(--ds-font-mono)', fontSize: 11, lineHeight: 1,
             }}>
-            <Icon name="share-link" size={10} />
+            <Icon name="share-link" size={12} />
             {backlinks.length}
           </button>
 
@@ -182,12 +282,12 @@ export default function BlockHandle({
               style={{
                 position: 'absolute', top: '100%', right: 0, marginTop: 5, zIndex: Z.popover,
                 width: 232, maxHeight: 240, overflowY: 'auto',
-                background: surface, border: `1px solid ${border}`, borderRadius: 9,
+                background: surface, border: `1px solid ${border}`, borderRadius: 8,
                 boxShadow: '0 10px 30px rgba(0,0,0,0.28)', padding: 5,
                 fontFamily: 'var(--ds-font-body)', cursor: 'default',
               }}>
               <div style={{
-                fontSize: 8.5, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.8,
+                fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.8,
                 textTransform: 'uppercase', color: text3, padding: '3px 7px 5px',
               }}>
                 Linked from
@@ -202,23 +302,23 @@ export default function BlockHandle({
                   }}
                   style={{
                     display: 'block', width: '100%', textAlign: 'left',
-                    padding: '6px 7px', borderRadius: 6, border: 'none',
+                    padding: '6px 8px', borderRadius: 6, border: 'none',
                     background: 'transparent', cursor: 'pointer',
                     fontFamily: 'var(--ds-font-body)',
                   }}
                   onMouseEnter={e => (e.currentTarget.style.background = raised)}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                  <span style={{ display: 'block', fontSize: 11.5, color: text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ display: 'block', fontSize: 12, color: text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {bl.sourceName}
                   </span>
                   {/* The link's own words, which are usually more useful than
                       the source block's name for remembering why it points here. */}
                   {bl.label && bl.label !== bl.sourceName && (
-                    <span style={{ display: 'block', fontSize: 10, color: accentText, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ display: 'block', fontSize: 11, color: accentText, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       “{bl.label}”
                     </span>
                   )}
-                  <span style={{ display: 'block', fontSize: 9.5, color: text3, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ display: 'block', fontSize: 11, color: text3, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {bl.notebookName} › {bl.sheetName}
                   </span>
                 </button>
@@ -238,7 +338,7 @@ export default function BlockHandle({
           border: 'none',
           color: text3,
           cursor: 'pointer',
-          fontSize: 12,
+          fontSize: 13,
           lineHeight: 1,
           padding: '0 2px',
           flexShrink: 0,
@@ -246,7 +346,7 @@ export default function BlockHandle({
         onMouseEnter={e => (e.currentTarget.style.color = red)}
         onMouseLeave={e => (e.currentTarget.style.color = text3)}
       >
-        <Icon name="action-delete" size={11} />
+        <Icon name="action-delete" size={12} />
       </button>
     </div>
   )

@@ -56,7 +56,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
       style={{
         position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
         zIndex: Z.rail, width: 168,
-        display: 'flex', flexDirection: 'column', gap: 3, padding: 8,
+        display: 'flex', flexDirection: 'column', gap: 4, padding: 8,
         maxHeight: 'calc(100% - 120px)', overflowY: 'auto',
         background: `${surface}dd`,
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -83,7 +83,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
           above it. Nothing here sets `background` inline, because an inline
           background would beat the class's :hover rule and put us back. */}
       <Label colors={colors}>Status</Label>
-      <div style={{ display: 'flex', gap: 3 }}>
+      <div style={{ display: 'flex', gap: 4 }}>
         {SETTABLE_STATUSES.map(st => {
           const on = block.status === st
           return (
@@ -117,7 +117,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
 
       {/* ── priority ── */}
       <Label colors={colors} style={{ marginTop: GROUP_GAP }}>Priority</Label>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         {PRIORITIES.map(p => {
           const on = (block.priority || 'med') === p
           return (
@@ -159,7 +159,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
             }}
             onMouseEnter={e => { e.currentTarget.style.color = 'var(--ds-red)' }}
             onMouseLeave={e => { e.currentTarget.style.color = text3 }}>
-            <Icon name="action-delete" size={11} />
+            <Icon name="action-delete" size={12} />
           </button>
         )}
       </Label>
@@ -185,7 +185,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
            rather than stating the same fact two different ways. */
         <div style={{
           display: 'flex', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
-          marginTop: 5, padding: '2px 7px', borderRadius: 'var(--ds-radius-sm)',
+          marginTop: 5, padding: '2px 8px', borderRadius: 'var(--ds-radius-sm)',
           fontSize: 'var(--ds-fs-sm)', fontFamily: 'var(--ds-font-mono)',
           fontVariantNumeric: 'tabular-nums',
           fontWeight: dl.state === 'overdue' ? 600 : 500, lineHeight: 1.4,
@@ -194,7 +194,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
           background: dl.state === 'overdue' ? 'var(--ds-red-bg)'
             : dl.state === 'soon' ? 'var(--ds-amber-bg)' : 'transparent',
         }}>
-          <Icon name={dl.state === 'overdue' ? 'status-warning' : 'status-info'} size={11} />
+          <Icon name={dl.state === 'overdue' ? 'status-warning' : 'status-info'} size={12} />
           {dl.label}
         </div>
       )}

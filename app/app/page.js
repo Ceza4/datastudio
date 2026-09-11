@@ -4,17 +4,45 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { usePrefs } from '../providers'
 import { useToast } from '../../components/ui/Toast'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
+/* components/ui/SharePanel.js is built and tested but deliberately NOT wired
+   in. The sidebar affordance for it was removed on Matas's call — the hover-
+   revealed icon buttons in that island are already hard enough to find without
+   a third one, and where sharing is triggered from is an open question. The
+   panel takes docId + level + sheetId/blockId and is one button away from
+   being live again; the READ side (what other people shared with you) stays
+   wired, because that has to work whether or not you can start a share. */
+import { LEVEL_PROJECT, LEVEL_SHEET, onShares, incomingShares, sharesFor, sharedBlockFor } from '../../lib/sharing'
+import { knownPerson } from '../../lib/attribution'
+import PeoplePanel from '../../components/ui/PeoplePanel'
+import { documentToDocx, documentToPdf } from '../../lib/docexport'
+/* The same one-line download helper every other export in the app uses, rather
+   than a second object-URL dance here. */
+import { download } from '../../lib/exporters'
+import ChatBlock from '../../components/notebook/ChatBlock'
+/* The chat block's network half lives here rather than in the canvas or the
+   block. NOTHING IN THE RENDER TREE TALKS TO A SERVER — the note in
+   NotebookCanvas.js explains what breaks when that slips, and the browser
+   harness is what catches it. */
+import { fetchThread, postMessage, editMessage, unsendMessage, subscribeThread, shareIntoThread } from '../../lib/chat'
 import { makeColors, Z } from '../../lib/theme'
 import * as H from '../../lib/undo'
 import SettingsPanel from '../../components/settings/SettingsPanel'
+import SyncChip from '../../components/ui/SyncChip'
+import AccountButton from '../../components/ui/AccountButton'
 import BuilderPanel from '../../components/builder/BuilderPanel'
 import { templateAssetIds, TPL_OK } from '../../lib/templatestore'
 import { migratePrefs } from '../../lib/prefs'
 import { lockViewportZoom } from '../../lib/viewportlock'
 import { markdownToHtml, markdownTitle, MARKDOWN_EXTS } from '../../lib/markdown'
 import { processPdfFile, putPdf, newPdfId, prunePdfs, PDF_EXTS } from '../../lib/pdfs'
-import { createBlock } from '../../components/notebook/blockRegistry'
+import { createBlock, ICON_FOOTPRINT } from '../../components/notebook/blockRegistry'
 import { migrateInk } from '../../lib/shapes'
+import { newNotebookId, newSheetId, newSheetFileId, newFolderId } from '../../lib/ids'
+import { createSyncEngine, SYNC_OFF } from '../../lib/sync'
+import { applyPulled, KIND_NOTEBOOK, KIND_FOLDER, KIND_SHEETFILE } from '../../lib/syncdocs'
+import { isSupabaseConfigured, getSession } from '../../lib/auth'
+import { refreshAccount, accountSnapshot } from '../../lib/limits'
+import { getSupabase } from '../../lib/supabaseClient'
 /* Not `xlsx` directly. lib/workbook.js wraps XLSX.read with a
    prototype-pollution guard, because the pinned 0.18.5 is the last SheetJS on
    public npm and carries CVE-2023-30533 — reachable from exactly this parse,
@@ -23,7 +51,7 @@ import { migrateInk } from '../../lib/shapes'
 import { readWorkbook, readDelimitedText, tableFromSheet } from '../../lib/workbook'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckPanel from '../../components/tools/CrosscheckPanel'
-import { saveState, loadState, clearState, debounce, SAVE_OK, SAVE_QUOTA, SAVE_STALE, LOAD_FAILED, storageEstimate, formatBytes } from '../../lib/persistence'
+import { saveState, loadState, clearState, debounce, SAVE_OK, SAVE_QUOTA, SAVE_STALE, LOAD_FAILED, storageEstimate, workspaceByteSize, formatBytes } from '../../lib/persistence'
 import { pruneImages, requestPersistence, idbClear, STORE_IMAGES, STORE_PDFS, STORE_FILES, STORE_TEMPLATES } from '../../lib/idb'
 import { processImageFile, putImage, newImageId, IMAGE_EXTS, MAX_IMAGE_BYTES } from '../../lib/images'
 import { processFile, putFile, newFileId, pruneFiles, MAX_FILE_BYTES } from '../../lib/files'
@@ -238,6 +266,29 @@ export default function AppPage() {
      change is not recorded as a new edit — which would make undo impossible to
      escape from. */
   const applyingHistoryRef = useRef(false)
+
+  /* ── sync ────────────────────────────────────────────────────────────────
+
+     The engine lives in lib/sync.js and is deliberately given no React
+     knowledge at all: it reads the workspace through a ref and hands changes
+     back through callbacks. Two reasons. The engine has to read the CURRENT
+     workspace from inside an async network callback, where a value captured in
+     a closure is already stale — a ref is the only thing that is not. And
+     keeping every setState on this side means the engine cannot accidentally
+     become the thing that decides how the app renders. */
+  const syncRef = useRef(null)
+  const workspaceRef = useRef({ notebooks: [], folders: [], files: [], prefs: null })
+  const [syncStatus, setSyncStatus] = useState({ state: SYNC_OFF, pending: 0, message: null })
+  /* Who is signed in, what they are paying for, and how much of it they have
+     used. Kept in state rather than read from lib/limits on every render
+     because the account panel renders from it — limits.js holds the cache, and
+     this is the copy React is allowed to re-render on. */
+  /* undefined = not looked yet, null = signed out, object = known. The three
+     are kept distinct because "we have not checked" and "there is no account"
+     produce very different UI, and collapsing them flashes a signed-out state
+     at somebody who is signed in. */
+  const [account, setAccount] = useState(undefined)
+
   const [expandedNotebookIds, setExpandedNotebookIds] = useState(new Set())
   const [renamingFolderId, setRenamingFolderId] = useState(null)
   const [renamingFolderLabel, setRenamingFolderLabel] = useState('')
@@ -248,11 +299,203 @@ export default function AppPage() {
   const [renamingSheetId, setRenamingSheetId] = useState(null)
   const [renamingSheetLabel, setRenamingSheetLabel] = useState('')
 
+  /* A counter, not the grant list. The sidebar only needs to know THAT
+     something changed so "Shared with me" recomputes; holding a copy of the
+     list here would be a second cache to keep in step with lib/sharing.js. */
+  const [shareTick, setShareTick] = useState(0)
+  useEffect(() => onShares(() => setShareTick(n => n + 1)), [])
+
+  /* sheetId → the name the user gave it, across every project. The share list
+     shows "Q3 numbers" rather than "sh_9f2a…" — an id in a permission row is
+     not an answer to "what did I share".
+
+     `shareTick` is deliberately NOT a dependency: the names come from the
+     workspace, not from the grants, and recomputing this on every share change
+     would walk every sheet of every project for nothing. */
+  /* Load and watch every thread on the sheet that is currently open.
+     ------------------------------------------------------------------
+     Keyed on the JOINED ids, not on the block array: `notebooks` gets a new
+     identity on every document change, so depending on the array would tear
+     down and re-establish a realtime subscription every time anybody nudged a
+     block. The ids only change when a chat block is added or removed, which is
+     exactly when the subscriptions should change. */
+  const activeChatIds = useMemo(() => {
+    const nb = notebooks.find(n => n.id === activeNotebookId)
+    const sheet = (nb?.sheets || []).find(sh => sh.id === (nb.activeSheetId || nb.sheets?.[0]?.id))
+    return (sheet?.blocks || []).filter(b => b?.type === 'chat').map(b => b.id).join(',')
+  }, [notebooks, activeNotebookId])
+
+  useEffect(() => {
+    const ids = activeChatIds ? activeChatIds.split(',') : []
+    if (!ids.length) return undefined
+    const offs = ids.map(id => {
+      /* Swallowed: a workspace with no network still opens, and a chat block
+         with no thread reads as "no messages yet" rather than as an error. */
+      fetchThread(id).catch(() => {})
+      return subscribeThread(id, () => {})
+    })
+    return () => { for (const off of offs) { try { off() } catch { /* already gone */ } } }
+  }, [activeChatIds])
+
+  /* A block dragged into a chat.
+     ------------------------------------------------------------------
+     Two writes, in this order and not the other: the GRANT first, then the
+     message. A message that names a block nobody in the thread can open is a
+     dead reference, and doing it the other way round would produce one for as
+     long as the second request took — or permanently, if it failed. */
+  const handleChatShareBlock = useCallback(async (chatBlockId, refBlockId) => {
+    const nb = notebooks.find(n => n.id === activeNotebookId)
+    if (!nb) return
+    const share = await shareIntoThread({ docId: nb.id, refBlockId })
+    if (!share.ok) { toast(share.reason || 'Could not share that block.', { tone: 'warn' }); return }
+
+    const res = await postMessage({
+      blockId: chatBlockId,
+      body: null,
+      refBlockId,
+      refShareId: share.shareId || null,
+    })
+    if (!res.ok) { toast(res.reason || 'Could not add that to the conversation.', { tone: 'warn' }); return }
+    toast(share.granted
+      ? `Shared with ${share.granted} ${share.granted === 1 ? 'person' : 'people'} in this conversation`
+      : 'Added to the conversation')
+  }, [notebooks, activeNotebookId, toast])
+
+  const sheetNameMap = useMemo(() => {
+    const out = {}
+    for (const nb of notebooks) for (const sh of nb.sheets || []) if (sh?.id) out[sh.id] = sh.name
+    return out
+  }, [notebooks])
+
+  /* Projects other people have given me, grouped for the sidebar. Read through
+     `shareTick` so a pull that discovers a new grant repaints. */
+  const sharedWithMe = useMemo(() => {
+    const seen = new Map()
+    for (const g of incomingShares()) {
+      if (g.revoked_at) continue
+      const row = seen.get(g.doc_id) || { docId: g.doc_id, levels: new Set(), sheets: [], from: null }
+      row.levels.add(g.subject_kind)
+      if (g.subject_kind === LEVEL_SHEET && g.sheet_id) row.sheets.push(g.sheet_id)
+      /* WHO SENT IT. `created_by` is the granter's uuid; knownPerson resolves
+         the display name the same fetch already collected for attribution — a
+         uuid in a sidebar chip is not an answer to "who shared this".
+
+         First grant wins rather than last: several grants on one project from
+         the same person is the normal case, and two people sharing the SAME
+         project with you is rare enough that naming the first sender beats
+         either listing both (which will not fit) or naming neither. */
+      if (!row.from && g.created_by) row.from = g.created_by
+      seen.set(g.doc_id, row)
+    }
+    return [...seen.values()]
+  }, [shareTick])
+
+  /* ── WHO IS ON THIS SHEET'S PEOPLE LIST ─────────────────────────────────
+     Built from the grants that actually exist, not from an org directory —
+     there isn't one, and inventing a network call for a list nothing else in
+     the app has is a bigger change than this surface justifies.
+
+     Two sources, deduped by identity:
+       · grants I have MADE on this project        → the people I shared with
+       · grants other people have made to ME       → the people who shared with me
+
+     A grant identifies its grantee by EMAIL and its granter by uuid, so the two
+     halves key differently and the email is used as the id when there is no
+     uuid. That is honest about what is known rather than fabricating a uuid,
+     and personHue hashes either kind of string perfectly well — the colour just
+     has to be stable, not meaningful.
+
+     Read through `shareTick`, like sharedWithMe, so a pull that discovers a new
+     grant repaints the list. */
+  const peopleOnSheet = useMemo(() => {
+    const nb = notebooks.find(n => n.id === activeNotebookId)
+    const seen = new Map()
+    const add = (id, patch) => {
+      if (!id) return
+      seen.set(id, { ...(seen.get(id) || { id }), ...patch })
+    }
+    if (nb) {
+      for (const g of sharesFor(nb.id)) {
+        if (g.revoked_at) continue
+        add(g.grantee_email, { email: g.grantee_email, name: knownPerson(g.grantee_email) || g.grantee_email, shared: true })
+      }
+    }
+    for (const g of incomingShares()) {
+      if (g.revoked_at) continue
+      add(g.created_by, { name: knownPerson(g.created_by) || 'Someone', shared: true })
+    }
+    return [...seen.values()]
+  }, [notebooks, activeNotebookId, shareTick])
+
+  const [peopleOpen, setPeopleOpen] = useState(false)
+  const [activePersonId, setActivePersonId] = useState(null)
+
+  /* The floating chat block for one person on this project, if it exists.
+     Matched on `personId` rather than on a derived id string, so renaming
+     anything — or the person's email changing — cannot orphan a live thread. */
+  function personThreadId(personId) {
+    const nb = notebooks.find(n => n.id === activeNotebookId)
+    if (!nb) return null
+    for (const sh of nb.sheets || []) {
+      const found = (sh.blocks || []).find(b => b.type === 'chat' && b.floating && b.personId === personId)
+      if (found) return found.id
+    }
+    return null
+  }
+
+  /* Create it on first use, never before. A chat block per person created
+     eagerly would put a row in `chat_messages`' permission graph for every
+     colleague you have never spoken to. Positioned off-canvas coordinates it
+     will never be drawn at, because `floating` is what hides it and a
+     position is required by the block shape regardless. */
+  function ensurePersonThread(person) {
+    const existing = personThreadId(person.id)
+    if (existing) return existing
+    const nb = notebooks.find(n => n.id === activeNotebookId)
+    if (!nb) return null
+    return addNotebookBlock(nb.id, 'chat', 0, 0, null, null, 320, 380, {
+      floating: true,
+      personId: person.id,
+      name: person.name || person.email || 'Conversation',
+    })
+  }
+
   function freshNotebook() {
-    const id = `notebook_${Date.now()}`
-    const sheetId = `sheet_${Date.now()}`
+    /* WAS: `notebook_${Date.now()}` / `sheet_${Date.now()}`, with no random
+       salt — the only two ids in this file without one. Locally that was
+       survivable (one tab, one clock, and creating two notebooks in the same
+       millisecond takes a script). Under sync it is not: a laptop and a
+       desktop both minting a notebook at the same instant produce the SAME
+       id, and the second push overwrites the first with no error anywhere.
+
+       lib/ids.js mints a uuid. Notebooks already on disk keep their old ids —
+       migration 0003 makes the Postgres primary key `text` precisely so they
+       do not have to be rewritten (their ids are quoted inside teleport link
+       addresses stored in text blocks, and rewriting user content to satisfy a
+       column type is the wrong trade). */
+    const id = newNotebookId()
+    const sheetId = newSheetId()
     return { id, name: 'My Project', sheets: [{ id: sheetId, name: 'Sheet 1', blocks: [] }], activeSheetId: sheetId }
   }
+
+  /* WHAT THE METER MEASURES, AND WHY IT CHANGED.
+
+     It used to be navigator.storage.estimate() alone, which reports what the
+     ORIGIN holds — framework chunks, the pdf.js worker and its 185 cmap and
+     font files, service-worker caches, IndexedDB overhead. On an empty
+     workspace that reads about 2MB, under a label saying STORAGE, which reads
+     as "I have two megabytes of documents I did not create".
+
+     Now `usage` is the workspace and `quota` is still the browser's, because
+     they answer different questions: how much of my work is here, and how much
+     room is left. */
+  const refreshUsage = useCallback(async () => {
+    try {
+      const [mine, browser] = await Promise.all([workspaceByteSize(), storageEstimate()])
+      const quota = browser?.quota || 0
+      setUsage({ usage: mine, quota, pct: quota ? mine / quota : 0 })
+    } catch { /* the meter simply does not update */ }
+  }, [])
 
   // Load persisted state on mount, exactly once. DataStudio is always the
   // notebook workspace now, so we guarantee a notebook exists and is active
@@ -362,16 +605,27 @@ export default function AppPage() {
          not get written back on every boot. */
       let initialNotebooks = migrateInk(saved?.notebooks?.length ? saved.notebooks : [])
       const initialFolders = saved?.folders?.length ? saved.folders : []
-      if (initialNotebooks.length === 0) {
-        const nb = freshNotebook()
-        initialNotebooks = [nb]
-        setActiveNotebookId(nb.id)
-        setExpandedNotebookIds(prev => new Set(prev).add(nb.id))
-      } else {
+      /* v5. Imported workbooks were in React state and nowhere else — the
+         payload only ever carried {notebooks, folders, prefs}, so a reload
+         emptied the sidebar and left every folder holding itemIds that
+         pointed at nothing. */
+      const initialFiles = Array.isArray(saved?.files) ? saved.files : []
+      /* A FIRST RUN NO LONGER MANUFACTURES A PROJECT.
+
+         This used to create "My Project" for anyone whose workspace was empty,
+         which is the same phantom deleteNotebook was making at the other end:
+         a document the user did not ask for, that syncs, that counts against
+         quota, and that they then have to delete — only to watch it come
+         straight back. One of the two had to go; both did.
+
+         Empty is a state the app can render now, and ensureNotebook mints the
+         first notebook at the moment something actually needs one. */
+      if (initialNotebooks.length > 0) {
         setActiveNotebookId(initialNotebooks[0].id)
       }
       setNotebooks(initialNotebooks)
       setFolders(initialFolders)
+      setFiles(initialFiles)
       /* Prefs come from the same payload. migratePrefs handles the v3 case
          where the key simply isn't there, falling back to the standalone
          theme mirror so an existing dark-mode user doesn't get flipped. */
@@ -395,7 +649,7 @@ export default function AppPage() {
     requestPersistence().then(({ supported, persisted: ok }) => {
       if (!cancelled) setPersisted(supported ? ok : null)
     })
-    storageEstimate().then(u => { if (!cancelled) setUsage(u) })
+    refreshUsage()
 
     return () => { cancelled = true }
   }, [])
@@ -417,7 +671,7 @@ export default function AppPage() {
   }
   useEffect(() => {
     if (!hydrated) return
-    debouncedSaveRef.current({ notebooks, folders, prefs }, res => {
+    debouncedSaveRef.current({ notebooks, folders, files, prefs }, res => {
       setSaveError(res.status === SAVE_OK ? null : res.error)
       setSaveStale(res.status === SAVE_STALE)
       /* THE COLLECTOR RUNS ON A QUOTA FAILURE TOO.
@@ -471,11 +725,26 @@ export default function AppPage() {
              out of it, so a freshly written asset was missing from the keep-set
              and the prune deleted the bytes seconds after they arrived. */
           const graced = [...grace.keys()]
-          if (keep.status !== TPL_OK) { storageEstimate().then(setUsage); return }
+          if (keep.status !== TPL_OK) { refreshUsage(); return }
           /* `graced` is added to all three. Ids are prefixed per store
              (img_ / pdf_ / file_) and each prune only inspects its own
              store's keys, so an id from the wrong family in a keep-set is
              inert rather than wrong. */
+          /* THE PRUNES RETURN THE IDS THEY DELETED, and those ids are the
+             only safe input to the cloud half.
+
+             Local bytes were the whole story once. They are not now: the same
+             image also has an object in Storage and a row in `assets`, and
+             until this call existed nothing ever retired either one. Deleted
+             images kept consuming a paid plan's quota indefinitely, and the
+             collector that sweeps expired tombstones had never once had a
+             tombstone to sweep.
+
+             It is a soft delete with a 30-day window (see tombstoneAssets),
+             which matters because the keep-set is built from THIS device's
+             view. If that view is ever incomplete, this deletes the wrong
+             thing — and a mistake made against a tombstone is a restore,
+             while the same mistake against a hard delete is a loss. */
           Promise.all([
             pruneImages([...live, ...keep.images, ...graced]),
             prunePdfs([...livePdfs, ...keep.pdfs, ...graced]),
@@ -486,11 +755,158 @@ export default function AppPage() {
                containing an attachment is not yet supported — recorded here
                rather than discovered later as "my template lost its files". */
             pruneFiles([...liveFiles, ...graced]),
-          ]).then(() => storageEstimate().then(setUsage))
+          ]).then(gone => {
+            const ids = gone.flat().filter(Boolean)
+            /* THROUGH THE QUEUE, NOT STRAIGHT AT THE NETWORK.
+
+               This was `tombstoneAssets(ids).catch(() => {})` with a comment
+               calling a failure "a billing annoyance — bytes linger until the
+               next delete of the same id". There is no next delete of the same
+               id: the blob has just been removed from IndexedDB, so that id
+               can never appear in a keep-set again. One offline moment, which
+               is ordinary usage here, leaked the object permanently and left
+               its manifest row counting against quota forever.
+
+               syncRef owns retries, backoff and crash-recovery already. */
+            if (ids.length) syncRef.current?.retireAssets?.(ids)
+            refreshUsage()
+          })
         })
       }
     })
-  }, [notebooks, folders, prefs, hydrated])
+  }, [notebooks, folders, files, prefs, hydrated])
+
+  /* ── the sync engine ────────────────────────────────────────────────────
+
+     Mirrored into a ref on every workspace change, then the engine is told.
+     `changed()` is a pointer compare per document — no serialisation, nothing
+     that scales with how much is in a notebook — so it is safe to call from an
+     effect that fires on every keystroke's worth of state. */
+  useEffect(() => {
+    workspaceRef.current = { notebooks, folders, files, prefs }
+    if (hydrated) syncRef.current?.changed(workspaceRef.current)
+  }, [notebooks, folders, files, prefs, hydrated])
+
+  /* Fold pulled rows into what is on screen.
+
+     applyingHistoryRef is reused for the notebook list, and that is the point
+     rather than a shortcut: a pull must not become an undoable step. If it
+     did, Ctrl+Z after a sync would revert the other machine's work and then
+     push the reverted version back — two devices taking turns undoing each
+     other, with the user pressing one key. */
+  const applyRemoteRows = useCallback(rows => {
+    if (!rows?.length) return
+    const cur = workspaceRef.current
+    const next = applyPulled(
+      { notebooks: cur.notebooks, folders: cur.folders, files: cur.files },
+      rows,
+      /* Empty: lib/sync.js has already filtered out anything this device still
+         owes a push for. Passing our own guess here would be a second, weaker
+         copy of that rule. */
+      new Set(),
+    )
+    if (!next.applied.length) return
+
+    const appliedIds = new Set(next.applied)
+    const touched = new Set(rows.filter(r => appliedIds.has(r.id)).map(r => r.kind))
+
+    if (touched.has(KIND_NOTEBOOK)) {
+      applyingHistoryRef.current = true
+      setNotebooks(next.notebooks)
+      /* The open notebook can be deleted on another device. Pointing
+         activeNotebookId at something that no longer exists renders an empty
+         canvas with no way back — the same clamp applyHistory already does,
+         for the same reason. */
+      setActiveNotebookId(prev =>
+        prev && next.notebooks.some(n => n.id === prev) ? prev : (next.notebooks[0]?.id ?? null))
+    }
+    if (touched.has(KIND_FOLDER)) setFolders(next.folders)
+    if (touched.has(KIND_SHEETFILE)) setFiles(next.files)
+
+    /* Updated immediately, not left to the effect above. The engine may read
+       the workspace again before React has re-rendered — during a drain that
+       is already in flight — and it would otherwise diff against the
+       pre-pull copy and mark every pulled document dirty, pushing back what it
+       just received. */
+    workspaceRef.current = {
+      ...cur, notebooks: next.notebooks, folders: next.folders, files: next.files,
+    }
+  }, [])
+
+  /* A conflict copy. Arrives already named "… (conflict copy)" and with a new
+     id; all this side does is put it where the user will see it. */
+  const addLocalDoc = useCallback((kind, doc) => {
+    if (kind === KIND_NOTEBOOK) {
+      applyingHistoryRef.current = true
+      setNotebooks(prev => [...prev, doc])
+    } else if (kind === KIND_FOLDER) setFolders(prev => [...prev, doc])
+    else if (kind === KIND_SHEETFILE) setFiles(prev => [...prev, doc])
+  }, [])
+
+  const applyRemotePrefs = useCallback(remote => {
+    if (!remote || typeof remote !== 'object') return
+    hydratePrefs(migratePrefs(remote))
+  }, [hydratePrefs])
+
+  /* Read the account as soon as there is a session, independently of sync.
+
+     It has to be independent, because on a FREE plan the sync engine never
+     starts — and the Account panel and the storage copy both still need to
+     know who this is and what tier they are on. Hanging this off sync would
+     mean a free user's plan never loaded at all. */
+  const loadAccount = useCallback(async () => {
+    if (!isSupabaseConfigured()) return
+    try {
+      const client = await getSupabase()
+      const s = await getSession(client)
+      const uid = s?.user?.id
+      if (!uid) { setAccount(null); return }
+      await refreshAccount(client, uid)
+      setAccount(accountSnapshot())
+    } catch { /* offline: the panel keeps whatever it last knew */ }
+  }, [])
+
+  useEffect(() => { loadAccount() }, [loadAccount])
+
+  useEffect(() => {
+    /* Gated on `hydrated` for the same reason the autosave is: starting sync
+       over a workspace that has not finished loading would push an empty one.
+       And gated on the load having SUCCEEDED — refuseToSave deliberately never
+       sets hydrated, so a failed read cannot arm either writer. */
+    if (!hydrated || !isSupabaseConfigured()) return
+    /* THE FREE TIER DOES NOT SYNC AT ALL, and this is where that is true.
+
+       Not "syncs and gets refused" — the engine never starts, so no request is
+       made, no outbox entry is written, and nothing is queued waiting for an
+       upgrade that may never come. Postgres would refuse the writes anyway
+       (migration 0004's quota triggers see a plan with every limit at zero),
+       but a client that spends its time being told no is a client that looks
+       broken.
+
+       `account === null` means we have not looked yet; starting the engine on
+       an unknown plan would push a free user's workspace before the answer
+       arrives. Waiting is the safe direction: sync starting a second late is
+       invisible, sync starting wrongly is a support ticket. */
+    if (!account || !account.cloud) return
+    const engine = createSyncEngine({
+      readWorkspace: () => workspaceRef.current,
+      applyRemote: applyRemoteRows,
+      addLocalDoc,
+      applyPrefs: applyRemotePrefs,
+      onStatus: setSyncStatus,
+    })
+    syncRef.current = engine
+    engine.start()
+    return () => {
+      /* flush() before stop(), so closing the tab or navigating away pushes
+         what is owed instead of leaving it for the next launch. The engine's
+         own pagehide handler is the belt; this is the braces, and it covers
+         the client-side navigation case that pagehide does not fire for. */
+      try { engine.flush() } catch { /* nothing to do */ }
+      engine.stop()
+      syncRef.current = null
+    }
+  }, [hydrated, account, applyRemoteRows, addLocalDoc, applyRemotePrefs])
 
   /* Record every change to the workspace, once it has actually happened.
 
@@ -802,7 +1218,16 @@ export default function AppPage() {
   async function signOutAndMaybeWipe() {
     const choice = await ask({
       title: 'Also remove this workspace from this device?',
-      body: 'Your projects, images, PDFs and attachments are stored in this browser, not in your account. '
+      /* "there is no cloud copy to restore from" was true for every account
+         when this was written. It is now true only on Free. Leaving it would
+         make a paid user think removing a cache destroys their work, which is
+         the one sentence that turns a safe click into a frightening one. */
+      body: account?.cloud
+        ? 'Your projects, images, PDFs and attachments are also in your account, so removing them '
+          + 'here loses nothing — they download again next time you sign in.\n\n'
+          + 'Remove them if this is a shared or borrowed computer. Keep them if it is yours, '
+          + 'and the next sign-in is instant.'
+        : 'Your projects, images, PDFs and attachments are stored in this browser, not in your account. '
           + 'Signing out does not remove them.\n\n'
           + 'Remove them if this is a shared or borrowed computer. Keep them if it is yours — '
           + 'there is no cloud copy to restore from.',
@@ -829,13 +1254,33 @@ export default function AppPage() {
        Cancel takes the focus, not the red button, so an Enter pressed at the
        wrong moment cannot wipe someone's only copy. */
     const choice = await ask({
-      title: 'Delete everything in this browser?',
+      title: account?.cloud ? 'Remove this workspace from this computer?' : 'Delete everything in this browser?',
       tone: 'danger',
-      body: 'Every project, folder, image, PDF, attachment and saved template lives on this device only. '
+      /* THE COPY BRANCHES ON THE PLAN, because the button does two different
+         things depending on it.
+
+         On a paid plan this clears a CACHE: the documents and files are in the
+         account, and signing in downloads them again. Telling that user "there
+         is no cloud copy and no undo" — as this dialog did until sync
+         shipped — is simply false, and false in the direction that makes
+         someone abandon a safe action out of fear.
+
+         On Free the old wording is exactly right, because the browser is the
+         only copy that exists.
+
+         What neither case is any more is "delete everything". Erasing the
+         ACCOUNT lives behind the Account button, needs the email typed, and
+         says so. */
+      body: account?.cloud
+        ? 'This clears the copy stored in this browser. Your projects, files and '
+          + 'templates stay in your account and download again next time you sign in.\n\n'
+          + 'Useful on a shared or borrowed computer. To erase the account itself, '
+          + 'use Delete account in the Account panel.'
+        : 'Every project, folder, image, PDF, attachment and saved template lives on this device only. '
           + 'There is no cloud copy and no undo for this one.\n\n'
           + 'Export anything you want to keep first.',
       actions: [
-        { label: 'Delete everything', value: 'delete', tone: 'danger' },
+        { label: account?.cloud ? 'Remove from this computer' : 'Delete everything', value: 'delete', tone: 'danger' },
         { label: 'Cancel', value: null, tone: 'quiet', autoFocus: true },
       ],
     })
@@ -895,6 +1340,17 @@ export default function AppPage() {
                     A PDF or an image then lands under the cursor instead of at
                     the fixed 200/130 corner every import used.
      `opts.folderId` a sidebar folder, when it was dropped on one. */
+  /* WHERE the drop landed, as a patch — for every file type, not just images.
+
+     The external-drop bug was that nothing in this path set parentSectionId at
+     all, so a PDF or a spreadsheet dropped inside a section overlapped it
+     without belonging to it just as an image did. Section containment is a
+     property of the drop position, not of the file's extension, so it is one
+     helper spread into every branch rather than a fix applied to the one type
+     that happened to get noticed. Empty when the drop was not inside a section
+     or came from the file picker (which has no position at all). */
+  const sectionPatch = opts => (opts?.sectionId ? { parentSectionId: opts.sectionId } : null)
+
   async function importFile(file, opts = {}) {
     setImportError(null)
     const ext = extOf(file.name)
@@ -946,18 +1402,45 @@ export default function AppPage() {
      operation, and it empties when the browser tears the drag down — reading
      it lazily inside the loop is a race that shows up only on slow imports. */
   async function importFiles(list, opts = {}) {
-    const files = Array.from(list || [])
-    if (!files.length) return
+    /* `dropped`, not `files`. It used to shadow the `files` STATE declared at
+       the top of this component, which check:hooks flags — correctly, even
+       though this particular shadow is harmless, because the guard cannot see
+       function scope and a rule that has to reason about scope is a rule that
+       will be got wrong. Renaming is a smaller price than a guard nobody
+       trusts, and reading `dropped` next to `files` is clearer regardless. */
+    const dropped = Array.from(list || [])
+    if (!dropped.length) return
 
-    const batch = files.slice(0, MAX_DROP_FILES)
-    if (files.length > batch.length) {
-      setImportError(`${files.length} files is more than one drop should carry — importing the first ${MAX_DROP_FILES}.`)
+    const batch = dropped.slice(0, MAX_DROP_FILES)
+    if (dropped.length > batch.length) {
+      setImportError(`${dropped.length} files is more than one drop should carry — importing the first ${MAX_DROP_FILES}.`)
     }
 
+    /* GRID, not a diagonal cascade.
+
+       A 26px-per-file diagonal was enough to prove several files had arrived,
+       and it is the wrong shape for a real batch: ten images land as a long
+       staircase running off the bottom-right, mostly overlapping, and a section
+       grown around that is a tall thin diagonal box. A grid of the actual
+       landing size puts them side by side, which is both what you can see and
+       what growSectionToFit can size sensibly.
+
+       Sized from what is LANDING, not from a constant: an icon-mode batch is
+       200×40 chips and a full-size batch is 360×260 blocks, and one spacing
+       number cannot suit both. Four across, because at five a default-width
+       batch is already wider than most people's canvas view. */
+    const iconDrop = opts.forceIcon || prefs?.imageDropMode === 'icon'
+    const cellW = (iconDrop ? ICON_FOOTPRINT.w : 360) + 16
+    const cellH = (iconDrop ? ICON_FOOTPRINT.h : 260) + 16
+    const perRow = 4
+
     for (let i = 0; i < batch.length; i++) {
-      /* Fan the landing point out. Without this a four-file drop stacks four
-         blocks on the same pixel and looks like one file imported. */
-      const at = opts.at ? { x: opts.at.x + i * 26, y: opts.at.y + i * 26 } : null
+      const at = opts.at
+        ? {
+            x: opts.at.x + (i % perRow) * cellW,
+            y: opts.at.y + Math.floor(i / perRow) * cellH,
+          }
+        : null
       await importFile(batch[i], { ...opts, at })
     }
   }
@@ -966,7 +1449,7 @@ export default function AppPage() {
      and are never part of the workspace snapshot — a 20MB document rewritten
      by the 600ms autosave would make the whole app stutter. */
   async function importPdf(file, opts = {}) {
-    if (!activeNotebookId) { setImportError('Open a notebook before adding a PDF.'); return }
+    const targetNb = ensureNotebook()   // empty workspace: make one rather than refuse
     setImporting(true)
     try {
       const processed = await processPdfFile(file)
@@ -982,11 +1465,11 @@ export default function AppPage() {
          old jittered corner, which is what the picker still uses. */
       const at = opts.at
       addNotebookBlock(
-        activeNotebookId, 'pdf',
+        targetNb, 'pdf',
         at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
         at ? Math.max(0, at.y - 20) : 130 + Math.random() * 30,
         null, null, 520, 620,
-        { pdfId: id, name: processed.name, pdfPage: 1, pdfFit: 'width' }
+        { pdfId: id, name: processed.name, pdfPage: 1, pdfFit: 'width', ...sectionPatch(opts) }
       )
 
       /* Encryption is a hint, not a verdict — /Encrypt can appear inside a
@@ -1003,7 +1486,7 @@ export default function AppPage() {
   }
 
   async function importImage(file, opts = {}) {
-    if (!activeNotebookId) { setImportError('Open a notebook before adding an image.'); return }
+    const targetNb = ensureNotebook()   // empty workspace: make one rather than refuse
     setImporting(true)
     try {
       const processed = await processImageFile(file)
@@ -1018,8 +1501,19 @@ export default function AppPage() {
       const maxW = 420
       const scale = Math.min(1, maxW / processed.width)
       const at = opts.at
+      /* WHAT THIS IMAGE LANDS AS.
+
+         Shift held during the drop wins over the Settings default, and only in
+         the icon direction — see the caveat on the canvas drop handler.
+
+         The stored w/h are the FULL-SIZE dimensions either way, even for a drop
+         that lands as an icon: displayMode is a rendering state and w/h are the
+         size the user gets back when they expand it. Writing chip dimensions
+         here would mean an icon-first import could never be expanded to
+         anything but a 200×40 image. */
+      const asIcon = opts.forceIcon || prefs?.imageDropMode === 'icon'
       addNotebookBlock(
-        activeNotebookId, 'image',
+        targetNb, 'image',
         at ? Math.max(0, at.x - 40) : 180 + Math.random() * 40,
         at ? Math.max(0, at.y - 20) : 140 + Math.random() * 30,
         null, null,
@@ -1028,9 +1522,16 @@ export default function AppPage() {
         {
           imageId: id, name: processed.name,
           natW: processed.width, natH: processed.height, alt: '', fit: 'contain',
+          /* Only written when it is actually 'icon'. Absent means 'full'
+             everywhere (see displayModeOf), so a normal drop adds no key — which
+             keeps the stored shape identical to every image ever saved. */
+          ...(asIcon ? { displayMode: 'icon' } : null),
+          /* THE SECTION IT WAS DROPPED INTO. See sectionPatch — the external
+             file drop never set this for any type. */
+          ...sectionPatch(opts),
         }
       )
-      storageEstimate().then(setUsage)
+      refreshUsage()
     } catch (err) {
       setImportError(err?.message || 'That image could not be imported.')
     } finally {
@@ -1045,7 +1546,7 @@ export default function AppPage() {
      blocksToMarkdown) and could not read it back — you could export a
      notebook to .md and then not drag it in. */
   async function importMarkdown(file, opts = {}) {
-    if (!activeNotebookId) { setImportError('Open a notebook before adding a note.'); return }
+    const targetNb = ensureNotebook()   // empty workspace: make one rather than refuse
     if (file.size > MAX_MARKDOWN_BYTES) {
       setImportError(`"${file.name}" is ${formatBytes(file.size)} of text — too large for one note. Split it up first.`)
       return
@@ -1065,7 +1566,7 @@ export default function AppPage() {
       const at = opts.at
 
       addNotebookBlock(
-        activeNotebookId, 'text',
+        targetNb, 'text',
         at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
         at ? Math.max(0, at.y - 20) : 140 + Math.random() * 30,
         null, null, 460, height,
@@ -1074,6 +1575,7 @@ export default function AppPage() {
           /* Named after the document's own first heading when it has one, so
              a folder of notes is readable without opening any of them. */
           name: markdownTitle(raw, file.name.replace(/\.[^.]+$/, '')),
+          ...sectionPatch(opts),
         }
       )
     } catch (err) {
@@ -1091,7 +1593,7 @@ export default function AppPage() {
      one browser profile on one machine. The attachment is invisible on
      another device and gone if the profile is cleared. */
   async function importAttachment(file, opts = {}) {
-    if (!activeNotebookId) { setImportError('Open a notebook before adding a file.'); return }
+    const targetNb = ensureNotebook()   // empty workspace: make one rather than refuse
     setImporting(true)
     try {
       const processed = await processFile(file)
@@ -1101,13 +1603,13 @@ export default function AppPage() {
 
       const at = opts.at
       addNotebookBlock(
-        activeNotebookId, 'file',
+        targetNb, 'file',
         at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
         at ? Math.max(0, at.y - 20) : 150 + Math.random() * 30,
         null, null, 300, 74,
-        { fileId: id, name: processed.name, size: processed.size, mime: processed.type }
+        { fileId: id, name: processed.name, size: processed.size, mime: processed.type, ...sectionPatch(opts) }
       )
-      storageEstimate().then(setUsage)
+      refreshUsage()
     } catch (err) {
       setImportError(err?.message || `"${file.name}" could not be attached.`)
     } finally {
@@ -1176,7 +1678,7 @@ export default function AppPage() {
            finish reading in the same millisecond often enough to collide —
            at which point the second silently overwrites the first in every
            lookup keyed by file id. */
-        const newFile = { id: `file_${Date.now()}_${Math.random().toString(36).slice(2)}`, name: file.name, sheets }
+        const newFile = { id: newSheetFileId(), name: file.name, sheets }
         setFiles(prev => [...prev, newFile])
         setExpandedFiles(prev => { const next = new Set(prev); next.add(newFile.id); return next })
         /* Dropped onto a folder: file it there. A workbook that appears at the
@@ -1333,7 +1835,10 @@ export default function AppPage() {
 
   // ── Folder & Notebook management ─────────────────────────────
   function createFolder() {
-    const id = `folder_${Date.now()}`
+    /* Same unsalted-timestamp problem freshNotebook had, and the same fix.
+       Clicking "New Folder" twice inside one millisecond is not realistic;
+       two machines doing it is exactly what sync makes realistic. */
+    const id = newFolderId()
     setFolders(prev => [...prev, { id, name: 'New Folder', collapsed: false, itemIds: [] }])
     setTimeout(() => { setRenamingFolderId(id); setRenamingFolderLabel('New Folder') }, 30)
   }
@@ -1363,6 +1868,36 @@ export default function AppPage() {
     /* New projects land expanded — the sidebar should show Sheet 1 right
        away instead of making the user click to reveal what they just made. */
     setExpandedNotebookIds(prev => new Set(prev).add(nb.id))
+    return nb.id
+  }
+
+  /**
+   * The id of the notebook to put something in, creating one if there is none.
+   *
+   * WHY THIS RETURNS SYNCHRONOUSLY AND WHY THAT MATTERS.
+   *
+   * Four import paths used to open with `if (!activeNotebookId) {
+   * setImportError('Open a notebook before adding a PDF.'); return }` — for
+   * PDFs, images, notes and files. Those were dead ends invented to protect a
+   * state that could not previously exist, because a notebook was always
+   * conjured up front. Now that empty is a real state, "drag a PDF onto an
+   * empty workspace" is an ordinary thing to do and refusing it would be a
+   * worse bug than the phantom project was.
+   *
+   * The notebook object is built out here rather than inside a setState
+   * updater, for the same reason deleteNotebook builds its own: an updater has
+   * to be a pure function of its argument and React may call it twice. Callers
+   * need the id NOW, in the same tick, to address the block they are about to
+   * add — so the id is minted here and the state catches up.
+   */
+  function ensureNotebook() {
+    if (activeNotebookId && notebooks.some(n => n.id === activeNotebookId)) return activeNotebookId
+    if (notebooks.length > 0) {
+      const first = notebooks[0].id
+      setActiveNotebookId(first)
+      return first
+    }
+    return createNotebook()
   }
   /* §9.1 Builder hands over a finished notebook — lib/templatestore.js has
      already allocated every id and copied every asset — so this is the same
@@ -1735,15 +2270,24 @@ export default function AppPage() {
   function setNotebookActiveSheet(nbId, sheetId) {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, activeSheetId: sheetId }))
   }
-  // Deleting the only notebook would leave the app with nowhere to render —
-  // DataStudio is always the notebook workspace, so a fresh one is created
-  // in that case instead of falling back to an empty shell.
-  /* The stand-in and the next-active decision are both made out here rather
-     than inside the updater. A setState updater has to be a pure function of
-     its argument — React is entitled to call it twice — and the old version
-     called setActiveNotebookId from inside one. Undo also needs to know which
-     notebook was the stand-in, so it can take it away again instead of
-     leaving the user with two. */
+  /* DELETING THE LAST PROJECT USED TO CONJURE A REPLACEMENT.
+
+     This function minted a `freshNotebook()` stand-in whenever the last
+     notebook went, on the reasoning that the app is always the notebook
+     workspace and would otherwise have nowhere to render. From the user's
+     side that is not what it looked like. You delete everything, and one
+     project is always still there — a "My Project" you did not create, which
+     reappears the instant you delete it. It reads as a project that cannot be
+     deleted, because that is exactly what it behaves like.
+
+     The empty workspace is now a real state with its own screen, and a
+     notebook is created when one is first NEEDED — the first block, the first
+     dropped file, the first click on the empty canvas. See ensureNotebook.
+
+     That is better than a stand-in for a reason beyond tidiness: the stand-in
+     was a real document. It synced. It counted against quota. Deleting your
+     last project created a new row on the server, and the tombstone for the
+     one you deleted sat beside it. */
   function deleteNotebook(nbId) {
     const at = notebooks.findIndex(n => n.id === nbId)
     if (at < 0) return null
@@ -1753,18 +2297,14 @@ export default function AppPage() {
     for (const sh of doomed.sheets || []) graceAssetsOf(sh.blocks || [])
     const prevActiveId = activeNotebookId
     const remaining = notebooks.filter(n => n.id !== nbId)
-    const standIn = remaining.length === 0 ? freshNotebook() : null
 
-    setNotebooks(prev => {
-      const next = prev.filter(n => n.id !== nbId)
-      return next.length > 0 ? next : [standIn]
-    })
-    if (activeNotebookId === nbId) setActiveNotebookId(standIn ? standIn.id : remaining[0].id)
+    setNotebooks(prev => prev.filter(n => n.id !== nbId))
+    if (activeNotebookId === nbId) setActiveNotebookId(remaining[0]?.id || null)
 
     return () => {
       setNotebooks(prev => {
         if (prev.some(n => n.id === nbId)) return prev
-        const next = prev.filter(n => n.id !== standIn?.id)
+        const next = [...prev]
         next.splice(Math.min(at, next.length), 0, doomed)
         return next
       })
@@ -1786,7 +2326,7 @@ export default function AppPage() {
             setNativeDragImage(e, nb.name)
           }}
           onDragEnd={() => setSidebarItemDrag(null)}
-          style={{ padding: '8px 10px', borderRadius: 7, display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', background: 'transparent' }}
+          style={{ padding: '8px 10px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: 'transparent' }}
           onClick={() => {
             if (renamingNotebookId === nb.id) return
             setActiveNotebookId(nb.id)
@@ -1814,16 +2354,16 @@ export default function AppPage() {
             {folderId && (
               <button onClick={e => { e.stopPropagation(); removeFromFolder(nb.id, folderId) }}
                 title="Remove from folder"
-                style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3 }}
+                style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4 }}
                 onMouseEnter={e => e.currentTarget.style.color = accent}
-                onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-move-out" size={11} /></button>
+                onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-move-out" size={12} /></button>
             )}
             <button onClick={e => { e.stopPropagation(); const undo = deleteNotebook(nb.id); if (undo) toast(`"${nb.name}" deleted`, { undo }) }}
-              style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3 }}
+              style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4 }}
               onMouseEnter={e => e.currentTarget.style.color = red}
-              onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-delete" size={11} /></button>
+              onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-delete" size={12} /></button>
           </div>
-          <Icon name={isExpanded ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} style={{ color: text3, flexShrink: 0 }} />
+          <Icon name={isExpanded ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} style={{ color: text3, flexShrink: 0 }} />
         </div>
         {isExpanded && (
           <div style={{ marginLeft: 11, paddingLeft: 12, borderLeft: `1px solid ${border}` }}>
@@ -1835,7 +2375,7 @@ export default function AppPage() {
                   onClick={() => { if (!isRenaming) { setActiveNotebookId(nb.id); setNotebookActiveSheet(nb.id, sheet.id) } }}
                   onDoubleClick={e => { e.stopPropagation(); setRenamingSheetId(sheet.id); setRenamingSheetLabel(sheet.name) }}
                   title="Double-click to rename"
-                  style={{ padding: '6px 10px', borderRadius: 6, fontSize: 12, color: isActive ? accent : text3, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: isActive ? 600 : 400, background: isActive ? accentDim : 'transparent' }}
+                  style={{ padding: '6px 10px', borderRadius: 6, fontSize: 13, color: isActive ? accent : text3, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: isActive ? 600 : 400, background: isActive ? accentDim : 'transparent' }}
                   onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = raised }}
                   onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}>
                   {isRenaming ? (
@@ -1846,26 +2386,26 @@ export default function AppPage() {
                       onBlur={() => { renameNotebookSheet(nb.id, sheet.id, renamingSheetLabel || sheet.name); setRenamingSheetId(null) }}
                       onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
                       onClick={e => e.stopPropagation()}
-                      style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 11, outline: 'none', minWidth: 0 }}
+                      style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none', minWidth: 0 }}
                     />
                   ) : (
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
                   )}
-                  {isActive && !isRenaming && <Icon name="action-check" size={11} style={{ color: accentText }} />}
+                  {isActive && !isRenaming && <Icon name="action-check" size={12} style={{ color: accentText }} />}
                   {!isRenaming && nb.sheets.length > 1 && (
                     <button onClick={e => { e.stopPropagation(); const undo = deleteNotebookSheet(nb.id, sheet.id); if (undo) toast(`Sheet "${sheet.name}" deleted`, { undo }) }}
-                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0.35, flexShrink: 0 }}
+                      style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4, opacity: 0.35, flexShrink: 0 }}
                       onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
-                      onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0.35' }}><Icon name="action-delete" size={10} /></button>
+                      onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0.35' }}><Icon name="action-delete" size={12} /></button>
                   )}
                 </div>
               )
             })}
             <button onClick={e => { e.stopPropagation(); addNotebookSheet(nb.id) }}
-              style={{ padding: '3px 8px', border: 'none', background: 'none', color: text3, fontSize: 10, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}
+              style={{ padding: '4px 8px', border: 'none', background: 'none', color: text3, fontSize: 11, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}
               onMouseEnter={e => e.currentTarget.style.color = accent}
               onMouseLeave={e => e.currentTarget.style.color = text3}>
-              <Icon name="action-add" size={11} /> New Sheet
+              <Icon name="action-add" size={12} /> New Sheet
             </button>
           </div>
         )}
@@ -1890,7 +2430,7 @@ export default function AppPage() {
               onClick={() => addColumnsToNotebook(cols.map(col => ({ fileId: file.id, fileName: file.name, sheetName: sheet.name, col })))}
               title="Click to add, or drag onto the canvas"
               style={{ width: '100%', background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '4px 8px', fontSize: 11, color: accentText, cursor: 'grab', fontFamily: 'var(--ds-font-body)', fontWeight: 600, textAlign: 'left' }}>
-              <Icon name="action-add" size={11} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Whole table · {cols.length} columns
+              <Icon name="action-add" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Whole table · {cols.length} columns
             </button>
             <div style={{ fontSize: 9.5, color: text3, marginTop: 4, lineHeight: 1.35 }}>
               Drag a column for just that one · ⌘/Ctrl or Shift-click to pick several
@@ -1904,12 +2444,12 @@ export default function AppPage() {
               onDragStart={e => handleSidebarDragStart(e, file.id, file.name, sheet.name, col)}
               onClick={e => toggleSidebarSelect(e, col.id)}
               style={{ padding: '6px 8px 6px 22px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, background: isSelected ? accentDim : 'transparent', border: isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}>
-              <div style={{ width: 6, height: 6, borderRadius: 2, background: accent, flexShrink: 0 }} />
-              <span title={col.label} style={{ flex: 1, fontSize: 12, color: isSelected ? accent : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
-              <span style={{ fontSize: 9, color: text3 }}>{sheet.rows.length}</span>
+              <div style={{ width: 6, height: 6, borderRadius: 4, background: accent, flexShrink: 0 }} />
+              <span title={col.label} style={{ flex: 1, fontSize: 13, color: isSelected ? accent : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
+              <span style={{ fontSize: 11, color: text3 }}>{sheet.rows.length}</span>
               <div className="col-actions">
-                <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Hide column" aria-label="Hide column" onClick={e => { e.stopPropagation(); hideColumn(file.id, sheet.name, col.id) }}><Icon name="status-empty" size={11} /></button>
-                <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Delete column" aria-label="Delete column" onClick={e => { e.stopPropagation(); deleteColumn(file.id, sheet.name, col.id) }}><Icon name="action-delete" size={11} /></button>
+                <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4 }} title="Hide column" aria-label="Hide column" onClick={e => { e.stopPropagation(); hideColumn(file.id, sheet.name, col.id) }}><Icon name="status-empty" size={12} /></button>
+                <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4 }} title="Delete column" aria-label="Delete column" onClick={e => { e.stopPropagation(); deleteColumn(file.id, sheet.name, col.id) }}><Icon name="action-delete" size={12} /></button>
               </div>
             </div>
           )
@@ -1971,22 +2511,22 @@ export default function AppPage() {
               return next
             })
           }}
-          style={{ padding: '8px 10px', borderRadius: 7, fontSize: 13, color: text, cursor: 'grab', display: 'flex', alignItems: 'center', gap: 7, fontWeight: 600, background: dragOverFileId === file.id ? accentDim : undefined, border: dragOverFileId === file.id ? `1px solid ${accent}` : '1px solid transparent' }}>
+          style={{ padding: '8px 10px', borderRadius: 6, fontSize: 13, color: text, cursor: 'grab', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, background: dragOverFileId === file.id ? accentDim : undefined, border: dragOverFileId === file.id ? `1px solid ${accent}` : '1px solid transparent' }}>
           <span style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
           <button onClick={e => { e.stopPropagation(); const undo = deleteFile(file.id); if (undo) toast('File deleted', { undo }) }}
-            style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 10, padding: '1px 3px', borderRadius: 3, opacity: 0, flexShrink: 0 }}
+            style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4, opacity: 0, flexShrink: 0 }}
             className="col-actions"
             onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
-            onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0' }}><Icon name="action-delete" size={11} /></button>
+            onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0' }}><Icon name="action-delete" size={12} /></button>
 
           {folderId && (
             <button onClick={e => { e.stopPropagation(); removeFromFolder(file.id, folderId) }}
               title="Remove from folder"
-              style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 9, padding: '1px 3px', borderRadius: 3, opacity: 0 }}
+              style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4, opacity: 0 }}
               onMouseEnter={e => e.currentTarget.style.opacity = '1'}
-              onMouseLeave={e => e.currentTarget.style.opacity = '0'}><Icon name="action-move-out" size={10} /></button>
+              onMouseLeave={e => e.currentTarget.style.opacity = '0'}><Icon name="action-move-out" size={12} /></button>
           )}
-          <Icon name={expandedFiles.has(file.id) ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} style={{ color: text3, flexShrink: 0 }} />
+          <Icon name={expandedFiles.has(file.id) ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} style={{ color: text3, flexShrink: 0 }} />
         </div>
         {expandedFiles.has(file.id) && file.sheets.length > 0 && (() => {
           const selectedHere = selectedColInfos().filter(c => c.fileId === file.id)
@@ -1994,8 +2534,8 @@ export default function AppPage() {
             <>
               {selectedSidebarCols.length > 1 && selectedHere.length > 0 && (
                 <div style={{ padding: '4px 8px 6px 24px' }}>
-                  <button onClick={() => addColumnsToNotebook(selectedColInfos())} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accentText, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontWeight: 600 }}>
-                    <Icon name="action-add" size={11} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Add {selectedSidebarCols.length} to notebook
+                  <button onClick={() => addColumnsToNotebook(selectedColInfos())} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 6, padding: '4px 10px', fontSize: 12, color: accentText, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontWeight: 600 }}>
+                    <Icon name="action-add" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Add {selectedSidebarCols.length} to notebook
                   </button>
                 </div>
               )}
@@ -2095,15 +2635,15 @@ export default function AppPage() {
           style={{
             position: 'fixed', top: 14, left: '50%', transform: 'translateX(-50%)',
             zIndex: Z.toast, maxWidth: 'min(560px, calc(100vw - 32px))',
-            display: 'flex', alignItems: 'flex-start', gap: 9,
+            display: 'flex', alignItems: 'flex-start', gap: 10,
             padding: '10px 14px', borderRadius: 'var(--ds-radius-md)',
             background: saveStale ? 'var(--ds-accent-dim)' : 'var(--ds-amber-bg)',
             border: `1px solid ${saveStale ? accent : amber}`,
             color: saveStale ? accentText : amber,
             boxShadow: 'var(--ds-shadow-lg)',
-            fontFamily: 'var(--ds-font-body)', fontSize: 12, lineHeight: 1.5,
+            fontFamily: 'var(--ds-font-body)', fontSize: 13, lineHeight: 1.5,
           }}>
-          <Icon name="status-warning" size={15} style={{ marginTop: 1, flexShrink: 0 }} />
+          <Icon name="status-warning" size={16} style={{ marginTop: 1, flexShrink: 0 }} />
           <span>
             <b>{saveStale ? 'Changed in another tab.' : 'Not saving.'}</b>{' '}
             {saveStale
@@ -2119,6 +2659,60 @@ export default function AppPage() {
         </div>
       )}
 
+      {/* Bottom right, fixed, and usually not there at all. Rendered here
+          rather than inside the top-right island because it is not chrome you
+          operate — it is a status light, and it belongs out of the way of the
+          controls. Outside the canvas transform, so `position: fixed` needs no
+          portal (see lib/canvasgeom.js for when it would). */}
+      {/* ── PEOPLE + THE FLOATING THREAD ──────────────────────────────────
+          The panel portals itself; this is just where it is mounted from.
+
+          THE THREAD BEHIND A PERSON IS A REAL CHAT BLOCK, marked `floating` so
+          NotebookCanvas does not draw it. That is what lets the window be a
+          window while `chat_messages` and every grant check still key on a
+          block id that actually exists — see the note on the `floating` filter
+          in NotebookCanvas. It is created lazily, on the first click, so a
+          workspace where nobody has ever opened a conversation carries none. */}
+      <PeoplePanel
+        open={peopleOpen}
+        people={peopleOnSheet}
+        colors={colors}
+        activePersonId={activePersonId}
+        onClose={() => { setPeopleOpen(false); setActivePersonId(null) }}
+        onPickPerson={p => {
+          if (!p) { setActivePersonId(null); return }
+          ensurePersonThread(p)
+          setActivePersonId(p.id)
+        }}
+        onShareBlockWith={(p, blockId) => {
+          const threadId = ensurePersonThread(p)
+          if (threadId) handleChatShareBlock(threadId, blockId)
+          setActivePersonId(p.id)
+        }}>
+        {activePersonId && personThreadId(activePersonId) && (
+          <ChatBlock
+            block={{ id: personThreadId(activePersonId), w: 320, h: 380 }}
+            colors={colors}
+            dark={dark}
+            /* The SAME three network calls the canvas's chat blocks use — a
+               floating thread is an ordinary chat block that is not drawn, so
+               it must not get a parallel write path that could diverge. */
+            onSend={body => postMessage({ blockId: personThreadId(activePersonId), body })}
+            onEdit={(id, body) => editMessage(id, personThreadId(activePersonId), body)}
+            onUnsend={id => unsendMessage(id, personThreadId(activePersonId))}
+            refBlock={sharedBlockFor}
+            refLabel={refId => sharedBlockFor(refId)?.name || null}
+          />
+        )}
+      </PeoplePanel>
+
+      <SyncChip
+        status={syncStatus}
+        colors={colors}
+        dark={dark}
+        onRetry={() => syncRef.current?.flush()}
+      />
+
       {/* The way back. It has to exist and it has to be obvious: a sidebar
           that hides with no visible handle is a sidebar someone has lost.
           Sits where the panel's own corner was, so the eye is already there. */}
@@ -2127,14 +2721,21 @@ export default function AppPage() {
           title="Show sidebar"
           aria-label="Show sidebar"
           style={{
-            position: 'absolute', top: 22, left: 18, zIndex: Z.chromeTop,
-            display: 'flex', alignItems: 'center', gap: 7,
-            padding: '8px 11px', borderRadius: 10,
+            /* Sized and aligned as an ISLAND, not as a button. It sits in the
+               same horizontal band as the top row, so 46/12/top-16 are copied
+               from there rather than chosen — anything else reads as a stray
+               control that happens to be nearby. SIDEBAR_HANDLE_RIGHT in
+               NotebookCanvas.js is derived from this geometry; move one and
+               the other has to move. */
+            position: 'absolute', top: 16, left: 18, zIndex: Z.chromeTop,
+            height: 46, boxSizing: 'border-box',
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '0 12px', borderRadius: 12,
             background: `${surface}ee`,
             backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
             border: `1px solid ${border}`,
             boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
-            color: text2, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontSize: 12,
+            color: text2, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontSize: 13,
             animation: 'dsToastIn 0.18s ease',
           }}
           onMouseEnter={e => { e.currentTarget.style.color = accent; e.currentTarget.style.borderColor = accent }}
@@ -2173,7 +2774,7 @@ export default function AppPage() {
           }}>
             <Icon name="action-add" size={20} style={{ color: accentText }} />
             <div style={{ fontSize: 14, fontWeight: 600, color: text }}>Drop to import</div>
-            <div style={{ fontSize: 11, color: text2, textAlign: 'center', maxWidth: 260, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, color: text2, textAlign: 'center', maxWidth: 260, lineHeight: 1.5 }}>
               Spreadsheets, PDFs and images. Dropped on the canvas they land where you let go.
             </div>
           </div>
@@ -2191,7 +2792,7 @@ export default function AppPage() {
             highlighted, so reopening lands you somewhere you did not leave.
             pointerEvents:none is what stops the hidden panel from swallowing
             clicks meant for the canvas underneath it. */}
-        <div data-kbd-zone aria-hidden={sidebarCollapsed || undefined} style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: Z.chrome, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 14, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)',
+        <div data-kbd-zone aria-hidden={sidebarCollapsed || undefined} style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: Z.chrome, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 12, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)',
           transform: sidebarCollapsed ? 'translateX(calc(-100% - 24px))' : 'none',
           opacity: sidebarCollapsed ? 0 : 1,
           pointerEvents: sidebarCollapsed ? 'none' : 'auto',
@@ -2199,7 +2800,7 @@ export default function AppPage() {
         }}>
           <div style={{ padding: '12px 12px 6px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <Icon name="app-logo" size={17} style={{ color: accentText, flexShrink: 0 }} />
+              <Icon name="app-logo" size={16} style={{ color: accentText, flexShrink: 0 }} />
               <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700, color: text, flex: 1 }}>DataStudio</span>
               <button onClick={() => setPref('sidebarCollapsed', true)}
                 title="Hide sidebar"
@@ -2210,7 +2811,7 @@ export default function AppPage() {
                 <DoubleChevron size={12} dir="left" />
               </button>
             </div>
-            <button className="import-btn" onClick={handleImportClick} disabled={importing} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 7, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, cursor: importing ? 'default' : 'pointer', opacity: importing ? 0.65 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <button className="import-btn" onClick={handleImportClick} disabled={importing} style={{ width: '100%', padding: '9px 0', background: accent, color: '#fff', border: 'none', borderRadius: 6, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, cursor: importing ? 'default' : 'pointer', opacity: importing ? 0.65 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               {importing
                 ? <><Icon name="status-spinner" size={14} /> Importing…</>
                 : <><Icon name="action-import" size={14} /> Import File</>}
@@ -2218,12 +2819,12 @@ export default function AppPage() {
 
             {/* Failures are shown, not swallowed. */}
             {importError && (
-              <div role="alert" style={{ marginTop: 7, padding: '7px 9px', borderRadius: 6, background: 'var(--ds-red-bg)', border: `1px solid ${red}`, color: red, fontSize: 10.5, lineHeight: 1.45 }}>
+              <div role="alert" style={{ marginTop: 7, padding: '8px 10px', borderRadius: 6, background: 'var(--ds-red-bg)', border: `1px solid ${red}`, color: red, fontSize: 11, lineHeight: 1.45 }}>
                 <span style={{ display: 'flex', gap: 6 }}>
-                  <Icon name="status-error" size={13} style={{ marginTop: 1 }} />
+                  <Icon name="status-error" size={14} style={{ marginTop: 1 }} />
                   <span>{importError}</span>
                 </span>
-                <button onClick={() => setImportError(null)} style={{ display: 'block', marginTop: 4, background: 'none', border: 'none', color: red, opacity: 0.75, fontSize: 10, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)', textDecoration: 'underline' }}>Dismiss</button>
+                <button onClick={() => setImportError(null)} style={{ display: 'block', marginTop: 4, background: 'none', border: 'none', color: red, opacity: 0.75, fontSize: 11, cursor: 'pointer', padding: 0, fontFamily: 'var(--ds-font-body)', textDecoration: 'underline' }}>Dismiss</button>
               </div>
             )}
             {/* The "Not saving" banner used to live HERE, inside a panel that a
@@ -2241,18 +2842,18 @@ export default function AppPage() {
 
                 It is now rendered at the top of the shell, outside anything
                 that can hide it. */}
-            <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
               <button onClick={createFolder}
-                style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 7, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
+                style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
-                <Icon name="nav-folder" size={13} /> Folder
+                <Icon name="nav-folder" size={14} /> Folder
               </button>
               <button onClick={createNotebook}
-                style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 7, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}
+                style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
-                <Icon name="nav-notebook" size={13} /> Project
+                <Icon name="nav-notebook" size={14} /> Project
               </button>
             </div>
           </div>
@@ -2294,11 +2895,11 @@ export default function AppPage() {
                     if (sidebarItemDrag) { moveToFolder(sidebarItemDrag.itemId, folder.id); setSidebarItemDrag(null) }
                   }}>
                   <div className="folder-row"
-                    style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 6px', borderRadius: 6, border: isDragOver ? `1px solid ${accent}` : '1px solid transparent', background: isDragOver ? accentDim : 'transparent' }}>
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 6px', borderRadius: 6, border: isDragOver ? `1px solid ${accent}` : '1px solid transparent', background: isDragOver ? accentDim : 'transparent' }}>
                     <span onClick={() => toggleFolder(folder.id)} style={{ display: 'flex', color: text3, cursor: 'pointer', flexShrink: 0 }}>
-                      <Icon name={folder.collapsed ? 'nav-chevron-right' : 'nav-chevron-down'} size={11} />
+                      <Icon name={folder.collapsed ? 'nav-chevron-right' : 'nav-chevron-down'} size={12} />
                     </span>
-                    <Icon name={folder.collapsed ? 'nav-folder' : 'nav-folder-open'} size={13} style={{ color: text3, flexShrink: 0 }} />
+                    <Icon name={folder.collapsed ? 'nav-folder' : 'nav-folder-open'} size={14} style={{ color: text3, flexShrink: 0 }} />
                     
                     {renamingFolderId === folder.id ? (
                       <input autoFocus value={renamingFolderLabel}
@@ -2306,19 +2907,19 @@ export default function AppPage() {
                         onBlur={() => commitFolderRename(folder.id)}
                         onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
                         onClick={e => e.stopPropagation()}
-                        style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 600, outline: 'none', minWidth: 0 }} />
+                        style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, outline: 'none', minWidth: 0 }} />
                     ) : (
-                      <span onClick={() => toggleFolder(folder.id)} style={{ flex: 1, fontSize: 12, fontWeight: 600, color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}>{folder.name}</span>
+                      <span onClick={() => toggleFolder(folder.id)} style={{ flex: 1, fontSize: 13, fontWeight: 600, color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}>{folder.name}</span>
                     )}
                     <div className="folder-actions" style={{ opacity: 0, display: 'flex', gap: 2, flexShrink: 0 }}>
                       <button onClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); setRenamingFolderLabel(folder.name) }}
-                        style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '1px 3px', borderRadius: 3, lineHeight: 1 }}
+                        style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 12, padding: '2px 4px', borderRadius: 4, lineHeight: 1 }}
                         onMouseEnter={e => e.currentTarget.style.color = accent}
-                        onMouseLeave={e => e.currentTarget.style.color = text3} aria-label="Rename folder"><Icon name="action-rename" size={11} /></button>
+                        onMouseLeave={e => e.currentTarget.style.color = text3} aria-label="Rename folder"><Icon name="action-rename" size={12} /></button>
                       <button onClick={e => { e.stopPropagation(); deleteFolder(folder.id) }}
-                        style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '1px 3px', borderRadius: 3, lineHeight: 1 }}
+                        style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 12, padding: '2px 4px', borderRadius: 4, lineHeight: 1 }}
                         onMouseEnter={e => e.currentTarget.style.color = red}
-                        onMouseLeave={e => e.currentTarget.style.color = text3} aria-label="Delete folder"><Icon name="action-delete" size={11} /></button>
+                        onMouseLeave={e => e.currentTarget.style.color = text3} aria-label="Delete folder"><Icon name="action-delete" size={12} /></button>
                     </div>
                   </div>
                   {!folder.collapsed && (
@@ -2354,16 +2955,16 @@ export default function AppPage() {
                           display: 'flex', alignItems: 'center', gap: 6,
                           margin: '2px 0 4px',
                           padding: anyDrag ? '9px 8px' : '5px 8px',
-                          borderRadius: 7,
+                          borderRadius: 6,
                           border: `1px ${anyDrag ? 'solid' : 'dashed'} ${isDragOver ? accent : anyDrag ? border : 'transparent'}`,
                           background: isDragOver ? accentDim : 'transparent',
                           color: isDragOver ? accent : text3,
-                          fontSize: 11,
+                          fontSize: 12,
                           opacity: anyDrag ? 1 : 0.7,
                           pointerEvents: 'none',
                           transition: 'padding 0.14s ease, opacity 0.14s ease, background 0.14s ease, border-color 0.14s ease, color 0.14s ease',
                         }}>
-                          <Icon name="action-add" size={11} style={{ flexShrink: 0 }} />
+                          <Icon name="action-add" size={12} style={{ flexShrink: 0 }} />
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {isDragOver ? (fileDragActive ? 'Drop to file here' : 'Drop to add') : 'Drag files or projects here'}
                           </span>
@@ -2390,6 +2991,90 @@ export default function AppPage() {
 
             {notebooks.filter(n => !folders.some(folder => folder.itemIds.includes(n.id))).map(nb => renderNotebookInSidebar(nb, null))}
 
+            {/* SHARED WITH ME.
+                Below your own work and visually quieter, because it is not
+                yours: somebody else can revoke any of it at any moment, and
+                mixing it into the main list makes a project you might lose
+                look exactly like one you cannot.
+
+                Rendered only when non-empty. An always-present empty section
+                claims "nothing is shared with you", which is a different and
+                stronger statement than "we have not heard about any", and with
+                no network the second is the only honest one. */}
+            {sharedWithMe.length > 0 && (
+              <div style={{ marginTop: 14, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                <div style={{
+                  padding: '0 10px 6px', fontSize: 11, letterSpacing: '0.06em',
+                  textTransform: 'uppercase', color: text3, fontWeight: 600,
+                }}>Shared with me</div>
+                {sharedWithMe.map(row => {
+                  const nb = notebooks.find(n => n.id === row.docId)
+                  const whole = row.levels.has(LEVEL_PROJECT)
+                  const label = nb?.name || (whole ? 'A shared project' : 'Shared with you')
+                  const detail = whole
+                    ? 'whole project'
+                    : row.sheets.length === 1
+                      ? (sheetNameMap[row.sheets[0]] || 'one sheet')
+                      : row.sheets.length > 1
+                        ? `${row.sheets.length} sheets`
+                        : 'one block'
+                  return (
+                    <div key={row.docId}
+                      onClick={() => { if (nb) setActiveNotebookId(nb.id) }}
+                      style={{
+                        padding: '8px 10px', borderRadius: 6, display: 'flex',
+                        alignItems: 'center', gap: 8, cursor: nb ? 'pointer' : 'default',
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = raised}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                      <Icon name="share-link" size={12} style={{ color: text3, flexShrink: 0, alignSelf: 'flex-start', marginTop: 2 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            flex: 1, fontSize: 13, color: text2, overflow: 'hidden',
+                            textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>{label}</span>
+                          <span style={{ fontSize: 11, color: text3, flexShrink: 0 }}>{detail}</span>
+                        </div>
+                        {/* "Shared from {name}".
+
+                            .ds-chip verbatim from globals.css — accent-dim
+                            ground, accent text, mono, small pill: the same chip
+                            already used for counts and mode indicators, so a
+                            reader recognises the shape before reading it.
+
+                            NOT PERSON-HUED, and that is a judgment call worth
+                            stating. Matching this to personHue(sender) would be
+                            consistent with the presence dot, but a sidebar
+                            holding several shared projects would then be a
+                            column of differently-coloured chips, which reads as
+                            noisy list decoration rather than one recognisable
+                            "this came from a share" category. The NAME inside
+                            carries the identity; the chip colour carries the
+                            category. Reversible if it reads wrong once there
+                            are four of these stacked up.
+
+                            Its own line rather than squeezed onto the first: at
+                            sidebar width the project name, the scope detail and
+                            a sender chip cannot share a row without the name
+                            being the one that gets truncated, and the name is
+                            what people scan for. */}
+                        {row.from && (
+                          <div style={{ marginTop: 3 }}>
+                            <span className="ds-chip" style={{ maxWidth: '100%', overflow: 'hidden' }}>
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                Shared from {knownPerson(row.from) || 'someone'}
+                              </span>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
             {/* `hydrated &&` matters. notebooks starts as [] and fills after an
                 async IndexedDB read, so a user with a large workspace saw "No
                 files yet" for a beat before their work appeared. Showing an
@@ -2397,26 +3082,24 @@ export default function AppPage() {
                 for the length of that frame the app is telling someone their
                 projects are gone. */}
             {hydrated && files.length === 0 && notebooks.length <= 1 && folders.length === 0 && (
-              <div style={{ margin: '16px 6px', padding: '13px 12px', borderRadius: 8, border: `1px dashed ${border}`, color: text3, fontSize: 12, lineHeight: 1.6 }}>
+              <div style={{ margin: '16px 6px', padding: '14px 12px', borderRadius: 8, border: `1px dashed ${border}`, color: text3, fontSize: 13, lineHeight: 1.6 }}>
                 <div style={{ textAlign: 'center', color: text2, fontWeight: 600, marginBottom: 10 }}>No files yet</div>
-                {/* Only the verified formats are named. The old copy claimed
-                    just ".xlsx .xls .csv" and undersold the importer; the fix
-                    for that briefly overshot into listing everything SheetJS
-                    can parse, which promised support for 1980s formats nobody
-                    has. This is the tested middle. */}
-                {IMPORT_FORMATS.map(({ group, exts }) => (
-                  <div key={group} style={{ display: 'flex', gap: 7, marginBottom: 5, alignItems: 'baseline' }}>
-                    <span style={{ flexShrink: 0, width: 54, fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase', letterSpacing: 0.5, color: text3, opacity: 0.75 }}>
-                      {group}
-                    </span>
-                    <span style={{ flex: 1, fontSize: 10.5, color: text2, lineHeight: 1.55, wordBreak: 'break-word' }}>
-                      {exts.join(' ')}
-                    </span>
-                  </div>
-                ))}
-                <div title={`Also accepted: ${ALSO_ACCEPTED.join(' ')}`}
-                  style={{ marginTop: 8, paddingTop: 7, borderTop: `1px solid ${border}`, fontSize: 10, color: text3, textAlign: 'center' }}>
-                  <Icon name="action-add" size={10} style={{ display: 'inline-block', verticalAlign: '-1px', marginRight: 2 }} />{ALSO_ACCEPTED.length} more accepted
+                {/* THE FORMAT LIST IS GONE, and it is worth saying why rather
+                    than leaving a gap where it was.
+
+                    It listed sixteen extensions across four groups. For the
+                    person this empty state exists for — someone who has just
+                    opened the app and has nothing in it — ".xlsm .xlsb .wk1"
+                    answers a question they have not asked. It also could not
+                    be complete: images, PDFs, markdown and every attachment
+                    type are accepted too, so the list simultaneously overwhelmed
+                    and under-promised.
+
+                    "Drag a file in" is the whole instruction. The importer
+                    accepts essentially anything and says so honestly in its
+                    error message when it cannot. */}
+                <div style={{ textAlign: 'center', fontSize: 12, color: text3, lineHeight: 1.6 }}>
+                  Drag a spreadsheet, PDF or image here,<br />or start typing on the canvas.
                 </div>
               </div>
             )}
@@ -2424,14 +3107,14 @@ export default function AppPage() {
 
           {allHiddenCols.length > 0 && (
             <div style={{ borderTop: `1px solid ${border}`, padding: '8px 10px' }}>
-              <button onClick={() => setShowHidden(!showHidden)} style={{ background: 'none', border: 'none', cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontFamily: 'var(--ds-font-body)', fontSize: 11, color: text3 }}>
-                <Icon name={showHidden ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} /> Hidden ({allHiddenCols.length})
+              <button onClick={() => setShowHidden(!showHidden)} style={{ background: 'none', border: 'none', cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontFamily: 'var(--ds-font-body)', fontSize: 12, color: text3 }}>
+                <Icon name={showHidden ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} /> Hidden ({allHiddenCols.length})
               </button>
               {showHidden && allHiddenCols.map(({ fileId, sheetName, col }) => (
-                <div key={col.id} style={{ padding: '4px 4px 4px 16px', display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: 2, background: border, flexShrink: 0 }} />
-                  <span title={col.label} style={{ flex: 1, fontSize: 11, color: text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through' }}>{col.label}</span>
-                  <button onClick={() => restoreColumn(fileId, sheetName, col.id)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', color: accentText, fontSize: 11, padding: '2px 6px', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center' }} title="Restore column" aria-label="Restore column"><Icon name="action-move-out" size={11} /></button>
+                <div key={col.id} style={{ padding: '4px 4px 4px 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: 4, background: border, flexShrink: 0 }} />
+                  <span title={col.label} style={{ flex: 1, fontSize: 12, color: text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through' }}>{col.label}</span>
+                  <button onClick={() => restoreColumn(fileId, sheetName, col.id)} style={{ background: 'none', border: `1px solid ${border}`, borderRadius: 4, cursor: 'pointer', color: accentText, fontSize: 12, padding: '2px 6px', fontFamily: 'var(--ds-font-body)', display: 'flex', alignItems: 'center' }} title="Restore column" aria-label="Restore column"><Icon name="action-move-out" size={12} /></button>
                 </div>
               ))}
             </div>
@@ -2442,9 +3125,25 @@ export default function AppPage() {
             {usage && usage.quota > 0 && (
               <div title={`${formatBytes(usage.usage)} used of about ${formatBytes(usage.quota)} available to this site`}
                 style={{ marginBottom: 8 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 9.5, color: text3, fontFamily: 'var(--ds-font-mono)', marginBottom: 3 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Icon name="storage-drive" size={11} />
+                {/* SIZES, AFTER "the storage icon is almost invisible".
+
+                    It was an 11px glyph next to 9.5px uppercase mono in
+                    text3 — the dimmest colour in the palette — over a 3px bar.
+                    Legible in a screenshot at 200%, not on a laptop at arm's
+                    length.
+
+                    The fix is deliberately asymmetric. The ICON goes to 15px
+                    and the BAR to 5px, because both are shape rather than
+                    language and read at a glance. The LABEL stays 9.5px mono
+                    in text3 and the number moves only one step to text2. So
+                    the row gains legibility without gaining loudness — which
+                    is the whole brief, since the alternative reading of
+                    "make it bigger" is "make storage a headline", and a tool
+                    that keeps drawing attention to its own plumbing feels
+                    fragile. */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: text3, fontFamily: 'var(--ds-font-mono)', marginBottom: 4 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Icon name="storage-drive" size={16} />
                     STORAGE
                     {/* THE "AT RISK" BADGE IS GONE, DELIBERATELY.
 
@@ -2465,11 +3164,11 @@ export default function AppPage() {
                         The meter itself stays: it is the thing that becomes a
                         plan limit. */}
                   </span>
-                  <span>{formatBytes(usage.usage)}</span>
+                  <span style={{ color: text2 }}>{formatBytes(usage.usage)}</span>
                 </div>
-                <div style={{ height: 3, borderRadius: 2, background: raised, overflow: 'hidden' }}>
+                <div style={{ height: 5, borderRadius: 4, background: raised, overflow: 'hidden' }}>
                   <div style={{
-                    height: '100%', borderRadius: 2,
+                    height: '100%', borderRadius: 4,
                     width: `${Math.min(100, Math.max(1, usage.pct * 100))}%`,
                     background: usage.pct > 0.9 ? red : usage.pct > 0.6 ? amber : accent,
                     transition: 'width .4s ease, background .3s ease',
@@ -2506,7 +3205,7 @@ export default function AppPage() {
           <div data-kbd-zone style={{ position: 'relative' }}>
             <button onClick={() => setBuilderOpen(o => !o)} aria-label="Builder" aria-expanded={builderOpen}
               data-ds-builder-button
-              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${builderOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 600, color: builderOpen ? accent : text2, cursor: 'pointer' }}>
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${builderOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 13, color: builderOpen ? accent : text2, cursor: 'pointer' }}>
               <Icon name="action-duplicate" size={14} />
               Builder
             </button>
@@ -2524,12 +3223,47 @@ export default function AppPage() {
 
           {/* ── Settings island ──
               Was a "Free plan" label next to an emoji avatar: two pieces of
-              chrome that did nothing and implied an account system that doesn't
-              exist. Replaced with the one thing that belongs in the corner of a
-              local-first app — where your data lives and what state it's in. */}
+              chrome that did nothing and implied an account system that didn't
+              exist yet. The account system exists now and has its own button to
+              the RIGHT of this one; what stayed here is the rest — appearance,
+              canvas, keyboard, and where your data lives.
+
+              THE THREE READ AS ONE SET, AND THE ORDER IS THE ARGUMENT.
+
+              Builder · Settings · Account, left to right, which is how often
+              you touch them: the builder is a working tool, settings are
+              occasional, the account is rare. Account was briefly in the
+              middle — a leftover from when it was a circle and needed to sit
+              beside something to be recognised — and putting the least-used
+              control between the two most-used ones costs a moment of aiming
+              every single time.
+
+              They share this exact button: same padding, radius, blur,
+              type size, weight and open-state accent. Builder used to be
+              600 weight while the other two were normal, which at 12px reads
+              as one real button and two labels rather than three of a kind. */}
+          {/* ── People ──
+              THE ENTRY POINT SHARING NEVER HAD.
+
+              The header note above says SharePanel is built and unwired because
+              "where sharing is triggered from is an open question". This is the
+              answer: sharing and chat are the same list, because they are the
+              same decision — which colleague, and what do they get to see.
+              Clicking a person shares this sheet with them if they do not have
+              it and opens the conversation; dragging a block onto a row shares
+              that specific block and drops a reference card into the thread.
+
+              Same button shape as Settings beside it, deliberately — three of a
+              kind rather than one real button and two labels. */}
+          <button onClick={() => setPeopleOpen(o => !o)} aria-label="People" aria-expanded={peopleOpen}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${peopleOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 13, color: peopleOpen ? accent : text2, cursor: 'pointer' }}>
+            <Icon name="share-people" size={14} />
+            People
+          </button>
+
           <div ref={settingsRef} data-kbd-zone style={{ position: 'relative' }}>
             <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen}
-              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${settingsOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 12, color: settingsOpen ? accent : text2, cursor: 'pointer' }}>
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${settingsOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 13, color: settingsOpen ? accent : text2, cursor: 'pointer' }}>
               <Icon name="settings-gear" size={14} />
               Settings
             </button>
@@ -2540,14 +3274,69 @@ export default function AppPage() {
                 prefs={prefs} setPref={setPref}
                 usage={usage} persisted={persisted} formatBytes={formatBytes}
                 onDeleteAllData={deleteAllLocalData}
-                onSignOut={signOutAndMaybeWipe}
+                syncStatus={syncStatus}
+                account={account}
               />
             )}
           </div>
+
+          {/* ── Account ──
+              A circle among two labelled buttons: the account is a person, not
+              a verb, and the shape says so faster than a third word would. */}
+          <AccountButton
+            account={account}
+            colors={colors}
+            dark={dark}
+            onChanged={loadAccount}
+            onSignOut={signOutAndMaybeWipe}
+          />
         </div>
 
-        {/* ── Main: always the notebook workspace ── */}
+        {/* ── Main: the notebook workspace, or the empty one ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* THE STATE THAT REPLACED THE UNDELETABLE PROJECT.
+
+              This branch used to render nothing at all, which is why the app
+              kept a phantom notebook alive: with no notebook there was no
+              canvas, and with no canvas the main area was a void. So deleting
+              your last project silently created another one, and a first run
+              began with a "My Project" nobody made.
+
+              `hydrated &&` for the same reason the sidebar's empty state has
+              it — notebooks starts as [] and fills after an async IndexedDB
+              read, and telling somebody their work is gone for one frame is
+              worse than showing nothing for one frame. */}
+          {hydrated && !(activeNotebookId && notebooks.find(n => n.id === activeNotebookId)) && (
+            <div style={{
+              flex: 1, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 14, padding: 40,
+            }}>
+              <div style={{ fontFamily: 'var(--ds-font-display)', fontSize: 20, color: text2 }}>
+                {notebooks.length > 0 ? 'No project open' : 'Nothing here yet'}
+              </div>
+              <div style={{
+                fontFamily: 'var(--ds-font-body)', fontSize: 13, color: text3,
+                lineHeight: 1.7, textAlign: 'center', maxWidth: 380,
+              }}>
+                {notebooks.length > 0
+                  ? 'Pick one from the sidebar, or start a new one.'
+                  : 'Start a project, or drag a spreadsheet, PDF or image anywhere on this page — a project is created for it.'}
+              </div>
+              <button onClick={createNotebook}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginTop: 4,
+                  padding: '10px 16px', borderRadius: 10,
+                  background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+                  border: `1px solid ${border}`,
+                  boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
+                  fontFamily: 'var(--ds-font-body)', fontSize: 13, color: text2, cursor: 'pointer',
+                }}>
+                <Icon name="action-plus" size={14} />
+                New project
+              </button>
+            </div>
+          )}
+
           {activeNotebookId && notebooks.find(n => n.id === activeNotebookId) && (
             <NotebookCanvas
               nb={notebooks.find(n => n.id === activeNotebookId)}
@@ -2559,6 +3348,58 @@ export default function AppPage() {
               revealRequest={revealRequest}
               onRevealHandled={() => setRevealRequest(null)}
               onAddBlock={(type, x, y, h1, r1, w, h, patch) => addNotebookBlock(activeNotebookId, type, x, y, h1, r1, w, h, patch)}
+              onChatSend={(blockId, body) => postMessage({ blockId, body })}
+              onChatEdit={(id, blockId, body) => editMessage(id, blockId, body)}
+              onChatUnsend={(id, blockId) => unsendMessage(id, blockId)}
+              onChatShareBlock={handleChatShareBlock}
+              /* THE ONLY PATH from a shared block's id to its contents.
+
+                 lib/shares.js's fetchSharedBlocks has always fetched these;
+                 lib/sync.js now keeps them in lib/sharing.js's store instead of
+                 discarding them. This layer is where that store may be read —
+                 the canvas and everything under it must stay free of the
+                 network half, which `npm run check:tree` enforces. */
+              onResolveSharedBlock={sharedBlockFor}
+              /* Document export. Here rather than in the canvas because
+                 downloading is an app-level concern — the same reason every
+                 other export goes through this layer — and because a real
+                 .docx needs lib/zip.js, which the render tree must not import. */
+              onExportDocument={(block, what) => {
+                try {
+                  if (what === 'save') {
+                    /* Autosave already owns persistence; the Quick Access Save
+                       button exists because Word's does and people reach for it.
+                       Flushing rather than pretending it did nothing is the
+                       honest response to a press. */
+                    debouncedSaveRef.current?.flush?.()
+                    toast('Saved')
+                    return
+                  }
+                  if (what === 'pdf') { documentToPdf(block); return }
+                  const { blob, filename, warnings } = documentToDocx(block)
+                  download(blob, filename)
+                  /* Said out loud. A table that came across as prose looks like
+                     it worked, which is the worst kind of export bug. */
+                  if (warnings.length) toast(warnings[0], { tone: 'warn' })
+                } catch (err) {
+                  toast(err?.message || 'That export could not be produced.', { tone: 'warn' })
+                }
+              }}
+              /* Dragging a block out of the canvas and onto a row in the People
+                 panel. The canvas hit-tests the row on release (it has to —
+                 that panel is portalled outside its coordinate space) and hands
+                 back the row's id; the share itself is the same
+                 handleChatShareBlock the in-canvas chat drop uses, so there is
+                 one code path for "this block, into that thread". */
+              onShareBlockWithPerson={(personId, blockId) => {
+                const person = peopleOnSheet.find(p => p.id === personId)
+                if (!person) return
+                const threadId = ensurePersonThread(person)
+                if (!threadId) return
+                handleChatShareBlock(threadId, blockId)
+                setPeopleOpen(true)
+                setActivePersonId(person.id)
+              }}
               onAddConnection={(conn) => addNotebookConnection(activeNotebookId, conn)}
               onDeleteConnection={(connId) => deleteNotebookConnection(activeNotebookId, connId)}
               onUpdateConnection={(connId, patch) => updateNotebookConnection(activeNotebookId, connId, patch)}
@@ -2571,7 +3412,7 @@ export default function AppPage() {
               onRenameNotebook={(name) => renameNotebook(activeNotebookId, name)}
               onRenameSheet={(sheetId, name) => renameNotebookSheet(activeNotebookId, sheetId, name)}
               onOpenCrosscheck={() => setShowCCWizard(true)}
-              onDropFiles={(list, x, y) => importFiles(list, { at: { x, y } })}
+              onDropFiles={(list, x, y, extra) => importFiles(list, { at: { x, y }, ...extra })}
               onDropColumn={(x, y) => {
                 const d = dragData.current
                 if (!d || d.type !== 'sidebar') return

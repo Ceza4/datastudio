@@ -7,6 +7,7 @@ import {
   resolveEvents, bucketByDay, agendaGroups,
   monthTitle, weekTitle, dayKey, isToday, MONTH_NAMES,
   msUntilNextLocalMidnight,
+  sourceHue, sourceKey, isSourceHidden,
 } from '../../lib/calendar'
 
 /*
@@ -81,15 +82,77 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
   const go = n => setCursor(c => (view === 'month' ? addMonths(c, n) : addDays(c, n * 7)))
   const today = () => setCursor(new Date())
 
+  /* ── SOURCE CALENDARS, for the sidebar ──────────────────────────────────
+     The SAME `block.sources` array the rail configures. Phase 1 does not invent
+     a data shape for this — the source list has existed since sources did; it
+     was just only reachable through a floating rail that appears on selection.
+
+     The fallback matches resolveEvents' own: a calendar with no explicit
+     sources reads task deadlines, because a calendar that shows nothing until
+     you configure it looks broken. So the Tasks row is ALWAYS present in this
+     list even when `sources` is empty — it is a potential source whether or not
+     it has been written down. */
+  const sources = block.sources?.length ? block.sources : [{ kind: 'tasks' }]
+
+  /* TOGGLING VISIBILITY IS NOT TOGGLING MEMBERSHIP.
+
+     The rail's own off-switch REMOVES a source from the array, which throws
+     away its dateCol/titleCol configuration — turning a table back on there
+     means picking its date column again. The sidebar flips a `hidden` boolean
+     on a source that stays put, which is why the flag had to be new rather than
+     reusing membership.
+
+     Two surfaces, two jobs, and this one deliberately cannot add or remove a
+     source or change a date column: the sidebar is what you glance at and flip
+     daily, the rail is what you open to set something up. */
+  const toggleHidden = src => {
+    const key = sourceKey(src)
+    /* Written back from `sources`, not from `block.sources` — on a calendar
+       that never had an explicit source list, `block.sources` is empty and
+       writing a filtered version of it would persist nothing at all. Writing
+       the resolved list materialises the implicit Tasks source, which is
+       exactly what hiding it has to do. */
+    onUpdateBlock?.(block.id, {
+      sources: sources.map(s => (sourceKey(s) === key ? { ...s, hidden: !isSourceHidden(s) } : s)),
+    })
+  }
+
+  /* A source's display name. Table sources name the table they read, because
+     "Table" tells you nothing when two of them feed one calendar. */
+  const sourceName = src => {
+    if (src.kind === 'tasks') return 'Task deadlines'
+    if (src.kind === 'events') return 'My events'
+    const tbl = (blocks || []).find(b => b.id === src.blockId)
+    return tbl?.name || 'Untitled table'
+  }
+
   const title = view === 'month' ? monthTitle(cursor)
     : view === 'week' ? weekTitle(cursor, weekStart)
     : 'Upcoming'
 
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
+      /* A ROW now: the sidebar is a permanent left column, not a drawer.
+
+         Confirmed as always-persistent rather than collapsing at small sizes —
+         which is why the calendar declares a `minDims` floor in blockRegistry
+         instead: the block refuses to get narrow enough for the sidebar to be a
+         problem, rather than the sidebar hiding itself to cope. A drawer that
+         collapses is one more state to learn and one more thing that can be in
+         the wrong one. */
+      display: 'flex', height: '100%', minHeight: 0,
       background: surface, fontFamily: 'var(--ds-font-body)',
     }}>
+
+      <SourceSidebar
+        sources={sources}
+        sourceName={sourceName}
+        onToggle={toggleHidden}
+        colors={colors}
+        dark={dark}
+      />
+
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
 
       {/* ── header ──
           Spaced by relationship rather than by one uniform gap. The old row put
@@ -98,7 +161,7 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
           nothing led. Now the chevrons touch, Today sits just off them, the
           title owns the middle, and the switcher is pinned right. */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10, padding: '7px 9px',
+        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
         borderBottom: `1px solid ${border}`, flexShrink: 0,
       }}>
         {view !== 'agenda' && (
@@ -141,6 +204,12 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
           display: 'flex', gap: 2, flexShrink: 0, padding: 2,
           background: raised, border: `1px solid ${border}`,
           borderRadius: 'var(--ds-radius-md)',
+          /* SUNKEN TRACK, RAISED THUMB — the cue a native segmented control
+             gives, on top of the colour change that was already here. An inset
+             shadow on the track and a real shadow on the active button is what
+             makes "which one is pressed" readable without reading the colour,
+             which matters for anyone who cannot separate accent from grey. */
+          boxShadow: `inset 0 1px 3px rgba(0,0,0,${dark ? 0.35 : 0.07})`,
         }}>
           {VIEWS.map(v => {
             const on = view === v
@@ -154,7 +223,8 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
                   color: on ? accent : text3,
                   fontFamily: 'var(--ds-font-body)', fontSize: 'var(--ds-fs-sm)',
                   fontWeight: on ? 600 : 500, lineHeight: 1,
-                  transition: 'background var(--ds-transition), color var(--ds-transition)',
+                  boxShadow: on ? 'var(--ds-shadow-sm)' : 'none',
+                  transition: 'background var(--ds-transition), color var(--ds-transition), box-shadow var(--ds-transition)',
                 }}
                 onMouseEnter={e => { if (!on) e.currentTarget.style.color = text2 }}
                 onMouseLeave={e => { if (!on) e.currentTarget.style.color = text3 }}>
@@ -183,8 +253,8 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
           rendering this as well stacked two "nothing here" messages. */}
       {events.length === 0 && view !== 'agenda' && (
         <div style={{
-          display: 'flex', alignItems: 'flex-start', gap: 7,
-          padding: '8px 11px', borderTop: `1px solid ${border}`,
+          display: 'flex', alignItems: 'flex-start', gap: 8,
+          padding: '8px 12px', borderTop: `1px solid ${border}`,
           background: raised, flexShrink: 0,
         }}>
           <Icon name="status-info" size={14} style={{ color: text2, flexShrink: 0, marginTop: 1 }} />
@@ -194,6 +264,164 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
           </span>
         </div>
       )}
+      </div>
+    </div>
+  )
+}
+
+/* ── source sidebar ──────────────────────────────────────────────────────
+   WHICH CALENDARS FEED THIS ONE, and which of them you want to see right now.
+
+   Two sections ship together in Phase 1 — the functional one and a disabled
+   "My calendars" — rather than adding the second later. Building the two-section
+   shell once now means Phase 2's real user calendars slot into a layout that
+   already exists instead of moving everything down a section.
+
+   178px, matching CalendarToolbar's rail width EXACTLY. The two are different
+   surfaces with different jobs, and reading as the same family of chrome is what
+   makes that legible rather than arbitrary: same width, same 28px row height,
+   same mono uppercase captions. */
+const SIDEBAR_W = 178
+/* ROW_H, same value and same reasoning as CalendarToolbar's: one height for
+   every control in a rail-like column, or the stack has no rhythm. */
+const SIDEBAR_ROW_H = 28
+
+function SourceSidebar({ sources, sourceName, onToggle, colors, dark }) {
+  const { border, text2, text3 } = colors
+  const hasTables = sources.some(s => s.kind === 'table')
+
+  return (
+    <div
+      style={{
+        width: SIDEBAR_W, flexShrink: 0,
+        display: 'flex', flexDirection: 'column', gap: 2,
+        padding: '8px 6px', overflowY: 'auto',
+        /* --ds-surface against the grid, the same relationship the weekday strip
+           already has to the grid body (raised vs surface): the sidebar reads as
+           its own zone without introducing a new surface tier. */
+        background: 'var(--ds-surface)',
+        borderRight: `1px solid ${border}`,
+        /* A DIRECTIONAL edge-shadow cast onto the calendar body, not an
+           all-around one. The sidebar is flush against its neighbour on the
+           other three sides, so an omnidirectional blur would look clipped on
+           three edges and only correct on one. Alpha roughly --ds-shadow-sm's,
+           scaled up for the tighter blur radius. */
+        boxShadow: `3px 0 10px -6px rgba(0,0,0,${dark ? 0.5 : 0.14})`,
+        /* Above the grid, so the shadow lands ON the body rather than under it. */
+        position: 'relative', zIndex: 1,
+      }}>
+
+      <SidebarLabel colors={colors}>Source calendars</SidebarLabel>
+
+      {sources.map(src => {
+        const key = sourceKey(src)
+        const hue = sourceHue(key)
+        const on = !isSourceHidden(src)
+        return (
+          <button
+            key={key}
+            /* THE WHOLE ROW is the hit target, not just the 14px box —
+               standard checklist-row convention, and 14px is a small thing to
+               ask someone to hit repeatedly. */
+            onClick={e => { e.stopPropagation(); onToggle(src) }}
+            onMouseDown={e => e.stopPropagation()}
+            role="checkbox"
+            aria-checked={on}
+            title={`${sourceName(src)} — click to ${on ? 'hide' : 'show'}`}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              width: '100%', height: SIDEBAR_ROW_H, padding: '0 6px',
+              /* DELIBERATELY NOT .ds-tbtn.is-on's accent-dim fill. That pattern
+                 means "this is the selected one of several choices", and this is
+                 not that: every source can be independently on or off. It is a
+                 checklist, not a segmented control, and borrowing the wrong
+                 idiom would teach the wrong thing about what the rows do. */
+              background: 'transparent',
+              border: 'none', borderRadius: 'var(--ds-radius-sm)',
+              cursor: 'pointer', textAlign: 'left',
+              fontFamily: 'var(--ds-font-body)', fontSize: 'var(--ds-fs-sm)',
+              color: on ? text2 : text3,
+              transition: 'background var(--ds-transition), color var(--ds-transition)',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--ds-raised)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+            {/* THE COLOUR CARRIES THE IDENTITY, THE CHECK CARRIES THE STATE.
+                Never colour alone — the same principle attribution.js states for
+                personHue, and the reason a hidden source dims its label as well
+                as emptying its box. */}
+            <span
+              aria-hidden="true"
+              style={{
+                width: 14, height: 14, flexShrink: 0,
+                borderRadius: 'var(--ds-radius-xs)',
+                border: `1.5px solid ${hue}`,
+                background: on ? hue : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'background var(--ds-transition)',
+              }}>
+              {on && <Icon name="action-check" size={12} style={{ color: '#fff' }} />}
+            </span>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {sourceName(src)}
+            </span>
+          </button>
+        )
+      })}
+
+      {/* Points at the surface that actually configures sources rather than
+          repeating the rail's own empty-state message here. Two surfaces, two
+          jobs — and the person reading this needs the other one. */}
+      {!hasTables && (
+        <div style={{
+          fontSize: 'var(--ds-fs-xs)', color: text3, lineHeight: 1.5,
+          padding: '4px 7px 2px',
+        }}>
+          Point a table at a date column in the rail to add it here.
+        </div>
+      )}
+
+      {/* ── My calendars — declared and disabled ──
+          Same treatment CalendarToolbar already uses for "Own events": present,
+          dimmed, cursor:not-allowed, SOON-chipped. A section that names what is
+          coming is a roadmap; an absent one is a surprise in Phase 2. */}
+      <div style={{ marginTop: 14 }}>
+        <SidebarLabel colors={colors}>My calendars</SidebarLabel>
+        <div
+          title="Create a standalone calendar — not built yet"
+          aria-disabled="true"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            height: SIDEBAR_ROW_H, padding: '0 6px',
+            fontSize: 'var(--ds-fs-sm)', color: text2,
+            opacity: 0.38, cursor: 'not-allowed',
+          }}>
+          <Icon name="action-add" size={14} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            Add a calendar
+          </span>
+          <span style={{
+            fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.4,
+            color: text3, border: `1px solid ${border}`,
+            borderRadius: 4, padding: '2px 4px', flexShrink: 0,
+          }}>SOON</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* The rail's Label treatment, verbatim — mono, uppercase, xs, 0.9px tracking,
+   text3. Duplicated rather than imported because importing a private helper
+   out of a toolbar component to use it in a block would couple the two files
+   for four lines of CSS; the shared thing is the token set, which they both
+   read. */
+function SidebarLabel({ children, colors }) {
+  return (
+    <div style={{
+      fontSize: 'var(--ds-fs-xs)', fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9,
+      textTransform: 'uppercase', color: colors.text3, padding: '2px 7px 5px',
+    }}>
+      {children}
     </div>
   )
 }
@@ -250,6 +478,13 @@ function Grid({ weeks, buckets, colors, dark, weekStart, compact, onTeleport }) 
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)',
         background: raised, borderBottom: `1px solid ${border}`, flexShrink: 0,
+        /* Same directional technique as the sidebar's, turned 90°: cast DOWN
+           onto the scrollable grid, nothing on the other three edges where the
+           strip is flush. This is sticky-header depth — it separates "the header
+           row" from "the content under it" in a way a 1px border alone does not,
+           particularly once the grid is scrolled. */
+        boxShadow: `0 3px 10px -6px rgba(0,0,0,${dark ? 0.5 : 0.14})`,
+        position: 'relative', zIndex: 1,
       }}>
         {labels.map((l, i) => {
           const weekend = (weekStart + i) % 7 === 0 || (weekStart + i) % 7 === 6
@@ -317,7 +552,7 @@ function Grid({ weeks, buckets, colors, dark, weekStart, compact, onTeleport }) 
                       thing it was counting. */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                     <span style={{
-                      minWidth: 18, height: 18, padding: '0 4px', borderRadius: 9,
+                      minWidth: 18, height: 18, padding: '0 4px', borderRadius: 8,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       fontSize: 'var(--ds-fs-xs)', fontFamily: 'var(--ds-font-mono)',
                       fontVariantNumeric: 'tabular-nums',
@@ -378,7 +613,7 @@ function Agenda({ events, colors, onTeleport }) {
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           background: accentDim, color: accentText, flexShrink: 0,
         }}>
-          <Icon name="status-empty" size={18} />
+          <Icon name="status-empty" size={20} />
         </span>
         <span style={{ fontSize: 'var(--ds-fs-md)', fontWeight: 600, color: text, textAlign: 'center' }}>
           Nothing coming up
@@ -401,7 +636,7 @@ function Agenda({ events, colors, onTeleport }) {
                 same size: the day number leads in mono, the month is a quiet
                 uppercase label beside it, and the year hangs right. */}
             <div style={{
-              display: 'flex', alignItems: 'baseline', gap: 7, padding: '0 2px 6px',
+              display: 'flex', alignItems: 'baseline', gap: 8, padding: '0 2px 6px',
               borderBottom: `1px solid ${border}`, marginBottom: 6,
             }}>
               <span style={{
@@ -419,7 +654,7 @@ function Agenda({ events, colors, onTeleport }) {
               </span>
               {now ? (
                 <span style={{
-                  marginLeft: 'auto', padding: '2px 7px', borderRadius: 'var(--ds-radius-sm)',
+                  marginLeft: 'auto', padding: '2px 8px', borderRadius: 'var(--ds-radius-sm)',
                   background: accentDim, color: accentText,
                   fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-xs)',
                   fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
@@ -435,7 +670,7 @@ function Agenda({ events, colors, onTeleport }) {
                 </span>
               )}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {g.events.map(e => (
                 <EventPill key={e.id} event={e} colors={colors} onTeleport={onTeleport} wide />
               ))}
@@ -462,7 +697,7 @@ function EventPill({ event, colors, onTeleport, wide }) {
       disabled={!clickable}
       title={clickable ? `${event.title} — click to open` : event.title}
       style={{
-        display: 'flex', alignItems: 'center', gap: 5, width: '100%',
+        display: 'flex', alignItems: 'center', gap: 6, width: '100%',
         padding: wide ? '6px 9px' : '1px 5px',
         borderRadius: wide ? 'var(--ds-radius-sm)' : 4, textAlign: 'left',
         border: '1px solid transparent',
@@ -482,16 +717,23 @@ function EventPill({ event, colors, onTeleport, wide }) {
         opacity: event.done ? 0.55 : 1,
         /* Hover used to snap the border on with no transition, so a pointer
            crossing a full cell strobed. */
-        transition: 'background var(--ds-transition), border-color var(--ds-transition)',
+        /* FLAT AT REST, lifts on hover. The physicality is scoped to the
+           moment of interaction rather than layered on permanently: forty-two
+           cells of permanently-raised pills is a texture, not a hierarchy. */
+        transition: 'background var(--ds-transition), border-color var(--ds-transition), transform var(--ds-transition), box-shadow var(--ds-transition)',
       }}
       onMouseEnter={e => {
         if (!clickable) return
         e.currentTarget.style.borderColor = event.color
         e.currentTarget.style.background = hover
+        e.currentTarget.style.transform = 'translateY(-1px)'
+        e.currentTarget.style.boxShadow = 'var(--ds-shadow-sm)'
       }}
       onMouseLeave={e => {
         e.currentTarget.style.borderColor = 'transparent'
         e.currentTarget.style.background = rest
+        e.currentTarget.style.transform = 'none'
+        e.currentTarget.style.boxShadow = 'none'
       }}>
       <span style={{
         width: wide ? 6 : 4, height: wide ? 6 : 4, borderRadius: '50%',
@@ -500,7 +742,7 @@ function EventPill({ event, colors, onTeleport, wide }) {
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {event.title}
       </span>
-      {wide && clickable && <Icon name="share-link" size={11} style={{ color: text3, flexShrink: 0 }} />}
+      {wide && clickable && <Icon name="share-link" size={12} style={{ color: text3, flexShrink: 0 }} />}
     </button>
   )
 }

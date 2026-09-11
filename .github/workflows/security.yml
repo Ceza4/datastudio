@@ -1,0 +1,81 @@
+name: security
+
+# Every push and every pull request, plus a weekly run.
+#
+# THE WEEKLY RUN IS THE POINT. A dependency you installed today becomes
+# vulnerable on a Tuesday in March when somebody publishes an advisory, and no
+# push to this repository will have happened to notice. `on: push` alone tests
+# your changes; `on: schedule` tests the world changing underneath them.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, so the secret scan below can look at what was
+          # committed rather than only at the current tree. A secret removed in
+          # the latest commit is still in the repository.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # `--omit=dev` first, and NOT failing the build on dev-only findings.
+      # A vulnerability in a build tool is worth knowing about; it is not
+      # reachable by a user and blocking every deploy on one teaches people to
+      # ignore the check. Production dependencies are a different question and
+      # do fail.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Audit everything (informational)
+        run: npm audit || true
+
+      - name: Tests and static guards
+        run: |
+          npm test
+          npm run check
+
+      - name: Build
+        run: npm run build
+        env:
+          # Placeholders. The build must not need real credentials — if it
+          # does, something is reading a secret at build time that should be
+          # read at request time.
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: build-time-placeholder
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      # Scans history, not just the working tree. The realistic way a service
+      # role key leaks is being committed once and removed in the next commit —
+      # at which point it is still in the repository forever and must be
+      # rotated, not deleted.
+      - name: Scan history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A cheap, specific check that no amount of generic scanning replaces:
+      # the one mistake that would publish a database-wide credential to every
+      # visitor is prefixing the service role key with NEXT_PUBLIC_.
+      - name: Refuse a service-role key in a public variable
+        run: |
+          if grep -rniE 'NEXT_PUBLIC_[A-Z_]*SERVICE_ROLE' --include='*.js' --include='*.mjs' --include='*.json' --include='*.example' . ; then
+            echo "::error::A service role key must never be in a NEXT_PUBLIC_ variable — Next inlines those into the browser bundle."
+            exit 1
+          fi

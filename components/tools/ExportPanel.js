@@ -103,7 +103,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
         style={{
           position: 'fixed', top: 74, left: '50%', transform: 'translateX(-50%)',
           zIndex: Z.panel, width: 470, maxWidth: 'calc(100vw - 32px)',
-          padding: 16, display: 'flex', flexDirection: 'column', gap: 13,
+          padding: 16, display: 'flex', flexDirection: 'column', gap: 14,
           maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
         }}>
 
@@ -111,11 +111,11 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
           <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700, color: 'var(--ds-text)' }}>
             Export
           </span>
-          <span style={{ flex: 1, fontSize: 11, color: 'var(--ds-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ flex: 1, fontSize: 12, color: 'var(--ds-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {exportName}
           </span>
           <button onClick={onClose} aria-label="Close export panel"
-            style={{ background: 'none', border: 'none', color: 'var(--ds-text-3)', cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: 2 }}>×</button>
+            style={{ background: 'none', border: 'none', color: 'var(--ds-text-3)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 2 }}>×</button>
         </div>
 
         {/* ── scope ── */}
@@ -128,15 +128,15 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
               return (
                 <button key={s.id} disabled={disabled} onClick={() => setScope(s.id)}
                   style={{
-                    flex: 1, padding: '9px 10px', borderRadius: 8, cursor: disabled ? 'default' : 'pointer',
+                    flex: 1, padding: '10px 10px', borderRadius: 8, cursor: disabled ? 'default' : 'pointer',
                     border: `1.5px solid ${on ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
                     background: on ? 'var(--ds-accent-dim)' : 'transparent',
                     color: on ? 'var(--ds-accent)' : 'var(--ds-text-2)',
                     opacity: disabled ? 0.4 : 1, fontFamily: 'var(--ds-font-body)',
-                    fontSize: 12, fontWeight: on ? 650 : 500, textAlign: 'left',
+                    fontSize: 13, fontWeight: on ? 650 : 500, textAlign: 'left',
                   }}>
                   {s.label}
-                  <span style={{ display: 'block', fontSize: 10, opacity: 0.75, marginTop: 2, fontFamily: 'var(--ds-font-mono)' }}>
+                  <span style={{ display: 'block', fontSize: 11, opacity: 0.75, marginTop: 2, fontFamily: 'var(--ds-font-mono)' }}>
                     {s.count} block{s.count === 1 ? '' : 's'}
                   </span>
                 </button>
@@ -144,7 +144,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
             })}
           </div>
           {scope === 'selection' && selected.length === 0 && (
-            <div style={{ fontSize: 11, color: 'var(--ds-text-2)', marginTop: 6 }}>
+            <div style={{ fontSize: 12, color: 'var(--ds-text-2)', marginTop: 6 }}>
               Nothing selected — click a block on the canvas first.
             </div>
           )}
@@ -161,26 +161,26 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
               border: `1.5px solid ${toSheet ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
               background: toSheet ? 'var(--ds-accent-dim)' : 'transparent',
               color: toSheet ? 'var(--ds-accent)' : 'var(--ds-text-2)',
-              fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: toSheet ? 650 : 500,
+              fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: toSheet ? 650 : 500,
             }}>
             <span style={{ flex: 1, textAlign: 'left' }}>Send to a sheet column</span>
-            <Icon name={toSheet ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} style={{ opacity: 0.8 }} />
+            <Icon name={toSheet ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} style={{ opacity: 0.8 }} />
           </button>
 
           {toSheet && (
             <div style={{ marginTop: 9, padding: 11, borderRadius: 8, border: '1px solid var(--ds-border)', background: 'var(--ds-raised)' }}>
               {sourceColumns.length === 0 ? (
-                <div style={{ fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
+                <div style={{ fontSize: 12, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
                   The current selection has no table columns to send.
                 </div>
               ) : (
                 <>
                   <div style={{ marginBottom: 9 }}>
-                    <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }}>
                       Take column
                     </span>
                     <select value={srcCol} onChange={e => setSrcCol(+e.target.value)}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-surface)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none' }}>
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-surface)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 13, outline: 'none' }}>
                       {sourceColumns.map((c, i) => (
                         <option key={i} value={i}>
                           {c.blockName} · {c.header || `column ${i + 1}`} ({c.values.length} rows)
@@ -213,7 +213,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
                     title={f.enabled ? f.note : 'Not available for the blocks in this selection'}
                     style={{
                       display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
-                      padding: '9px 11px', borderRadius: 8, textAlign: 'left',
+                      padding: '10px 12px', borderRadius: 8, textAlign: 'left',
                       border: `1px solid ${isDone ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
                       background: isDone ? 'var(--ds-accent-dim)' : 'var(--ds-raised)',
                       color: isDone ? 'var(--ds-accent)' : 'var(--ds-text)',
@@ -221,16 +221,16 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
                       opacity: f.enabled && payload.length ? 1 : 0.38,
                       fontFamily: 'var(--ds-font-body)', transition: 'border-color .15s, background .15s',
                     }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
-                      <Icon name={FORMAT_ICON[f.id] || 'action-export'} size={15} />
+                    <span style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+                      <Icon name={FORMAT_ICON[f.id] || 'action-export'} size={16} />
                       {f.label}
-                      <span style={{ marginLeft: 'auto', fontFamily: 'var(--ds-font-mono)', fontSize: 9, color: 'var(--ds-text-3)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 3 }}>
-                        {isBusy ? <Icon name="status-spinner" size={11} />
-                          : isDone ? <><Icon name="action-check" size={11} />saved</>
+                      <span style={{ marginLeft: 'auto', fontFamily: 'var(--ds-font-mono)', fontSize: 11, color: 'var(--ds-text-3)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        {isBusy ? <Icon name="status-spinner" size={12} />
+                          : isDone ? <><Icon name="action-check" size={12} />saved</>
                           : f.ext}
                       </span>
                     </span>
-                    <span style={{ fontSize: 10.5, color: 'var(--ds-text-3)', lineHeight: 1.35 }}>{f.note}</span>
+                    <span style={{ fontSize: 11, color: 'var(--ds-text-3)', lineHeight: 1.35 }}>{f.note}</span>
                   </button>
                 )
               })}
@@ -240,12 +240,12 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
 
         {error && (
           <div role="alert" style={{
-            padding: '9px 11px', borderRadius: 7, background: 'var(--ds-red-bg)',
-            border: '1px solid var(--ds-red)', color: 'var(--ds-red)', fontSize: 11.5, lineHeight: 1.5,
+            padding: '10px 12px', borderRadius: 6, background: 'var(--ds-red-bg)',
+            border: '1px solid var(--ds-red)', color: 'var(--ds-red)', fontSize: 12, lineHeight: 1.5,
           }}>{error}</div>
         )}
 
-        <div style={{ fontSize: 10.5, color: 'var(--ds-text-2)', lineHeight: 1.55, borderTop: '1px solid var(--ds-border)', paddingTop: 10 }}>
+        <div style={{ fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.55, borderTop: '1px solid var(--ds-border)', paddingTop: 10 }}>
           PDF opens your browser’s print dialog — choose <b style={{ color: 'var(--ds-text-2)' }}>Save as PDF</b>.
           Word and PowerPoint files are real Office documents, not renamed HTML.
         </div>

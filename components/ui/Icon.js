@@ -34,6 +34,10 @@
 
 import { ICON_PATH_DATA } from './icon-paths'
 
+/* The only sizes an icon may be rendered at. Four steps, each paired with a
+   control height: 12 inside a chip, 14 in a toolbar row, 16 as a block glyph,
+   20 for an empty state. Raw numbers at call sites were producing 14 different
+   sizes, 9 through 40. */
 export const SIZES = { xs: 12, sm: 14, md: 16, lg: 20, xl: 32 }
 export const BASE_STROKE = 4.66
 
@@ -104,7 +108,26 @@ export default function Icon({ name, size = 16, strokeWidth = BASE_STROKE, label
     return <span aria-hidden="true" style={{ display: 'inline-block', width: px, height: px, ...style }} />
   }
 
-  const sw = strokeWidth * (ICON_STROKE_SCALE[name] ?? 1)
+  /* OPTICAL FLOOR — do not remove without reading this.
+
+     The geometry is a 64 viewBox with a 4.66 base stroke, which is 1.75px at
+     the 24px size it was drawn for. Rendered smaller, the stroke shrinks with
+     it: 0.87px at 16, 0.80px at 11, 0.66px at 9. Below 1px the browser cannot
+     put a line on the pixel grid, so it spreads it over two pixels at partial
+     opacity — a grey smear, not a line. 72 call sites were doing exactly that.
+
+     Rather than forbid the small sizes (which would have moved every toolbar),
+     scale the stroke back up so it lands on at least one whole pixel. Small
+     icons therefore carry a proportionally heavier stroke, which is also what
+     they want optically — it is what SF Symbols does across its optical sizes,
+     and it is why a 12px icon here no longer looks washed out next to a 16px
+     one.
+
+     The per-icon multipliers still apply on top, so the three brushes keep
+     their relationship. */
+  const raw = strokeWidth * (ICON_STROKE_SCALE[name] ?? 1)
+  const renderedPx = raw * (px / 64)
+  const sw = renderedPx < 1 ? raw * (1 / renderedPx) : raw
   const spin = ANIMATED.has(name)
 
   return (

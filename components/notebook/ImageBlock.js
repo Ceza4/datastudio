@@ -1,6 +1,8 @@
 'use client'
 import { useState, useEffect, useRef, memo } from 'react'
 import { imageUrl, releaseImageUrl } from '../../lib/images'
+import Icon from '../ui/Icon'
+import { displayModeOf } from './blockRegistry'
 
 /* ImageBlock
    --------------------------------------------------------------------------
@@ -34,9 +36,23 @@ function ImageBlockInner({ block, colors, maxHeight, onUpdateBlock }) {
   const [state, setState] = useState('loading')   // loading | ready | missing
   const lastId = useRef(null)
 
+  /* 'full' | 'compact' | 'icon'. Resolved through the registry so an absent or
+     corrupted value can never render as nothing — see displayModeOf. */
+  const mode = displayModeOf(block)
+
   useEffect(() => {
     let cancelled = false
     const id = block.imageId
+    /* NOT skipped in icon mode, deliberately, even though no pixels are shown.
+
+        An icon-mode image is still a real image block: the alt-text warning
+        below, and the "the bytes are gone" state, are both things you need to
+        know about a collapsed image as much as an expanded one. Silently not
+        checking would mean collapsing an image hides the fact that it is
+        broken, and the user finds out only when they expand it again.
+
+        The URL is cached per id by lib/images, so this costs one map lookup on
+        a re-render, not a fetch. */
     if (!id) { setState('missing'); return }
 
     // Release the previous image's URL when the block points somewhere new
@@ -55,6 +71,11 @@ function ImageBlockInner({ block, colors, maxHeight, onUpdateBlock }) {
     return () => { cancelled = true }
   }, [block.imageId, block.rev])   // `rev` bumps after crop/rotate to force a refetch
 
+  /* COMPACT NEEDS NO SPECIAL CASE HERE. It is the same <img> with real pixels
+     in a smaller box, and the box comes from `maxHeight`, which the canvas
+     derives from blockFootprint(). Compact is a size, icon is a different
+     rendering — which is the whole reason they are separate values rather than
+     two points on one density slider. */
   const boxStyle = {
     height: maxHeight,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -72,11 +93,50 @@ function ImageBlockInner({ block, colors, maxHeight, onUpdateBlock }) {
   if (state === 'missing') {
     return (
       <div style={{ ...boxStyle, flexDirection: 'column', gap: 6, padding: 16, textAlign: 'center' }}>
-        <span style={{ color: red, fontSize: 12, fontWeight: 600 }}>Image data not found</span>
-        <span style={{ color: text2, fontSize: 11, lineHeight: 1.5 }}>
+        <span style={{ color: red, fontSize: 13, fontWeight: 600 }}>Image data not found</span>
+        <span style={{ color: text2, fontSize: 12, lineHeight: 1.5 }}>
           The file is missing from local storage. It may have been cleared by the
           browser, or the notebook was opened on another device.
         </span>
+      </div>
+    )
+  }
+
+  /* ── ICON MODE ──────────────────────────────────────────────────────────
+     A GENERIC ICON, not a shrunk thumbnail. That is a real, deliberate reversal
+     of the "always show real pixels" principle Compact mode protects — and it is
+     fine here precisely because it is not Compact: Compact is a bulk, ambient
+     density setting applied to a whole section, and this is a specific choice
+     made about ONE image on purpose. You are not losing "the workspace stays
+     open"; you are choosing to close one particular thing.
+
+     Styled as the same chip .docx and .zip already render as (FileBlock's row),
+     so a section mixing icon-mode images with real file blocks reads as one list
+     rather than two conventions side by side. */
+  if (mode === 'icon') {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        height: 40, padding: '0 10px',
+        background: raised, overflow: 'hidden',
+      }}>
+        <Icon name="format-image" size={16} style={{ color: text2, flexShrink: 0 }} />
+        <span
+          title={block.alt || block.name || 'Image'}
+          style={{
+            flex: 1, minWidth: 0, fontSize: 12, color: text2,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+          {block.name || block.alt || 'Image'}
+        </span>
+        {/* Says WHY there are no pixels. Without this, a collapsed image and a
+            failed one look identical, which is the worst possible ambiguity for
+            a block whose content cannot be retyped from memory. */}
+        <span style={{
+          fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.5,
+          color: text3, border: `1px solid ${border}`, borderRadius: 4,
+          padding: '2px 6px', flexShrink: 0,
+        }}>ICON</span>
       </div>
     )
   }
@@ -99,9 +159,9 @@ function ImageBlockInner({ block, colors, maxHeight, onUpdateBlock }) {
           title="No alt text — add one in the Image tools so this is readable by screen readers and searchable"
           style={{
             position: 'absolute', bottom: 6, right: 6,
-            fontSize: 8.5, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.5,
+            fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.5,
             color: text2, background: `${raised}dd`, border: `1px solid ${border}`,
-            borderRadius: 4, padding: '2px 5px', pointerEvents: 'auto',
+            borderRadius: 4, padding: '2px 6px', pointerEvents: 'auto',
           }}>
           NO ALT
         </span>

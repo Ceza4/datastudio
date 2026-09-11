@@ -43,13 +43,21 @@ globalThis.window={matchMedia:()=>({matches:false})}
 eq(shouldReduceMotion({reduceMotion:null}), false, 'null follows the OS (OS says no)')
 eq(shouldReduceMotion(undefined), false, 'undefined prefs does not throw')
 
+console.log('\n imageDropMode')
+eq(normalizePrefs({imageDropMode:'icon'}).imageDropMode, 'icon', 'icon is accepted')
+eq(normalizePrefs({imageDropMode:'full'}).imageDropMode, 'full', 'full is accepted')
+eq(normalizePrefs({imageDropMode:'compact'}).imageDropMode, 'full',
+   "compact is NOT a drop mode — only a section's Compact toggle produces it")
+eq(normalizePrefs({imageDropMode:'nonsense'}).imageDropMode, 'full', 'an unknown value falls back to full')
+eq(normalizePrefs({}).imageDropMode, 'full', 'absent falls back to full')
+
 console.log('\n round trip')
 /* Every pref, listed. Adding one to lib/prefs.js and NOT to this line
    fails here — which is the point: a pref that does not survive a save/load
    cycle is a setting that silently forgets itself. The order has to match
    what normalizePrefs emits, because the comparison is on the serialised
    form — same reason the save payload is compared this way. */
-const messy={dark:true,gridAlways:true,sidebarCollapsed:true,snapDefault:true,gridSize:16,reduceMotion:false}
+const messy={dark:true,gridAlways:true,sidebarCollapsed:true,snapDefault:true,gridSize:16,reduceMotion:false,imageDropMode:'icon'}
 eq(normalizePrefs(JSON.parse(JSON.stringify(normalizePrefs(messy)))), messy, 'survives a JSON save/load cycle unchanged')
 eq(GRID_SIZES.includes(DEFAULT_PREFS.gridSize), true, 'the default gridSize is itself a legal choice')
 

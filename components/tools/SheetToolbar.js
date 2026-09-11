@@ -60,7 +60,7 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
         transform: 'translateY(-50%)',
         zIndex: Z.rail,
         width: 146,
-        display: 'flex', flexDirection: 'column', gap: 3,
+        display: 'flex', flexDirection: 'column', gap: 4,
         padding: 8,
         // Matches the other islands exactly.
         background: `${surface}dd`,
@@ -72,7 +72,7 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
       }}>
 
       <div title={block.name || 'Sheet'} style={{
-        fontSize: 9, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
+        fontSize: 11, fontFamily: 'var(--ds-font-mono)', textTransform: 'uppercase',
         letterSpacing: 0.9, color: 'var(--ds-text-3)',
         padding: '2px 6px 6px', borderBottom: `1px solid ${border}`,
         marginBottom: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
@@ -91,7 +91,7 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
             width: '100%',
             height: 30,
             padding: '0 9px',
-            fontSize: 11.5,
+            fontSize: 12,
             justifyContent: 'flex-start',
             opacity: t.ready ? 1 : 0.38,
             cursor: t.ready ? 'pointer' : 'not-allowed',
@@ -100,9 +100,9 @@ export default function SheetToolbar({ block, dark, colors, onOpenTool, activeTo
           <span style={{ flex: 1, textAlign: 'left' }}>{t.label}</span>
           {!t.ready && (
             <span style={{
-              fontSize: 7.5, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.4,
+              fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.4,
               color: 'var(--ds-text-3)', border: '1px solid var(--ds-border)',
-              borderRadius: 3, padding: '1px 3px', flexShrink: 0,
+              borderRadius: 4, padding: '2px 4px', flexShrink: 0,
             }}>SOON</span>
           )}
         </button>

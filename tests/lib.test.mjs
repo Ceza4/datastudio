@@ -198,7 +198,7 @@ console.log('\n shortcuts')
 
 /* ── persistence helpers ─────────────────────────────────────────── */
 console.log('\n persistence helpers')
-ok(STATE_VERSION === 4, 'payload version is 4 (prefs added)')
+ok(STATE_VERSION === 5, 'payload version is 5 (imported workbooks added)')
 /* The smallest unit is KB, deliberately — a storage meter reading "847 B"
    is noise when the quota is measured in gigabytes. */
 ok(formatBytes(0) === '0 KB', 'zero formats as 0 KB, not 0 B')

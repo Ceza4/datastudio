@@ -47,7 +47,7 @@ export default function SendToSheet({ tables, columns, onWrite, onDone, compact 
 
   if (!tables.length) {
     return (
-      <div style={{ fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
+      <div style={{ fontSize: 12, color: 'var(--ds-text-2)', lineHeight: 1.5 }}>
         No table blocks on this sheet to write into. Add one first, or use
         “Add results to canvas”.
       </div>
@@ -70,12 +70,12 @@ export default function SendToSheet({ tables, columns, onWrite, onDone, compact 
   const sel = {
     width: '100%', padding: '6px 8px', borderRadius: 6,
     border: '1px solid var(--ds-border)', background: 'var(--ds-raised)',
-    color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none',
+    color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 13, outline: 'none',
   }
-  const label = { fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }
+  const label = { fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--ds-text-3)', display: 'block', marginBottom: 4 }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div>
         <span style={label}>Sheet</span>
         <select value={blockId ?? ''} onChange={e => setBlockId(e.target.value)} style={sel}>
@@ -97,7 +97,7 @@ export default function SendToSheet({ tables, columns, onWrite, onDone, compact 
           ].map(([m, text]) => (
             <button key={m} onClick={() => setMode(m)}
               style={{
-                flex: 1, padding: '6px 4px', borderRadius: 6, fontSize: 10.5,
+                flex: 1, padding: '6px 4px', borderRadius: 6, fontSize: 11,
                 border: `1.5px solid ${mode === m ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
                 background: mode === m ? 'var(--ds-accent-dim)' : 'transparent',
                 color: mode === m ? 'var(--ds-accent)' : 'var(--ds-text-2)',
@@ -117,7 +117,7 @@ export default function SendToSheet({ tables, columns, onWrite, onDone, compact 
             ))}
           </select>
           {mode === 'overwrite' && (
-            <div style={{ fontSize: 10, color: 'var(--ds-amber)', marginTop: 4, lineHeight: 1.4 }}>
+            <div style={{ fontSize: 11, color: 'var(--ds-amber)', marginTop: 4, lineHeight: 1.4 }}>
               Replaces whatever is in {colLetter(colIdx)} from row {Number(startRow) + 1} down.
             </div>
           )}

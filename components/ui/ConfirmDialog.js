@@ -134,7 +134,7 @@ export default function ConfirmDialog({ open, title, body, tone = 'normal', acti
         <div style={{ display: 'flex', gap: 'var(--ds-space-3)', alignItems: 'flex-start' }}>
           <Icon
             name={danger ? 'status-warning' : 'status-info'}
-            size={15}
+            size={16}
             style={{ color: danger ? 'var(--ds-red)' : 'var(--ds-text-2)', flexShrink: 0, marginTop: 2 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{

@@ -109,9 +109,9 @@ export default class BlockErrorBoundary extends Component {
           borderRadius: 10,
           fontFamily: 'var(--ds-font-body)',
         }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--ds-red)' }}>
-          <Icon name="status-error" size={15} />
-          <span style={{ fontSize: 12, fontWeight: 650, lineHeight: 1.3 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ds-red)' }}>
+          <Icon name="status-error" size={16} />
+          <span style={{ fontSize: 13, fontWeight: 650, lineHeight: 1.3 }}>
             This {blockType || 'block'} block couldn’t be displayed
           </span>
         </div>
@@ -121,21 +121,21 @@ export default class BlockErrorBoundary extends Component {
         <div style={{
           padding: '8px 10px', borderRadius: 6,
           background: 'var(--ds-raised)', border: '1px solid var(--ds-border)',
-          fontFamily: 'var(--ds-font-mono)', fontSize: 10, lineHeight: 1.45,
+          fontFamily: 'var(--ds-font-mono)', fontSize: 11, lineHeight: 1.45,
           color: 'var(--ds-text-2)', userSelect: 'text',
           wordBreak: 'break-word', maxHeight: 96, overflow: 'auto',
         }}>
           {message}
         </div>
 
-        <div style={{ fontSize: 10.5, color: 'var(--ds-text-2)', lineHeight: 1.45 }}>
+        <div style={{ fontSize: 11, color: 'var(--ds-text-2)', lineHeight: 1.45 }}>
           Your data is still saved.
         </div>
 
         {/* No `marginTop: auto`. That pushed the buttons to the bottom of a
             stretched card; with an auto-height card they simply follow the
             content. */}
-        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <button onClick={this.retry} style={btn('var(--ds-text-2)')}>
             <Icon name="draw-undo" size={12} /> Try again
           </button>
@@ -150,7 +150,7 @@ export default class BlockErrorBoundary extends Component {
           {info?.componentStack && (
             <button onClick={() => this.setState(s => ({ showStack: !s.showStack }))}
               aria-expanded={showStack} style={btn('var(--ds-text-3)')}>
-              <Icon name={showStack ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} />
+              <Icon name={showStack ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} />
               Stack
             </button>
           )}
@@ -160,7 +160,7 @@ export default class BlockErrorBoundary extends Component {
           <pre style={{
             margin: 0, padding: 8, borderRadius: 6,
             background: 'var(--ds-raised)', border: '1px solid var(--ds-border)',
-            fontFamily: 'var(--ds-font-mono)', fontSize: 9.5, lineHeight: 1.45,
+            fontFamily: 'var(--ds-font-mono)', fontSize: 11, lineHeight: 1.45,
             color: 'var(--ds-text-3)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             userSelect: 'text', maxHeight: 200, overflow: 'auto',
           }}>
@@ -176,6 +176,6 @@ const btn = color => ({
   display: 'inline-flex', alignItems: 'center', gap: 4,
   padding: '4px 8px', borderRadius: 6, cursor: 'pointer',
   background: 'transparent', border: '1px solid var(--ds-border)',
-  color, fontFamily: 'var(--ds-font-body)', fontSize: 10.5,
+  color, fontFamily: 'var(--ds-font-body)', fontSize: 11,
   whiteSpace: 'nowrap', lineHeight: 1.2,
 })
