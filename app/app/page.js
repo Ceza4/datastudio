@@ -20,7 +20,7 @@ import { migrateInk } from '../../lib/shapes'
    public npm and carries CVE-2023-30533 — reachable from exactly this parse,
    with attacker-controlled bytes. See that file for the full reasoning and
    DEFERRED.md for the version bump that makes the guard unnecessary. */
-import { readWorkbook, utils as XLSXUtils } from '../../lib/workbook'
+import { readWorkbook, readDelimitedText, tableFromSheet } from '../../lib/workbook'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckPanel from '../../components/tools/CrosscheckPanel'
 import { saveState, loadState, clearState, debounce, SAVE_OK, SAVE_QUOTA, SAVE_STALE, LOAD_FAILED, storageEstimate, formatBytes } from '../../lib/persistence'
@@ -67,6 +67,8 @@ const ACCEPT_EXTS = [...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED, .
    nine seconds. */
 const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
 const DATA_EXTS = new Set([...IMPORT_FORMATS.flatMap(f => f.exts), ...ALSO_ACCEPTED])
+/* Plain delimited text: parsed by readDelimitedText, not SheetJS's guesses. */
+const TEXT_TABLE_EXTS = new Set(['.csv', '.tsv', '.txt'])
 
 /* THE DOUBLE CHEVRON, composed from an icon that already exists.
 
@@ -174,6 +176,17 @@ export default function AppPage() {
 
   const [files, setFiles] = useState([])
   const [expandedFiles, setExpandedFiles] = useState(new Set())
+  /* Multi-sheet workbooks: the first sheet starts open, the rest closed.
+     Stored as the set of sheets TOGGLED away from that default, so a fresh
+     import needs no bookkeeping to look right. */
+  const [toggledSheets, setToggledSheets] = useState(new Set())
+  const sheetKey = (fileId, sheetName) => `${fileId}::${sheetName}`
+  const isSheetOpen = (fileId, sheetName, index) => (index === 0) !== toggledSheets.has(sheetKey(fileId, sheetName))
+  const toggleSheetOpen = (fileId, sheetName) => setToggledSheets(prev => {
+    const next = new Set(prev), k = sheetKey(fileId, sheetName)
+    next.has(k) ? next.delete(k) : next.add(k)
+    return next
+  })
   const [showHidden, setShowHidden] = useState(false)
   const [showCCWizard, setShowCCWizard] = useState(false)
   const [dragOverFileId, setDragOverFileId] = useState(null)
@@ -863,8 +876,12 @@ export default function AppPage() {
     return false
   }
 
+  /* Copy the list BEFORE clearing the input. `input.files` is live: resetting
+     `value` empties it, so the old order handed importFiles an empty list and
+     picking a file and pressing Open did nothing at all. The reset is still
+     needed so choosing the same file twice fires onChange again. */
   async function handleFileChange(e) {
-    const list = e.target.files
+    const list = Array.from(e.target.files || [])
     e.target.value = ''
     await importFiles(list)
   }
@@ -1131,11 +1148,13 @@ export default function AppPage() {
            month with no error. Dates come through as Date objects now and are
            normalised to YYYY-MM-DD below, which is the one string shape
            parseDate handles exactly. */
-        const workbook = readWorkbook(data, { type: 'array', cellDates: true })
+        const workbook = TEXT_TABLE_EXTS.has(extOf(file.name))
+          ? readDelimitedText(data)
+          : readWorkbook(data, { type: 'array', cellDates: true })
         if (!workbook.SheetNames?.length) throw new Error('the file contains no sheets')
         const sheets = workbook.SheetNames.map(sheetName => {
           const ws = workbook.Sheets[sheetName]
-          const json = XLSXUtils.sheet_to_json(ws, { header: 1 }).map(normaliseRow)
+          const { labels, rows } = tableFromSheet(ws, normaliseRow)
           // A missing header stays blank rather than becoming "Column 3" —
           // the grid shows the column letter, so a placeholder is just clutter.
           /* The random suffix matters here for the same reason it does on the
@@ -1147,8 +1166,8 @@ export default function AppPage() {
              col.id — producing duplicate React keys the moment you hide
              column A on two sheets of one workbook. */
           const salt = Math.random().toString(36).slice(2, 7)
-          const headers = (json[0] || []).map((h, i) => ({ id: `col_${Date.now()}_${salt}_${i}`, label: h ?? '', index: i, hidden: false }))
-          return { name: sheetName, headers, rows: json.slice(1) }
+          const headers = labels.map((h, i) => ({ id: `col_${Date.now()}_${salt}_${i}`, label: h ?? '', index: i, hidden: false }))
+          return { name: sheetName, headers, rows }
         })
         const totalRows = sheets.reduce((n, s) => n + s.rows.length, 0)
         if (totalRows === 0) throw new Error('no rows were found in it')
@@ -1243,9 +1262,24 @@ export default function AppPage() {
     e.dataTransfer.setDragImage(el, 0, 0)
     setTimeout(() => document.body.removeChild(el), 0)
   }
+  /* Selected column ids resolved to where they live. Looked up across every
+     file and sheet, not just sheet 1 of the dragged file — a selection can
+     span sheets of a workbook, and each column must read from its own sheet. */
+  function selectedColInfos() {
+    const out = []
+    for (const id of selectedSidebarCols) {
+      for (const f of files) {
+        for (const s of f.sheets) {
+          const c = s.headers.find(h => h.id === id)
+          if (c) out.push({ fileId: f.id, fileName: f.name, sheetName: s.name, col: c })
+        }
+      }
+    }
+    return out
+  }
   function handleSidebarDragStart(e, fileId, fileName, sheetName, col) {
     const colsToAdd = selectedSidebarCols.length > 1 && selectedSidebarCols.includes(col.id)
-      ? selectedSidebarCols.map(id => { const f = files.find(f => f.id === fileId); const c = f?.sheets[0]?.headers.find(h => h.id === id); return c ? { fileId, fileName, sheetName, col: c } : null }).filter(Boolean)
+      ? selectedColInfos()
       : [{ fileId, fileName, sheetName, col }]
     dragData.current = { type: 'sidebar', cols: colsToAdd, sourceFileId: fileId }
     setNativeDragImage(e, colsToAdd.length > 1 ? `${colsToAdd.length} columns` : col.label)
@@ -1274,17 +1308,18 @@ export default function AppPage() {
     }))
     return { headers, rows }
   }
-  /* Drag payload for a whole file: every visible column of its first sheet,
-     so dropping it on the canvas yields one sheet containing the lot. */
-  function handleFileDragStart(e, file) {
-    const sheet = file.sheets[0]
+  /* Drag payload for a whole table: every visible column of one sheet (the
+     first, when the file name itself is dragged), so dropping it on the
+     canvas yields one table containing the lot. */
+  function handleFileDragStart(e, file, sheet = file.sheets[0]) {
     if (!sheet) return
     const cols = sheet.headers.filter(h => !h.hidden).map(col => ({
       fileId: file.id, fileName: file.name, sheetName: sheet.name, col,
     }))
     if (!cols.length) return
     dragData.current = { type: 'sidebar', cols, sourceFileId: file.id, wholeFile: file.name }
-    setNativeDragImage(e, `${file.name} · ${cols.length} columns`)
+    const label = file.sheets.length > 1 ? `${file.name} › ${sheet.name}` : file.name
+    setNativeDragImage(e, `${label} · ${cols.length} columns`)
     e.dataTransfer.effectAllowed = 'copy'
     try { e.dataTransfer.setData('text/plain', file.name) } catch (_) {}
   }
@@ -1837,6 +1872,52 @@ export default function AppPage() {
       </div>
     )
   }
+  /* One sheet's controls: whole-table add, then its columns. Shared by
+     single-sheet files (rendered directly) and each group of a multi-sheet
+     workbook, so both look and behave the same. */
+  function renderSheetColumns(file, sheet) {
+    const cols = visibleHeaders(sheet)
+    return (
+      <>
+        {/* Whole-table add, visible. Dragging the file name has always
+            carried every column, but nothing said so — people dragged
+            columns one at a time and got a one-column table each time. */}
+        {selectedSidebarCols.length <= 1 && cols.length > 1 && (
+          <div style={{ padding: '2px 8px 6px 22px' }}>
+            <button
+              draggable
+              onDragStart={e => { e.stopPropagation(); handleFileDragStart(e, file, sheet) }}
+              onClick={() => addColumnsToNotebook(cols.map(col => ({ fileId: file.id, fileName: file.name, sheetName: sheet.name, col })))}
+              title="Click to add, or drag onto the canvas"
+              style={{ width: '100%', background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '4px 8px', fontSize: 11, color: accentText, cursor: 'grab', fontFamily: 'var(--ds-font-body)', fontWeight: 600, textAlign: 'left' }}>
+              <Icon name="action-add" size={11} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Whole table · {cols.length} columns
+            </button>
+            <div style={{ fontSize: 9.5, color: text3, marginTop: 4, lineHeight: 1.35 }}>
+              Drag a column for just that one · ⌘/Ctrl or Shift-click to pick several
+            </div>
+          </div>
+        )}
+        {cols.map(col => {
+          const isSelected = selectedSidebarCols.includes(col.id)
+          return (
+            <div key={col.id} className="col-row" draggable
+              onDragStart={e => handleSidebarDragStart(e, file.id, file.name, sheet.name, col)}
+              onClick={e => toggleSidebarSelect(e, col.id)}
+              style={{ padding: '6px 8px 6px 22px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, background: isSelected ? accentDim : 'transparent', border: isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}>
+              <div style={{ width: 6, height: 6, borderRadius: 2, background: accent, flexShrink: 0 }} />
+              <span title={col.label} style={{ flex: 1, fontSize: 12, color: isSelected ? accent : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
+              <span style={{ fontSize: 9, color: text3 }}>{sheet.rows.length}</span>
+              <div className="col-actions">
+                <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Hide column" aria-label="Hide column" onClick={e => { e.stopPropagation(); hideColumn(file.id, sheet.name, col.id) }}><Icon name="status-empty" size={11} /></button>
+                <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Delete column" aria-label="Delete column" onClick={e => { e.stopPropagation(); deleteColumn(file.id, sheet.name, col.id) }}><Icon name="action-delete" size={11} /></button>
+              </div>
+            </div>
+          )
+        })}
+      </>
+    )
+  }
+
   function renderFileInSidebar(file, folderId) {
     return (
       <div key={file.id} style={{ marginBottom: 6 }}>
@@ -1907,34 +1988,42 @@ export default function AppPage() {
           )}
           <Icon name={expandedFiles.has(file.id) ? 'nav-chevron-down' : 'nav-chevron-right'} size={11} style={{ color: text3, flexShrink: 0 }} />
         </div>
-        {expandedFiles.has(file.id) && file.sheets[0] && (
-          <>
-            {selectedSidebarCols.length > 1 && (
-              <div style={{ padding: '4px 8px 6px 24px' }}>
-                <button onClick={() => { const colInfos = selectedSidebarCols.map(id => { const col = file.sheets[0].headers.find(h => h.id === id); return col ? { fileId: file.id, fileName: file.name, sheetName: file.sheets[0].name, col } : null }).filter(Boolean); addColumnsToNotebook(colInfos) }} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accentText, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontWeight: 600 }}>
-                  <Icon name="action-add" size={11} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Add {selectedSidebarCols.length} to notebook
-                </button>
-              </div>
-            )}
-            {visibleHeaders(file.sheets[0]).map(col => {
-              const isSelected = selectedSidebarCols.includes(col.id)
-              return (
-                <div key={col.id} className="col-row" draggable
-                  onDragStart={e => handleSidebarDragStart(e, file.id, file.name, file.sheets[0].name, col)}
-                  onClick={e => toggleSidebarSelect(e, col.id)}
-                  style={{ padding: '6px 8px 6px 22px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, background: isSelected ? accentDim : 'transparent', border: isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}>
-                  <div style={{ width: 6, height: 6, borderRadius: 2, background: accent, flexShrink: 0 }} />
-                  <span title={col.label} style={{ flex: 1, fontSize: 12, color: isSelected ? accent : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
-                  <span style={{ fontSize: 9, color: text3 }}>{file.sheets[0].rows.length}</span>
-                  <div className="col-actions">
-                    <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Hide column" aria-label="Hide column" onClick={e => { e.stopPropagation(); hideColumn(file.id, file.sheets[0].name, col.id) }}><Icon name="status-empty" size={11} /></button>
-                    <button style={{ color: red, background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: '1px 4px', borderRadius: 3 }} title="Delete column" aria-label="Delete column" onClick={e => { e.stopPropagation(); deleteColumn(file.id, file.sheets[0].name, col.id) }}><Icon name="action-delete" size={11} /></button>
-                  </div>
+        {expandedFiles.has(file.id) && file.sheets.length > 0 && (() => {
+          const selectedHere = selectedColInfos().filter(c => c.fileId === file.id)
+          return (
+            <>
+              {selectedSidebarCols.length > 1 && selectedHere.length > 0 && (
+                <div style={{ padding: '4px 8px 6px 24px' }}>
+                  <button onClick={() => addColumnsToNotebook(selectedColInfos())} style={{ background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '3px 10px', fontSize: 11, color: accentText, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontWeight: 600 }}>
+                    <Icon name="action-add" size={11} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Add {selectedSidebarCols.length} to notebook
+                  </button>
                 </div>
-              )
-            })}
-          </>
-        )}
+              )}
+              {/* A workbook with one sheet looks exactly as before. With several,
+                  each sheet is its own collapsible group holding the same
+                  controls — only the first starts open, so a 12-sheet workbook
+                  does not push everything else off the sidebar. */}
+              {file.sheets.length === 1
+                ? renderSheetColumns(file, file.sheets[0])
+                : file.sheets.map((sheet, si) => {
+                    const open = isSheetOpen(file.id, sheet.name, si)
+                    return (
+                      <div key={sheet.name} style={{ marginLeft: 14 }}>
+                        <div className="sheet-row"
+                          onClick={() => toggleSheetOpen(file.id, sheet.name)}
+                          title={`Sheet "${sheet.name}"`}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, color: open ? text : text2 }}>
+                          <Icon name={open ? 'nav-chevron-down' : 'nav-chevron-right'} size={10} style={{ color: text3, flexShrink: 0 }} />
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
+                          <span style={{ fontSize: 9, color: text3, fontWeight: 400 }}>{visibleHeaders(sheet).length} cols</span>
+                        </div>
+                        {open && <div style={{ marginLeft: 6, borderLeft: `1px solid ${border}` }}>{renderSheetColumns(file, sheet)}</div>}
+                      </div>
+                    )
+                  })}
+            </>
+          )
+        })()}
       </div>
     )
   }
