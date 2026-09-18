@@ -2429,10 +2429,10 @@ export default function AppPage() {
               onDragStart={e => { e.stopPropagation(); handleFileDragStart(e, file, sheet) }}
               onClick={() => addColumnsToNotebook(cols.map(col => ({ fileId: file.id, fileName: file.name, sheetName: sheet.name, col })))}
               title="Click to add, or drag onto the canvas"
-              style={{ width: '100%', background: accentDim, border: `1px solid ${accent}44`, borderRadius: 5, padding: '4px 8px', fontSize: 11, color: accentText, cursor: 'grab', fontFamily: 'var(--ds-font-body)', fontWeight: 600, textAlign: 'left' }}>
+              style={{ width: '100%', background: accentDim, border: `1px solid ${accent}44`, borderRadius: 6, padding: '4px 8px', fontSize: 11, color: accentText, cursor: 'grab', fontFamily: 'var(--ds-font-body)', fontWeight: 600, textAlign: 'left' }}>
               <Icon name="action-add" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }} />Whole table · {cols.length} columns
             </button>
-            <div style={{ fontSize: 9.5, color: text3, marginTop: 4, lineHeight: 1.35 }}>
+            <div style={{ fontSize: 11, color: text3, marginTop: 4, lineHeight: 1.35 }}>
               Drag a column for just that one · ⌘/Ctrl or Shift-click to pick several
             </div>
           </div>
@@ -2553,9 +2553,9 @@ export default function AppPage() {
                           onClick={() => toggleSheetOpen(file.id, sheet.name)}
                           title={`Sheet "${sheet.name}"`}
                           style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, color: open ? text : text2 }}>
-                          <Icon name={open ? 'nav-chevron-down' : 'nav-chevron-right'} size={10} style={{ color: text3, flexShrink: 0 }} />
+                          <Icon name={open ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} style={{ color: text3, flexShrink: 0 }} />
                           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
-                          <span style={{ fontSize: 9, color: text3, fontWeight: 400 }}>{visibleHeaders(sheet).length} cols</span>
+                          <span style={{ fontSize: 11, color: text3, fontWeight: 400 }}>{visibleHeaders(sheet).length} cols</span>
                         </div>
                         {open && <div style={{ marginLeft: 6, borderLeft: `1px solid ${border}` }}>{renderSheetColumns(file, sheet)}</div>}
                       </div>
