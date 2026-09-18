@@ -1267,9 +1267,22 @@ function CalendarView({ db, view, rows, colors, dark, editing, onOpenCell, onClo
                     ) : (
                       <button key={r.id}
                         data-ds-db-event={r.id}
-                        title={`${rowTitle(db, r)} — double-click to rename`}
+                        title={`${rowTitle(db, r)} — double-click, or Enter, to rename`}
                         onMouseDown={e => e.stopPropagation()}
                         onDoubleClick={e => { e.stopPropagation(); onOpenCell({ rowId: r.id, propId: db.titlePropId }) }}
+                        /* A <button> whose only action is a DOUBLE-click is a
+                           button the keyboard cannot press: it is focusable and
+                           announced, and Enter did nothing. Enter and Space do
+                           what the double-click does. The mouse path is
+                           untouched — a single click still belongs to the day
+                           cell underneath, which is why mousedown is stopped
+                           rather than turned into an onClick. */
+                        onKeyDown={e => {
+                          if (e.key !== 'Enter' && e.key !== ' ') return
+                          e.preventDefault()
+                          e.stopPropagation()
+                          onOpenCell({ rowId: r.id, propId: db.titlePropId })
+                        }}
                         style={{
                           display: 'block', width: '100%', textAlign: 'left',
                           padding: '2px 6px', borderRadius: 4, cursor: 'pointer',

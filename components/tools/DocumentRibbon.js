@@ -70,6 +70,50 @@ const TABS = [
 
 const COLOR_OPTIONS = [INK_SWATCH, ...SWATCHES]
 
+/* ── pressProps ───────────────────────────────────────────────────────────
+   Every control in this ribbon fires on MOUSEDOWN + preventDefault, and has
+   to: execCommand acts on the document's selection, and letting the browser
+   process a real click collapses that selection to the press point before the
+   command can run. That is correct — and it is also why not one of these
+   buttons worked from the keyboard.
+
+   Keyboard activation arrives as a CLICK, never a mousedown: Enter or Space on
+   a focused <button>, and the el.click() the canvas dispatches in toolbar mode
+   (NotebookCanvas.js, kbMode === 'toolbar'). So every button here was
+   focusable, announced, and inert — the ribbon was reachable by keyboard and
+   could not be operated by one.
+
+   Both paths, one handler, with a guard below so a real press cannot fire it
+   twice.
+
+   The selection survives the keyboard path too — exec() calls
+   restoreDocSelection() first, which re-focuses the document host and puts the
+   saved range back when focus has moved onto a button. */
+let lastRibbonPress = 0
+
+function pressProps(fn, disabled) {
+  return {
+    onMouseDown: e => {
+      e.preventDefault()
+      lastRibbonPress = e.timeStamp
+      if (!disabled) fn(e)
+    },
+    onClick: e => {
+      if (disabled) return
+      /* Two ways to tell a click that FOLLOWS a press we already handled from
+         one that stands alone. `detail` carries the click count on a real
+         mouse press and 0 on a keyboard or programmatic one — but touch
+         synthesises a click that reports 0 in some engines, and mousedown's
+         preventDefault does not suppress it. So a recent press anywhere in the
+         ribbon vetoes the click as well. A keyboard user has not just pressed
+         a mouse button; a double-firing toolbar is the failure that matters. */
+      if (e.detail > 0) return
+      if (e.timeStamp - lastRibbonPress < 500) return
+      fn(e)
+    },
+  }
+}
+
 /* ── Small shared pieces ──────────────────────────────────────────────── */
 
 /* A pressed-state button, which is what every toggle in this ribbon is.
@@ -83,11 +127,11 @@ function RibbonBtn({ on, onClick, title, label, icon, wide, disabled, dot, child
   return (
     <button
       type="button"
-      /* MOUSEDOWN + preventDefault, like every control in TextBlockToolbar and
-         for the identical reason: execCommand acts on the document's selection,
-         and a click lets the browser collapse that selection to the press point
-         before the command runs. The formatting would apply to nothing. */
-      onMouseDown={e => { e.preventDefault(); if (!disabled) onClick?.(e) }}
+      /* Mouse fires on mousedown so the document's selection survives the
+         press; keyboard and toolbar-mode activation come through as a click.
+         See pressProps above — it is the same reason TextBlockToolbar uses
+         mousedown, plus the keyboard half that was missing. */
+      {...pressProps(e => onClick?.(e), disabled)}
       title={title}
       aria-label={title}
       aria-pressed={on === undefined ? undefined : !!on}
@@ -233,7 +277,7 @@ function Group({ label, launcher, onLaunch, children }) {
              Paragraph dialogs are built; wired to open them when they are. */
           <button
             type="button"
-            onMouseDown={e => { e.preventDefault(); onLaunch?.() }}
+            {...pressProps(() => onLaunch?.())}
             title={`${label} options`}
             aria-label={`${label} options`}
             style={{
@@ -300,6 +344,8 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
      raw browser scrollbar with nothing saying it was there. Measuring the
      scroll position lets a fade appear on whichever side still has content. */
   const bandRef = useRef(null)
+  /* One ref per tab, so the arrow keys can move focus as well as selection. */
+  const tabRefs = useRef([])
   const scrollWrapRef = useRef(null)
   const [overflow, setOverflow] = useState('')
   const measureOverflow = () => {
@@ -463,7 +509,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <button
             type="button"
-            onMouseDown={e => { e.preventDefault(); setMenu(m => (m === 'font' ? null : 'font')) }}
+            {...pressProps(() => setMenu(m => (m === 'font' ? null : 'font')))}
             title="Font family"
             style={{
               display: 'flex', alignItems: 'center', gap: 6, height: 26, width: 118,
@@ -480,12 +526,11 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             <Pop style={popover}>
               {DOC_FONTS.map(f => (
                 <button key={f.name} type="button"
-                  onMouseDown={e => {
-                    e.preventDefault()
+                  {...pressProps(() => {
                     exec('fontName', f.name)
                     patch({ font: f.name })
                     setMenu(null)
-                  }}
+                  })}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                     background: 'transparent', border: 'none', borderRadius: 'var(--ds-radius-sm)',
@@ -526,7 +571,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
               }}
             />
             <button type="button"
-              onMouseDown={e => { e.preventDefault(); setMenu(m => (m === 'size' ? null : 'size')) }}
+              {...pressProps(() => setMenu(m => (m === 'size' ? null : 'size')))}
               title="Font size" aria-label="Font size presets"
               style={{ width: 20, height: '100%', border: 'none', background: 'none', color: text3, cursor: 'pointer', padding: 0 }}>
               <Icon name="nav-chevron-down" size={12} />
@@ -536,7 +581,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             <Pop style={{ ...popover, minWidth: 62 }}>
               {FONT_SIZES.map(n => (
                 <button key={n} type="button"
-                  onMouseDown={e => { e.preventDefault(); patch({ fontSize: n }); setMenu(null) }}
+                  {...pressProps(() => { patch({ fontSize: n }); setMenu(null) })}
                   style={{
                     display: 'block', width: '100%', textAlign: 'left', background: 'transparent',
                     border: 'none', borderRadius: 'var(--ds-radius-sm)', color: text2,
@@ -586,7 +631,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             </span>
           </RibbonBtn>
           <button type="button"
-            onMouseDown={e => { e.preventDefault(); setMenu(m => (m === 'color' ? null : 'color')) }}
+            {...pressProps(() => setMenu(m => (m === 'color' ? null : 'color')))}
             title="More text colours" aria-label="More text colours"
             style={{ width: 14, height: 26, border: 'none', background: 'none', color: text3, cursor: 'pointer', padding: 0, flexShrink: 0 }}>
             <Icon name="nav-chevron-down" size={12} />
@@ -595,12 +640,11 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             <Pop style={{ ...popover, left: 0, minWidth: 0, padding: 9, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
               {COLOR_OPTIONS.map(sw => (
                 <button key={sw.name} type="button"
-                  onMouseDown={e => {
-                    e.preventDefault()
+                  {...pressProps(() => {
                     exec('foreColor', sw.value)
                     setLastColor(sw.value)
                     setMenu(null)
-                  }}
+                  })}
                   title={sw.name} aria-label={`Text colour ${sw.name}`}
                   style={{
                     width: 18, height: 18, borderRadius: '50%', background: sw.value,
@@ -645,7 +689,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             <Pop style={{ ...popover, minWidth: 110 }}>
               {LINE_SPACINGS.map(sp => (
                 <button key={sp.id} type="button"
-                  onMouseDown={e => { e.preventDefault(); patch({ lineSpacing: sp.id }); setMenu(null) }}
+                  {...pressProps(() => { patch({ lineSpacing: sp.id }); setMenu(null) })}
                   style={{
                     display: 'flex', width: '100%', gap: 8, background: 'transparent', border: 'none',
                     borderRadius: 'var(--ds-radius-sm)', color: (block.lineSpacing || 1.5) === sp.id ? accent : text2,
@@ -675,7 +719,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
           { cmd: 'div', label: 'Normal', size: 11, weight: 400 },
         ].map(st => (
           <button key={st.cmd} type="button"
-            onMouseDown={e => { e.preventDefault(); exec('formatBlock', st.cmd) }}
+            {...pressProps(() => exec('formatBlock', st.cmd))}
             title={st.cmd === 'div' ? 'Normal paragraph' : `Heading ${st.cmd.slice(1)}`}
             style={{
               height: 26, padding: '0 8px', flexShrink: 0,
@@ -727,7 +771,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
               }}>Insert</div>
               {COLUMN_COUNTS.map(n => (
                 <button key={`ins-${n}`} type="button"
-                  onMouseDown={e => { e.preventDefault(); insertColumnsHere(n) }}
+                  {...pressProps(() => insertColumnsHere(n))}
                   style={{
                     display: 'block', width: '100%', textAlign: 'left', background: 'transparent',
                     border: 'none', borderRadius: 'var(--ds-radius-sm)', color: text2,
@@ -745,7 +789,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
               }}>Turn into</div>
               {COLUMN_COUNTS.map(n => (
                 <button key={`turn-${n}`} type="button" disabled={!colHasSelection}
-                  onMouseDown={e => { e.preventDefault(); if (colHasSelection) turnSelectionIntoColumnsHere(n) }}
+                  {...pressProps(() => turnSelectionIntoColumnsHere(n), !colHasSelection)}
                   title={colHasSelection ? undefined : 'Select some text first'}
                   style={{
                     display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 8,
@@ -799,7 +843,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             <Pop style={{ ...popover, minWidth: 210 }}>
               {MARGIN_PRESETS.map(p => (
                 <button key={p.id} type="button"
-                  onMouseDown={e => { e.preventDefault(); patch({ margins: { ...p.margins } }); setMenu(null) }}
+                  {...pressProps(() => { patch({ margins: { ...p.margins } }); setMenu(null) })}
                   style={{
                     display: 'flex', width: '100%', gap: 8, background: 'transparent', border: 'none',
                     borderRadius: 'var(--ds-radius-sm)', cursor: 'pointer', padding: '6px 10px',
@@ -818,11 +862,10 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
               ))}
               <div style={{ height: 1, background: border, margin: '4px 0' }} />
               <button type="button"
-                onMouseDown={e => {
-                  e.preventDefault()
+                {...pressProps(() => {
                   setMarginDialog({ ...margins })
                   setMenu(null)
-                }}
+                })}
                 style={{
                   display: 'block', width: '100%', textAlign: 'left', background: 'transparent',
                   border: 'none', borderRadius: 'var(--ds-radius-sm)', color: text2,
@@ -853,7 +896,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
                 const on = (block.pageSize || 'a4') === id
                 return (
                   <button key={id} type="button"
-                    onMouseDown={e => { e.preventDefault(); patch({ pageSize: id }); setMenu(null) }}
+                    {...pressProps(() => { patch({ pageSize: id }); setMenu(null) })}
                     style={{
                       display: 'flex', width: '100%', gap: 8, background: 'transparent', border: 'none',
                       borderRadius: 'var(--ds-radius-sm)', cursor: 'pointer', padding: '6px 10px',
@@ -934,15 +977,49 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
         </span>
       </div>
 
-      {/* ── TABS ── */}
+      {/* ── TABS ──
+          A real tablist, which is a promise about the keyboard as much as a
+          label for a screen reader: the arrow keys move between tabs, Home and
+          End jump to the ends, and only the SELECTED tab sits in the page's tab
+          order (WAI-ARIA's roving tabindex). Four tabs each holding their own
+          Tab stop is a ribbon that costs four keystrokes before you reach a
+          control.
+
+          Activation follows focus, as Word's ribbon does — arrowing onto Insert
+          shows the Insert band immediately. That is the right default when
+          there is no panel to load and so nothing to make lazy.
+
+          The arrow keys are stopped here rather than left to bubble: the
+          canvas's toolbar mode (NotebookCanvas.js) reads arrows as spatial
+          moves between island buttons, and both handlers acting on one press
+          would move focus twice. ── */}
       <div role="tablist" aria-label="Ribbon" style={{
         display: 'flex', gap: 2, padding: '4px 8px 0',
       }}>
-        {TABS.map(t => {
+        {TABS.map((t, i) => {
           const on = tab === t.id
+          const goTab = j => {
+            const n = TABS[(j + TABS.length) % TABS.length]
+            setTab(n.id)
+            setMenu(null)
+            tabRefs.current[(j + TABS.length) % TABS.length]?.focus()
+          }
           return (
             <button key={t.id} type="button" role="tab" aria-selected={on}
-              onMouseDown={e => { e.preventDefault(); setTab(t.id); setMenu(null) }}
+              tabIndex={on ? 0 : -1}
+              ref={el => { tabRefs.current[i] = el }}
+              onKeyDown={e => {
+                const j = e.key === 'ArrowRight' ? i + 1
+                  : e.key === 'ArrowLeft' ? i - 1
+                  : e.key === 'Home' ? 0
+                  : e.key === 'End' ? TABS.length - 1
+                  : null
+                if (j === null) return
+                e.preventDefault()
+                e.stopPropagation()
+                goTab(j)
+              }}
+              {...pressProps(() => { setTab(t.id); setMenu(null) })}
               style={{
                 height: 24, padding: '0 12px', cursor: 'pointer',
                 border: `1px solid ${on ? border : 'transparent'}`,
@@ -1012,6 +1089,43 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
   const { surface, raised, border, text, text2, text3, accent } = colors
   const page = pageInches(block.pageSize, block.orientation)
 
+  /* aria-modal="true" is a claim about focus, and it was the only part of this
+     dialog that wasn't true. Focus stayed on the ribbon button behind the
+     scrim, so opening Custom Margins from the keyboard meant tabbing through
+     the page to reach a field, Tab walked straight back out into the canvas,
+     and closing left focus nowhere.
+
+     Same three pieces as components/ui/ConfirmDialog.js, for the same reasons:
+     move focus in (the first margin field, because typing a number is what
+     this dialog is for), trap Tab inside while it is open, and hand focus back
+     to whatever opened it on the way out. */
+  const cardRef = useRef(null)
+  const openerRef = useRef(null)
+
+  useEffect(() => {
+    openerRef.current = document.activeElement
+    const first = cardRef.current?.querySelector('input')
+    first?.focus()
+    first?.select?.()
+    return () => { try { openerRef.current?.focus?.() } catch { /* the opener may be gone */ } }
+  }, [])
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key !== 'Tab') return
+      const f = cardRef.current?.querySelectorAll('input, button:not([disabled])')
+      if (!f?.length) return
+      const first = f[0]
+      const last = f[f.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
+    /* Capture, so the canvas keymap does not see Tab first and move focus to
+       an island button behind the scrim. */
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [])
+
   const set = (k, v) => setDraft(d => ({ ...d, [k]: normalizeMargin(v, d[k]) }))
   const bump = (k, dir) => setDraft(d => ({
     ...d,
@@ -1030,6 +1144,7 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
       <div data-ds-scrim onMouseDown={onCancel}
         style={{ position: 'fixed', inset: 0, zIndex: Z.dialogScrim, background: 'rgba(0,0,0,0.28)' }} />
       <div
+        ref={cardRef}
         role="dialog" aria-modal="true" aria-label="Custom margins"
         data-ds-dialog data-kbd-zone
         onMouseDown={e => e.stopPropagation()}
@@ -1075,10 +1190,10 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
                   <span style={{ fontSize: 11, color: text3, paddingRight: 4 }}>″</span>
                   {/* Spinner buttons, 0.25″ steps — Word's own increment. */}
                   <span style={{ display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${border}` }}>
-                    <button type="button" onMouseDown={e => { e.preventDefault(); bump(k, 1) }}
+                    <button type="button" {...pressProps(() => bump(k, 1))}
                       aria-label={`Increase ${k} margin`}
                       style={{ width: 18, height: 14, border: 'none', background: 'none', color: text2, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: 0 }}>▲</button>
-                    <button type="button" onMouseDown={e => { e.preventDefault(); bump(k, -1) }}
+                    <button type="button" {...pressProps(() => bump(k, -1))}
                       aria-label={`Decrease ${k} margin`}
                       style={{ width: 18, height: 14, border: 'none', background: 'none', color: text2, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: 0, borderTop: `1px solid ${border}` }}>▼</button>
                   </span>
@@ -1105,8 +1220,8 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: `1px solid ${border}` }}>
-          <button type="button" className="ds-btn" onMouseDown={e => { e.preventDefault(); onCancel() }}>Cancel</button>
-          <button type="button" className="ds-btn ds-btn-primary" onMouseDown={e => { e.preventDefault(); onOk() }}>OK</button>
+          <button type="button" className="ds-btn" {...pressProps(() => onCancel())}>Cancel</button>
+          <button type="button" className="ds-btn ds-btn-primary" {...pressProps(() => onOk())}>OK</button>
         </div>
       </div>
     </>

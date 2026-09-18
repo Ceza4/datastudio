@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { sanitizeEditorHtml } from '../../lib/sanitize'
 import {
   PX_PER_IN, pageMetrics, pageGuides, pageCount, wordCount, charCount,
-  fontStack, normalizeMargin,
+  fontStack, normalizeMargin, MARGIN_STEP,
 } from '../../lib/pagesetup'
 import {
   isColumnsRow, isColumnBody, isCaretAtColumnStart, isColumnsRowEmpty,
@@ -523,6 +523,58 @@ function Ruler({ block, metrics, colors, onUpdateBlock }) {
   const pageWpx = metrics.px.pageW
   const inches = Math.ceil(metrics.page.w)
 
+  /* ONE place that clamps and writes a marker, because there are now two ways
+     to move one. Each caller hands it a value in that marker's own frame:
+     distance from the left page edge for `left`, from the right edge for
+     `right`, from the left margin for the indent — the same frames the drag
+     already worked in. */
+  const writeMarker = (which, inches) => {
+    if (which === 'left') {
+      /* Clamped so the two margins can never cross: half an inch of content
+         minimum, which lib/pagesetup.js enforces again on read — belt and
+         braces, because a drag can produce values a dialog cannot. */
+      const max = metrics.page.w - metrics.margins.right - 0.5
+      onUpdateBlock?.(block.id, {
+        margins: { ...metrics.margins, left: normalizeMargin(Math.min(max, Math.max(0, inches)), metrics.margins.left) },
+      })
+    } else if (which === 'right') {
+      const max = metrics.page.w - metrics.margins.left - 0.5
+      onUpdateBlock?.(block.id, {
+        margins: { ...metrics.margins, right: normalizeMargin(Math.min(max, Math.max(0, inches)), metrics.margins.right) },
+      })
+    } else {
+      /* First-line indent, measured from the left margin — which is where Word
+         measures it from, and the only origin that keeps the marker under the
+         cursor when the margin itself moves. */
+      onUpdateBlock?.(block.id, {
+        indentFirst: normalizeMargin(Math.max(0, Math.min(metrics.inches.contentW - 0.25, inches)), 0),
+      })
+    }
+  }
+
+  /* ARROW KEYS MOVE A MARKER TOO.
+
+     These are real <button>s: focusable, in the tab order, and announced as
+     "Left margin". They were also drag-only, so a keyboard reached them and
+     then could do nothing with them — a control that answers when you call it
+     and not when you speak to it. Word's ruler is mouse-only and gets away
+     with it because Word's markers are not buttons.
+
+     0.05″ per press, because normalizeMargin keeps two decimals and placing a
+     margin is a precision job; Shift gives the 0.25″ the ribbon's spinners and
+     Word's own increment use, for crossing the page quickly. */
+  const FINE_STEP = 0.05
+  const nudgeMarker = (which, dir, coarse) => {
+    const step = (coarse ? MARGIN_STEP : FINE_STEP) * dir
+    const at = which === 'left' ? metrics.margins.left
+      : which === 'right' ? metrics.margins.right
+      : (block.indentFirst || 0)
+    /* The right marker's frame runs inward from the right edge, so a press
+       towards the page's left edge GROWS it. Anything else moves the handle
+       the opposite way from the arrow. */
+    writeMarker(which, at + (which === 'right' ? -step : step))
+  }
+
   /* A drag is in SCREEN pixels and a margin is in inches, and the canvas may be
      zoomed — so the conversion has to come from the element's measured width
      against the page's known width in inches, not from a constant. Measuring the
@@ -538,27 +590,9 @@ function Ruler({ block, metrics, colors, onUpdateBlock }) {
 
     function move(ev) {
       const xIn = (ev.clientX - rect.left) / pxPerInch
-      if (which === 'left') {
-        /* Clamped so the two margins can never cross: half an inch of content
-           minimum, which lib/pagesetup.js enforces again on read — belt and
-           braces, because a drag can produce values a dialog cannot. */
-        const max = metrics.page.w - metrics.margins.right - 0.5
-        onUpdateBlock?.(block.id, {
-          margins: { ...metrics.margins, left: normalizeMargin(Math.min(max, Math.max(0, xIn)), metrics.margins.left) },
-        })
-      } else if (which === 'right') {
-        const fromRight = metrics.page.w - xIn
-        const max = metrics.page.w - metrics.margins.left - 0.5
-        onUpdateBlock?.(block.id, {
-          margins: { ...metrics.margins, right: normalizeMargin(Math.min(max, Math.max(0, fromRight)), metrics.margins.right) },
-        })
-      } else {
-        /* First-line indent, measured from the left margin — which is where
-           Word measures it from, and the only origin that keeps the marker under
-           the cursor when the margin itself moves. */
-        const rel = xIn - metrics.margins.left
-        onUpdateBlock?.(block.id, { indentFirst: normalizeMargin(Math.max(0, Math.min(metrics.inches.contentW - 0.25, rel)), 0) })
-      }
+      if (which === 'left') writeMarker('left', xIn)
+      else if (which === 'right') writeMarker('right', metrics.page.w - xIn)
+      else writeMarker(which, xIn - metrics.margins.left)
     }
     function up() {
       window.removeEventListener('mousemove', move)
@@ -577,8 +611,18 @@ function Ruler({ block, metrics, colors, onUpdateBlock }) {
     <button
       type="button"
       onMouseDown={e => startDrag(which, e)}
+      onKeyDown={e => {
+        const dir = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0
+        if (!dir) return
+        /* Stopped here, not left to bubble: the canvas's toolbar mode reads
+           arrows as spatial moves between island buttons, and both handlers
+           acting on one press would nudge the margin AND move focus off it. */
+        e.preventDefault()
+        e.stopPropagation()
+        nudgeMarker(which, dir, e.shiftKey)
+      }}
       title={title}
-      aria-label={title}
+      aria-label={label}
       style={{
         position: 'absolute', top: 0, left: `${leftPct}%`,
         transform: 'translateX(-50%)',
@@ -649,9 +693,11 @@ function Ruler({ block, metrics, colors, onUpdateBlock }) {
         {/* The handles, below the bar so they can overhang it without being
             clipped by its overflow:hidden. */}
         <div style={{ position: 'relative', height: 12 }}>
-          {marker('left', pctL, 'Left margin — drag to change it', 'Left margin')}
-          {marker('indentFirst', pctIndent, 'First-line indent', 'First-line indent')}
-          {marker('right', 100 - pctR, 'Right margin — drag to change it', 'Right margin')}
+          {/* The tooltips name BOTH ways to move a marker. A drag handle that
+              also answers the arrow keys is not something anyone guesses. */}
+          {marker('left', pctL, 'Left margin — drag, or nudge with ← →', 'Left margin')}
+          {marker('indentFirst', pctIndent, 'First-line indent — drag, or nudge with ← →', 'First-line indent')}
+          {marker('right', 100 - pctR, 'Right margin — drag, or nudge with ← →', 'Right margin')}
         </div>
       </div>
     </div>
