@@ -124,6 +124,11 @@ export default function AddMenu({ anchorRect, colors, onPick, onClose }) {
 
   useEffect(() => {
     function onDown(e) {
+      /* The button that OPENS this is not "outside". A mousedown on it used to
+       close the panel here, then the button's click toggled it straight back
+       open, so a second click on the button could never close it. The
+       button owns open/close; this listener stands down for it. */
+      if (e.target?.closest?.('[data-menu-toggle="add"]')) return
       if (!panelRef.current?.contains(e.target)) onClose()
     }
     const t = setTimeout(() => document.addEventListener('mousedown', onDown), 0)

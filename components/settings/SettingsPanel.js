@@ -3,6 +3,7 @@ import { useState } from 'react'
 import Icon from '../ui/Icon'
 import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
 import { GRID_SIZES, IMAGE_DROP_MODES, shouldReduceMotion } from '../../lib/prefs'
+import { CANVAS_PRESETS, CANVAS_BG_LIMITS, normalizeCanvasBg, resolveCanvasBg, isDefaultCanvasBg, dotContrast } from '../../lib/canvasbg'
 import { SYNC_OFF, SYNC_SYNCED, SYNC_SYNCING, SYNC_QUEUED, SYNC_ERROR } from '../../lib/sync'
 
 /*
@@ -111,6 +112,205 @@ function Toggle({ label, hint, icon, on, onChange }) {
   )
 }
 
+/* ── Canvas background ───────────────────────────────────────────────────
+
+   A slider with a typed box beside it. You drag for feel and type for an exact
+   value. Both commit through the same normalise (lib/canvasbg.js), so neither
+   can store a value the other could not show.
+
+   The box keeps its own draft string while it has focus. Otherwise every
+   keystroke would be normalised mid-word: typing "1.5" would pass "1." through
+   the clamp and snap back. It commits on Enter or blur, and Escape drops the
+   draft. */
+function SliderRow({ label, readout, value, limits, unit, onChange }) {
+  const [draft, setDraft] = useState(null)
+  const decimals = limits.step < 1 ? 1 : 0
+  const shown = draft ?? Number(value).toFixed(decimals)
+  function commit() {
+    if (draft === null) return
+    const n = Number(draft.replace(',', '.'))
+    if (Number.isFinite(n)) onChange(n)
+    setDraft(null)
+  }
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 11, color: 'var(--ds-text-3)', marginBottom: 4 }}>
+        <span style={{ flex: 1 }}>{label}</span>
+        {readout}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input type="range" aria-label={label}
+          min={limits.min} max={limits.max} step={limits.step} value={value}
+          onChange={e => onChange(Number(e.target.value))}
+          style={{ flex: 1, minWidth: 0, accentColor: 'var(--ds-accent)', margin: 0 }} />
+        <label style={{
+          display: 'flex', alignItems: 'center', gap: 2, width: 64, flexShrink: 0,
+          padding: '4px 6px', borderRadius: 6, border: '1px solid var(--ds-border)',
+          background: 'var(--ds-raised)', fontFamily: mono, fontSize: 11, color: 'var(--ds-text-3)',
+        }}>
+          <input type="text" inputMode="decimal" aria-label={`${label} value`}
+            value={shown}
+            onFocus={e => { setDraft(shown); e.target.select() }}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); commit(); e.currentTarget.blur() }
+              else if (e.key === 'Escape') { e.stopPropagation(); setDraft(null); e.currentTarget.blur() }
+              else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault()
+                const dir = e.key === 'ArrowUp' ? 1 : -1
+                const mult = e.shiftKey ? 10 : 1
+                setDraft(null)
+                onChange(Number(value) + dir * limits.step * mult)
+              }
+            }}
+            style={{
+              width: '100%', minWidth: 0, border: 0, outline: 'none', background: 'transparent',
+              fontFamily: mono, fontSize: 11, color: 'var(--ds-text)', textAlign: 'right', padding: 0,
+            }} />
+          <span aria-hidden="true">{unit}</span>
+        </label>
+      </div>
+    </div>
+  )
+}
+
+/* Two-tone swatch: the preset's light ground on the left and its dark ground on
+   the right, each with one dot in its own ink. The notebook is shared across
+   themes, so a preset is picked for both of them at once. The swatch should
+   show both. */
+function PresetSwatch({ preset, size = 18 }) {
+  const half = { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }
+  const dot = ink => <span style={{ width: 3, height: 3, borderRadius: '50%', background: ink, opacity: 0.7 }} />
+  return (
+    <span aria-hidden="true" style={{
+      display: 'flex', width: size, height: size, borderRadius: 4, overflow: 'hidden', flexShrink: 0,
+      border: '1px solid var(--ds-border)',
+    }}>
+      <span style={{ ...half, background: preset.light.bg }}>{dot(preset.light.ink)}</span>
+      <span style={{ ...half, background: preset.dark.bg }}>{dot(preset.dark.ink)}</span>
+    </span>
+  )
+}
+
+/* The preset picker. A dropdown rather than a segmented control: six options
+   will not fit in 276px as buttons, and each one needs a swatch to mean
+   anything. A button plus an ARIA listbox, not a native <select>, because
+   an <option> cannot hold a swatch. */
+function PresetDropdown({ value, onChange }) {
+  const [open, setOpen] = useState(false)
+  const current = CANVAS_PRESETS.find(p => p.id === value) || CANVAS_PRESETS[0]
+  function pick(id) { onChange(id); setOpen(false) }
+  return (
+    <div style={{ position: 'relative', marginBottom: 10 }}
+      onKeyDown={e => {
+        if (!open) return
+        if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          const i = CANVAS_PRESETS.findIndex(p => p.id === current.id)
+          const n = (i + (e.key === 'ArrowDown' ? 1 : -1) + CANVAS_PRESETS.length) % CANVAS_PRESETS.length
+          onChange(CANVAS_PRESETS[n].id)
+        }
+        if (e.key === 'Enter') { e.preventDefault(); setOpen(false) }
+      }}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        aria-haspopup="listbox" aria-expanded={open}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+          padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontFamily: body, fontSize: 13,
+          border: `1px solid ${open ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
+          background: 'transparent', color: 'var(--ds-text)', textAlign: 'left',
+        }}>
+        <PresetSwatch preset={current} />
+        <span style={{ flex: 1 }}>{current.name}</span>
+        <Icon name="nav-chevron-down" size={12} />
+      </button>
+      {open && (
+        <div role="listbox" aria-label="Background colour"
+          style={{
+            position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 4, zIndex: 2,
+            background: 'var(--ds-surface)', border: '1px solid var(--ds-border)', borderRadius: 8,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.22)', padding: 4,
+          }}>
+          {CANVAS_PRESETS.map(p => (
+            <button key={p.id} type="button" role="option" aria-selected={p.id === current.id}
+              onClick={() => pick(p.id)}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 8px', borderRadius: 6, cursor: 'pointer', border: 0,
+                fontFamily: body, fontSize: 13, textAlign: 'left',
+                background: p.id === current.id ? 'var(--ds-accent-dim)' : 'transparent',
+                color: p.id === current.id ? 'var(--ds-accent)' : 'var(--ds-text-2)',
+              }}>
+              <PresetSwatch preset={p} />
+              <span style={{ flex: 1 }}>{p.name}</span>
+              {p.id === current.id && <Icon name="action-check" size={12} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CanvasBackground({ notebook, dark, onChange }) {
+  if (!notebook) {
+    return (
+      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', lineHeight: 1.5, marginBottom: 14 }}>
+        Open a notebook to change its background.
+      </div>
+    )
+  }
+  const bg = normalizeCanvasBg(notebook.canvasBg)
+  const resolved = resolveCanvasBg(bg, dark)
+  const L = CANVAS_BG_LIMITS
+  const opacityKey = dark ? 'opacityDark' : 'opacityLight'
+  const ratio = dotContrast(resolved.ink, resolved.bg, resolved.alpha)
+  /* Above 3:1 the dots meet the WCAG bar for MEANINGFUL graphics. A background
+     texture should not. It is allowed, because this is a personal choice, but
+     it says so instead of quietly letting the grid get louder than the work. */
+  const loud = ratio >= 3
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 11, color: 'var(--ds-text-3)', margin: '10px 0 6px' }}>
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          Background · <span style={{ color: 'var(--ds-text-2)' }}>{notebook.name || 'Untitled'}</span>
+        </span>
+        {!isDefaultCanvasBg(bg) && (
+          <button type="button" onClick={() => onChange(null)}
+            style={{ border: 0, background: 'transparent', padding: 0, cursor: 'pointer', fontFamily: body, fontSize: 11, color: 'var(--ds-accent)' }}>
+            Reset
+          </button>
+        )}
+      </div>
+      <PresetDropdown value={bg.preset} onChange={id => onChange({ preset: id })} />
+      <SliderRow label="Dot spacing" unit="px" value={bg.spacing} limits={L.spacing}
+        onChange={v => onChange({ spacing: v })} />
+      <SliderRow label="Dot radius" unit="px" value={bg.radius} limits={L.radius}
+        onChange={v => onChange({ radius: v })} />
+      <SliderRow label={`Dot opacity · ${dark ? 'dark' : 'light'} theme`} unit="%" value={bg[opacityKey]} limits={L.opacity}
+        readout={
+          <span title="Dot contrast against the background. Under 3:1 keeps it a texture."
+            style={{ fontFamily: mono, color: loud ? 'var(--ds-amber)' : 'var(--ds-text-3)' }}>
+            {ratio.toFixed(2)}:1{loud ? ' · loud' : ''}
+          </span>
+        }
+        onChange={v => onChange({ [opacityKey]: v })} />
+      <Toggle
+        label="Ruler dots"
+        hint="Every 5th dot larger and stronger"
+        icon="view-grid"
+        on={bg.ruler}
+        onChange={v => onChange({ ruler: v })}
+      />
+      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', lineHeight: 1.5 }}>
+        Saved with this notebook. Everyone who opens it sees it.
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPanel({
   dark, setDark,
   prefs, setPref,
@@ -129,6 +329,9 @@ export default function SettingsPanel({
      the wrong one turns a storage section into either a false alarm or a false
      reassurance. */
   account,
+  /* The notebook whose background the Canvas section edits (the active one),
+     or null. onCanvasBgChange(patch) merges; onCanvasBgChange(null) resets. */
+  canvasNotebook, onCanvasBgChange,
 }) {
   const [showShortcuts, setShowShortcuts] = useState(false)
 
@@ -208,7 +411,10 @@ export default function SettingsPanel({
         onChange={v => setPref('reduceMotion', v)}
       />
 
-      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', margin: '10px 0 6px' }}>Grid size</div>
+      {/* LINE grid, not dots. gridSize is personal and is also the snap step.
+          Dot spacing is the notebook's own (Background, below), so the two
+          are named apart. */}
+      <div style={{ fontSize: 11, color: 'var(--ds-text-3)', margin: '10px 0 6px' }}>Line grid size · also the snap step</div>
       <div style={{ display: 'flex', gap: 4, marginBottom: 14 }}>
         {GRID_SIZES.map(s => (
           <button key={s} onClick={() => setPref('gridSize', s)}
@@ -224,6 +430,9 @@ export default function SettingsPanel({
           </button>
         ))}
       </div>
+
+      <CanvasBackground notebook={canvasNotebook} dark={dark}
+        onChange={patch => onCanvasBgChange && onCanvasBgChange(patch)} />
 
       {/* A SEGMENTED CONTROL, not a Toggle — matching Grid size above and this
           file's own rule that a Toggle is for on/off and a segmented control is

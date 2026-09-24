@@ -74,7 +74,14 @@ export default function PeoplePanel({
     function onKey(e) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose?.() }
     }
-    function onDown(e) { if (ref.current && !ref.current.contains(e.target)) onClose?.() }
+    /* The button that OPENS this is not "outside". A mousedown on it used to
+       close the panel here, then the button's click toggled it straight back
+       open, so a second click on the button could never close it. The
+       button owns open/close; this listener stands down for it. */
+    function onDown(e) {
+      if (e.target?.closest?.('[data-menu-toggle="people"]')) return
+      if (ref.current && !ref.current.contains(e.target)) onClose?.()
+    }
     const t = setTimeout(() => {
       document.addEventListener('mousedown', onDown)
       document.addEventListener('keydown', onKey)

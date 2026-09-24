@@ -33,6 +33,19 @@
      block types with a two-part hover cue where one part never fired. */
   --ds-border-dim: #E0DCD3;
   --ds-canvas-bg:  #EAE7DE;
+  /* Code block (Notes). Warm like the rest of the palette; the syntax
+     colours follow GitHub's light theme, which is what most people read. */
+  --ds-code-bg:    #F1EEE7;
+  --ds-code-head:  #E8E4DB;
+  --ds-code-kw:    #CF222E;
+  --ds-code-str:   #0A3069;
+  --ds-code-num:   #0550AE;
+  --ds-code-fn:    #8250DF;
+  --ds-code-com:   #6E7781;
+  /* Visuals sticky notes (24 Sep 2026): paper yellow, text at 9:1. */
+  --ds-sticky:      #F6E7A8;
+  --ds-sticky-edge: #D9C46A;
+  --ds-sticky-text: #3B3310;
 
   /* ── Text ── */
   --ds-text:       #1A1917;
@@ -150,6 +163,16 @@
   --ds-border:     #2E2D29;
   --ds-border-dim: #252420;
   --ds-canvas-bg:  #141412;
+  --ds-code-bg:    #181816;
+  --ds-code-head:  #201F1C;
+  --ds-code-kw:    #FF7B72;
+  --ds-code-str:   #A5D6FF;
+  --ds-code-num:   #79C0FF;
+  --ds-code-fn:    #D2A8FF;
+  --ds-code-com:   #8B949E;
+  --ds-sticky:      #4A4220;
+  --ds-sticky-edge: #6E6230;
+  --ds-sticky-text: #F3EBC8;
 
   --ds-text:       #E8E6E1;
   --ds-text-2:     #9A9790;
@@ -233,6 +256,9 @@ h1, h2, h3, h4 {
 [data-ds-text]:focus-visible,
 [data-ds-grid-scroll]:focus-visible,
 [data-ds-cell-editor]:focus-visible,
+/* Block title rename fields: they replace the title in place, and a 2px
+   accent ring around a title read as a stray green box. */
+[data-ds-rename]:focus-visible,
 .ds-searchrow input:focus-visible,
 .ds-searchrow input:focus {
   outline: none !important;
@@ -511,14 +537,26 @@ h1, h2, h3, h4 {
 }
 .ds-tbtn:active { transform: translateY(0.5px); }
 
-/* Toggled on (Snap, Mind map, Draw). */
+/* Toggled on (Snap, Draw, and Add while its menu is open).
+
+   NO WEIGHT CHANGE. This used to set font-weight 650, which makes the label
+   wider. The centre island is screen-centred, so one button growing
+   re-centred the whole row: every button moved a few px when Draw or Snap
+   toggled, and the Draw panel (anchored to the Draw button) jumped with it.
+   The emphasis is now a hairline text-shadow, which thickens the glyphs
+   without changing their advance width. */
 .ds-tbtn.is-on {
   background: var(--ds-accent-dim);
   border-color: var(--ds-accent);
   color: var(--ds-accent);
-  font-weight: 650;
+  text-shadow: 0.35px 0 0 currentColor;
   box-shadow: inset 0 0 0 1px var(--ds-accent);
 }
+
+/* A button that opens a MENU (Add) gets the open fill but not the inset
+   ring. The ring is for modes you are in (Snap, Draw). A menu that is
+   open is not a mode, and on Add the ring read as a glow. */
+.ds-tbtn.is-menu.is-on { box-shadow: none; }
 
 /* Primary action in the toolbar (Crosscheck). */
 .ds-tbtn.is-accent {
@@ -855,36 +893,56 @@ html, body {
    (written by lib/columns.js and by the resize-drag handler in each
    editor) — nothing here sets a width. This stylesheet only draws the
    gutter and sizes the drag hit-area to match it. */
+/* A columns row is ONE box: a grid whose only children are its columns, with
+   a divider track strictly between each pair. Widths live in the row's own
+   grid-template-columns as minmax(0, Nfr) tracks (lib/columns.js), so the
+   columns always fill exactly the row, with no gap and no overflow, at any
+   width. Columns are [data-type="col"]; .ds-col is the pre-rebuild spelling,
+   kept only until a legacy row is repaired on load. */
 [data-type="columns"] {
   display: grid;
+  align-items: start;
   margin: 0.5em 0;
   position: relative;
 }
+[data-type="columns"] > [data-type="col"],
 [data-type="columns"] .ds-col {
   min-width: 0;   /* without this, one long unbroken token (a URL, a code
                      string) blows out its track's width instead of
                      wrapping — the one line in this whole block that
                      matters most and looks least important. */
 }
+[data-type="columns"] > [data-type="col"] > *:last-child,
 [data-type="columns"] .ds-col > *:last-child {
   margin-bottom: 0;
 }
+/* STRETCH, ALWAYS. The row is align-items:start so short columns do not
+   stretch, and an empty divider inherited that and collapsed to 0px tall,
+   which took the only visible line between columns with it. The divider
+   spans the full row height on its own. */
 [data-type="col-divider"] {
   cursor: col-resize;
   position: relative;
+  align-self: stretch;
+  min-height: 1.5em;
 }
 [data-type="col-divider"]::after {
   content: '';
   position: absolute;
   top: 2px; bottom: 2px; left: 50%;
   width: 1px;
-  background: var(--ds-border);
+  /* --ds-border was about 1.2:1 against the note: there, but not something
+     you could find. The muted text colour at half strength reads as a clear
+     line without competing with the text either side. */
+  background: var(--ds-text-3);
+  opacity: 0.5;
   transform: translateX(-50%);
   transition: background var(--ds-motion-hover) var(--ds-ease-standard),
               width var(--ds-motion-hover) var(--ds-ease-standard);
 }
 [data-type="col-divider"]:hover::after,
 [data-type="col-divider"][data-dragging]::after {
+  opacity: 1;
   background: var(--ds-accent);
   width: 2px;
 }

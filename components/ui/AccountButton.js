@@ -4,7 +4,7 @@ import Icon from './Icon'
 import { setDisplayName, exportEverything, deleteAccount } from '../../lib/account'
 import {
   signOut, signOutEverywhere, listFactors, beginMfaEnrolment,
-  confirmMfaEnrolment, disableMfa, AUTH,
+  confirmMfaEnrolment, disableMfa, updatePassword, changeEmail, AUTH,
 } from '../../lib/auth'
 import { clearState } from '../../lib/persistence'
 import { idbClear, STORE_IMAGES, STORE_PDFS, STORE_FILES, STORE_TEMPLATES } from '../../lib/idb'
@@ -74,8 +74,89 @@ function Meter({ label, used, limit, colors }) {
   )
 }
 
+/* One category's page. The label is not drawn here: the back row above
+   already names the page, and a second copy right under it is noise. It is
+   kept as a prop so every page says what it is where it is used. */
+function Section({ children }) {
+  return <div style={{ marginTop: 4 }}>{children}</div>
+}
+
+/* A row that is not built yet. Visible and honest rather than hidden: the
+   category exists, and so does the thing, but it has nothing behind it yet.
+   Disabled, so keyboard walking (islandButtons filters [disabled]) skips it. */
+function SoonRow({ icon, label, row, text3 }) {
+  return (
+    <button disabled style={{ ...row, cursor: 'default', color: text3 }} title={`${label} · coming soon`}>
+      <Icon name={icon} size={14} />
+      <span style={{ flex: 1 }}>{label}</span>
+      <span style={{ fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6, textTransform: 'uppercase' }}>Soon</span>
+    </button>
+  )
+}
+
+/* A row that opens a small form in place: change email, change password.
+   In place rather than a modal, the same argument BuilderPanel makes for its
+   save form. Enter submits, Escape closes the form (and only the form: it
+   stops propagation, or the panel's own Escape listener would shut the whole
+   panel).
+
+   preventDefault on mousedown is the DOM trap BuilderPanel documents. Without
+   it, autoFocus puts focus in the new input, then the click's default focus
+   moves it back to the button. */
+function InlineForm({ icon, label, fields, submitLabel, onSubmit, row, colors, busy }) {
+  const { border, raised, text, accent } = colors
+  const [open, setOpen] = useState(false)
+  const [values, setValues] = useState({})
+  async function submit() {
+    const ok = await onSubmit(values)
+    if (ok) { setOpen(false); setValues({}) }
+  }
+  return (
+    <div>
+      <button style={row} onMouseDown={e => e.preventDefault()}
+        onClick={() => { setOpen(o => !o); setValues({}) }} aria-expanded={open}>
+        <Icon name={icon} size={14} />
+        <span style={{ flex: 1 }}>{label}</span>
+      </button>
+      {open && (
+        <div style={{ padding: '2px 10px 8px' }}
+          onKeyDown={e => {
+            if (e.key === 'Escape') { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation?.(); setOpen(false) }
+            if (e.key === 'Enter') { e.preventDefault(); submit() }
+          }}>
+          {fields.map((f, i) => (
+            <input key={f.key} autoFocus={i === 0} type={f.type} autoComplete={f.autoComplete}
+              aria-label={f.placeholder} placeholder={f.placeholder}
+              value={values[f.key] || ''}
+              onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))}
+              style={{
+                width: '100%', background: raised, border: `1px solid ${border}`,
+                borderRadius: 6, padding: '6px 8px', fontSize: 12, color: text, marginBottom: 6,
+                fontFamily: 'var(--ds-font-body)', outline: 'none', boxSizing: 'border-box',
+              }} />
+          ))}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button disabled={busy} onClick={submit}
+              style={{ ...row, flex: 1, justifyContent: 'center', background: accent, color: '#fff', fontWeight: 600, fontSize: 12 }}>
+              {submitLabel}
+            </button>
+            <button onClick={() => setOpen(false)}
+              style={{ ...row, width: 'auto', justifyContent: 'center', border: `1px solid ${border}`, fontSize: 12, padding: '8px 12px' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function AccountButton({ account, colors, dark, onChanged, onSignOut }) {
   const [open, setOpen] = useState(false)
+  /* Which category page is open: null is the category list. Reset on close,
+     so the panel always reopens on the list rather than deep in Security. */
+  const [page, setPage] = useState(null)
+  useEffect(() => { if (!open) setPage(null) }, [open])
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState(null)
   const [renaming, setRenaming] = useState(false)
@@ -177,24 +258,14 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
 
   return (
     <div ref={rootRef} data-kbd-zone style={{ position: 'relative' }}>
-      {/* Styled from the same values as Builder and Settings — same padding,
-          radius, blur, border and type — so the three read as one row rather
-          than two buttons and an ornament. */}
+      {/* A ds-tbtn inside the top-right island (app/app/page.js), the same as
+          Builder, People and Settings beside it. The island owns the glass. */}
       <button
         onClick={() => setOpen(o => !o)}
         aria-label="Account"
         aria-expanded={open}
         title={email || 'Account'}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '8px 14px', borderRadius: 10,
-          background: `${surface}ee`,
-          backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
-          border: `1px solid ${open ? accent : border}`,
-          boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
-          fontFamily: 'var(--ds-font-body)', fontSize: 13,
-          color: open ? accent : text2, cursor: 'pointer',
-        }}
+        className={`ds-tbtn${open ? ' is-on' : ''}`}
       >
         <Icon name="auth-account" size={14} />
         Account
@@ -235,13 +306,55 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
             }}>{email}</div>
           </div>
 
+          {/* ── categories ──
+              A list of categories first, each opening its own page with a
+              back row. Decided 24 Sep 2026 over one long scroll: Plan,
+              Security and Privacy each hold forms (2FA, email, password,
+              delete), and stacked they ran past the fold. */}
+          {page === null ? (
+            <div style={{ marginTop: 13, paddingTop: 8, borderTop: `1px solid ${border}` }}>
+              {[
+                { id: 'plan', icon: 'plan-upgrade', label: 'Plan', meta: account?.label || 'Free' },
+                { id: 'security', icon: 'state-lock', label: 'Security', meta: factors === null ? '' : factors.length ? '2FA on' : '2FA off' },
+                { id: 'privacy', icon: 'storage-drive', label: 'Privacy', meta: '' },
+              ].map(c => (
+                <button key={c.id} style={row} onClick={() => { setNotice(null); setPage(c.id) }}>
+                  <Icon name={c.icon} size={14} />
+                  <span style={{ flex: 1 }}>{c.label}</span>
+                  {c.meta && <span style={{ fontSize: 11, color: text3 }}>{c.meta}</span>}
+                  <Icon name="nav-chevron-right" size={12} style={{ color: text3 }} />
+                </button>
+              ))}
+              {/* ── sign out ──
+              On its own, last. It is not a security setting, just the way out. */}
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${border}` }}>
+            {/* THE QUESTION COMES FIRST, and it came with the section from
+                Settings. Asking "also remove this workspace from this device?"
+                after the token is gone would be asking about something the
+                person can no longer see; cancelling leaves them signed in,
+                which is the only sensible reading of "cancel" here. */}
+            <button style={row} onClick={async () => {
+              if (onSignOut && !(await onSignOut())) return
+              await signOut(); window.location.href = '/login'
+            }}>
+              <Icon name="auth-sign-out" size={14} />
+              <span style={{ flex: 1 }}>Sign out</span>
+            </button>
+          </div>
+            </div>
+          ) : (
+            <div style={{ marginTop: 13, paddingTop: 8, borderTop: `1px solid ${border}` }}>
+              <button style={{ ...row, color: text, fontWeight: 600, paddingLeft: 6 }}
+                onClick={() => { setNotice(null); setPage(null) }} aria-label="Back to account categories">
+                <Icon name="nav-chevron-right" size={12} style={{ transform: 'rotate(180deg)', color: text3 }} />
+                <span style={{ flex: 1 }}>{page === 'plan' ? 'Plan' : page === 'security' ? 'Security' : 'Privacy'}</span>
+              </button>
+
+          {page === 'plan' && (<>
           {/* ── plan ── */}
-          <div style={{ marginTop: 13, paddingTop: 11, borderTop: `1px solid ${border}` }}>
+          <div style={{ marginTop: 4 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{
-                fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9,
-                textTransform: 'uppercase', color: text3,
-              }}>Plan</span>
+              <span style={{ fontSize: 12, color: text2 }}>Current plan</span>
               <span style={{
                 fontSize: 12, fontWeight: 600, color: cloud ? accent : text2,
                 padding: '2px 8px', borderRadius: 16,
@@ -280,13 +393,42 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
               color: cloud ? text2 : accent, fontWeight: 600, fontSize: 12,
             }}>{cloud ? 'Manage subscription' : 'Upgrade'}</a>
           </div>
+          </>)}
 
-          {/* ── security ── */}
-          <div style={{ marginTop: 12, paddingTop: 11, borderTop: `1px solid ${border}` }}>
-            <span style={{
-              fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.9,
-              textTransform: 'uppercase', color: text3,
-            }}>Security</span>
+          {page === 'security' && (<>
+          {/* ── security ──
+              Categorised like SettingsPanel (Appearance · Canvas · Keyboard ·
+              Storage): Plan · Security · Privacy, then Sign out on its own.
+              Security is how you get in: email, password, second factor, and
+              revoking every other session. */}
+          <Section label="Security" border={border} text3={text3}>
+            <InlineForm icon="auth-account" label="Change email" submitLabel="Send confirmation"
+              row={row} colors={colors} busy={busy}
+              fields={[{ key: 'email', type: 'email', autoComplete: 'email', placeholder: 'New email address' }]}
+              onSubmit={async v => {
+                setBusy(true); setNotice(null)
+                const r = await changeEmail(v.email, email)
+                setBusy(false)
+                setNotice({ bad: r.status !== AUTH.OK, text: r.message })
+                return r.status === AUTH.OK
+              }} />
+            <InlineForm icon="state-lock" label="Change password" submitLabel="Change password"
+              row={row} colors={colors} busy={busy}
+              fields={[
+                { key: 'next', type: 'password', autoComplete: 'new-password', placeholder: 'New password' },
+                { key: 'again', type: 'password', autoComplete: 'new-password', placeholder: 'Repeat new password' },
+              ]}
+              onSubmit={async v => {
+                setNotice(null)
+                /* Checked here, not in lib/auth: a mismatch is a typing
+                   mistake, and it should never cost a round trip. */
+                if ((v.next || '') !== (v.again || '')) { setNotice({ bad: true, text: 'The two passwords do not match.' }); return false }
+                setBusy(true)
+                const r = await updatePassword(v.next)
+                setBusy(false)
+                setNotice({ bad: r.status !== AUTH.OK, text: r.message })
+                return r.status === AUTH.OK
+              }} />
 
             {enrol ? (
               <div style={{ marginTop: 8 }}>
@@ -351,24 +493,6 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
               </button>
             )}
 
-            <button style={row} onClick={doExport} disabled={busy}>
-              <Icon name="action-export" size={14} />
-              <span style={{ flex: 1 }}>Export everything</span>
-            </button>
-
-            {/* THE QUESTION COMES FIRST, and it came with the section from
-                Settings. Asking "also remove this workspace from this device?"
-                after the token is gone would be asking about something the
-                person can no longer see; cancelling leaves them signed in,
-                which is the only sensible reading of "cancel" here. */}
-            <button style={row} onClick={async () => {
-              if (onSignOut && !(await onSignOut())) return
-              await signOut(); window.location.href = '/login'
-            }}>
-              <Icon name="auth-sign-out" size={14} />
-              <span style={{ flex: 1 }}>Sign out</span>
-            </button>
-
             <button style={{ ...row, color: text3 }} onClick={async () => {
               if (onSignOut && !(await onSignOut())) return
               await signOutEverywhere(); window.location.href = '/login'
@@ -376,10 +500,23 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
               <Icon name="auth-sign-out" size={14} />
               <span style={{ flex: 1 }}>Sign out everywhere</span>
             </button>
-          </div>
+          </Section>
+          </>)}
 
-          {/* ── delete ── */}
-          <div style={{ marginTop: 12, paddingTop: 11, borderTop: `1px solid ${border}` }}>
+          {page === 'privacy' && (<>
+          {/* ── privacy ──
+              Reserved as a category now, with the two things that already
+              exist: getting your data out, and getting it deleted. The
+              policies are real rows marked Soon. A row that exists and says
+              "not yet" is easier to find later than one that appears
+              without warning. */}
+          <Section label="Privacy" border={border} text3={text3}>
+            <button style={row} onClick={doExport} disabled={busy}>
+              <Icon name="action-export" size={14} />
+              <span style={{ flex: 1 }}>Export everything</span>
+            </button>
+            <SoonRow icon="status-info" label="Privacy policy" row={row} text3={text3} />
+            <SoonRow icon="status-info" label="Terms of service" row={row} text3={text3} />
             <details>
                 <summary style={{ ...row, color: 'var(--ds-red)', listStyle: 'none', cursor: 'pointer' }}>
                   <Icon name="action-delete" size={14} />
@@ -418,7 +555,10 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
                   </button>
                 </div>
             </details>
-          </div>
+          </Section>
+          </>)}
+            </div>
+          )}
 
           {notice && (
             <div role="status" style={{

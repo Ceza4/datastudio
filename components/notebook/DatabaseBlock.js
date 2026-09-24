@@ -47,11 +47,11 @@ import { Z } from '../../lib/theme'
 
   ── WHAT'S DELIBERATELY NOT HERE ────────────────────────────────────────
 
-  RELATIONSHIPS. The note asks for them and they are the reason the block
-  exists, but lib/database.js has no model for them yet, and inventing one in
-  the render layer would put the shape of the hardest part of the feature in
-  the file least able to defend it. When `relation` becomes a property type it
-  becomes another branch in Cell, and nothing else here moves.
+  RELATIONSHIP EDITING. `relation` is a property type since Builder Phase 1
+  (24 Sep 2026; model in lib/database.js). The grid only shows a count
+  ("2 linked"); linking and unlinking happen on the Record block, which can
+  show the linked rows' names as chips. Two editors for the same list of ids
+  would be two places to get the dedupe and the target switch wrong.
 
   ── THREE RULES THIS FILE IS ONE BAD EDIT AWAY FROM BREAKING ────────────
 
@@ -110,6 +110,8 @@ const OPS_BY_TYPE = {
   select: ['is', 'isNot', 'isEmpty', 'isNotEmpty'],
   multi: ['hasOption', 'isEmpty', 'isNotEmpty'],
   checkbox: ['is'],
+  /* A relation is a list of row ids; only emptiness is meaningful here. */
+  relation: ['isEmpty', 'isNotEmpty'],
 }
 const opsFor = type => (OPS_BY_TYPE[type] || OPS_BY_TYPE.text).filter(op => op in FILTER_OPS)
 const opNeedsValue = op => op !== 'isEmpty' && op !== 'isNotEmpty'
@@ -691,6 +693,18 @@ function Cell({ row, prop, colors, editing, onOpen, onClose, onDraft, onWrite })
     )
   }
 
+  /* A relation (Builder, 24 Sep 2026) is edited on the Record block, where
+     its chips can be opened. Here it is a read-only count: the linked rows
+     can live in another database this block cannot see. */
+  if (prop.type === 'relation') {
+    const n = Array.isArray(value) ? value.length : 0
+    return (
+      <div data-ds-db-cell={`${row.id}:${prop.id}`} title="Open the row in a Record to edit links" style={{ ...base, color: n ? text : text3, fontSize: 'var(--ds-fs-sm)' }}>
+        {n ? `${n} linked` : '—'}
+      </div>
+    )
+  }
+
   /* Same argument: a native date input opens its own picker on the first
      click, so click-to-edit would cost a click to reach a control already one
      click away.
@@ -1076,6 +1090,10 @@ function MetaValue({ prop, value, colors }) {
   }
   if (prop.type === 'number') {
     return <span title={prop.name} style={{ ...mono, color: text2 }}>{value}</span>
+  }
+  if (prop.type === 'relation') {
+    const n = Array.isArray(value) ? value.length : 0
+    return n ? <span title={prop.name} style={{ ...mono, color: text3 }}>{n} linked</span> : null
   }
   return (
     <span title={prop.name} style={{

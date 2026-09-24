@@ -61,7 +61,8 @@ console.log('\n addresses')
   ok(sameAddress(parseAddress(serializeAddress(a)), a), 'round-trips exactly')
   ok(serializeAddress(null) === '', 'null serialises to empty rather than "null"')
 
-  ok(parseAddress('a/b') === null, 'two segments rejected')
+  ok(JSON.stringify(parseAddress('a/b')) === JSON.stringify({ notebookId: 'a', sheetId: 'b' }), 'two segments = a sheet link (since 24 Sep 2026)')
+  ok(JSON.stringify(parseAddress('a')) === JSON.stringify({ notebookId: 'a' }), 'one segment = a notebook link')
   ok(parseAddress('a/b/c/d') === null, 'four segments rejected')
   ok(parseAddress('') === null, 'empty string rejected')
   ok(parseAddress(null) === null, 'null rejected')
@@ -123,7 +124,7 @@ console.log('\n extractLinks — must survive browser-normalised markup')
   ok(extractLinks('') .length === 0, 'empty content')
   ok(extractLinks(null).length === 0, 'null content does not throw')
   ok(extractLinks('<p>no links here</p>').length === 0, 'plain text yields nothing')
-  ok(extractLinks('<span data-ds-link="broken">X</span>').length === 0, 'a malformed address is skipped, not returned half-parsed')
+  ok(extractLinks('<span data-ds-link="a/b/c/d">X</span>').length === 0, 'a malformed address is skipped, not returned half-parsed (one segment is now a valid notebook link, so four is the malformed case)')
   ok(extractLinks('<span>no attr</span>').length === 0, 'a plain span is not mistaken for a link')
 }
 

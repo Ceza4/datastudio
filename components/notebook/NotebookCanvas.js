@@ -1,5 +1,7 @@
 'use client'
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
+import { resolveCanvasBg, drawDotGrid } from '../../lib/canvasbg'
+import { islandChrome } from '../ui/island'
 import TextBlockContent from './TextBlockContent'
 import ResizeHandle from './ResizeHandle'
 import BlockHandle from './BlockHandle'
@@ -16,6 +18,10 @@ import ChatBlock from './ChatBlock'
 import DocumentBlock, { PAGE_BREAK_HTML } from './DocumentBlock'
 import DatabaseBlock from './DatabaseBlock'
 import CountdownBlock from './CountdownBlock'
+import PipelineBlock from '../builder/PipelineBlock'
+import RecordBlock from '../builder/RecordBlock'
+import CommandPalette from '../builder/CommandPalette'
+import { starterPipelineDb, firstStageProp, firstValueProp } from '../../lib/builder'
 import ExportPanel from '../tools/ExportPanel'
 import SheetToolbar from '../tools/SheetToolbar'
 import CurveFitPanel from '../tools/CurveFitPanel'
@@ -39,7 +45,16 @@ import ShapeLayer from './ShapeLayer'
 import {
   pickShape, hitTolerance, resizeShape, snapAngle, normaliseAngle,
   centreOf, shapeBounds, isLinear, createInk, inkPath, inkPoints,
+  createShape, resolveConnectors, pickTarget, bakeConnectorsFor, isLabelled,
 } from '../../lib/shapes'
+import {
+  addChild as mmAddChild, addSibling as mmAddSibling, removeBranch as mmRemoveBranch,
+  reparent as mmReparent, navigate as mmNavigate, setText as mmSetText,
+  toggleCollapsed as mmToggle, nodeAt as mmNodeAt, nodeBox as mmNodeBox, repairMindMap, isDescendant as mmIsDescendant,
+} from '../../lib/mindmap'
+import VisualsBar, { VISUAL_KEYS, TOOL_HINTS } from '../visuals/VisualsBar'
+import VisualsOverlay from '../visuals/VisualsOverlay'
+import ShapeTextEditor from '../visuals/ShapeTextEditor'
 import { recognise, tryArrowGroup } from '../../lib/recognise'
 import { SHORTCUT_GROUPS } from '../../lib/shortcuts'
 import { serializeSelection, parseClipboard, materialise, splitCopyable } from '../../lib/clipboard'
@@ -126,6 +141,11 @@ const BLOCK_GAP     = 16
    during a drag is the block being re-rendered every frame. The nub hover
    state is written imperatively below, so a remount also drops the enlarged
    nub out from under the cursor you are about to drag from. */
+/* SHOWN ONLY IN MIND MAP MODE (or mid-link), on every block, since 24 Sep 2026.
+   They used to appear on any hovered or selected block, which put
+   connection nubs all over a canvas where most blocks are never linked. In
+   mind map mode they show on all blocks at once, so you can see every
+   target before you start. */
 function Ports({ show, blockId, surface, accent, onStartLink }) {
   if (!show) return null
   const p = (pos) => ({
@@ -205,6 +225,16 @@ export default function NotebookCanvas({
   revealRequest,
   onRevealHandled,
   onAddBlock,
+  /* Mind map mode, OWNED BY APPPAGE when these are passed. Its button moved to
+     Builder → Visuals (24 Sep 2026), and Builder renders in AppPage, outside
+     this component, so the state has to live where both can reach it. Without
+     these props the canvas keeps its own state, as before (tests, Storybook). */
+  mindMapMode: mindMapModeProp,
+  onMindMapModeChange,
+  /* Builder → Visuals bar (24 Sep 2026). Owned by AppPage for the same
+     reason as mind map mode: the button that opens it lives in Builder. */
+  visualsOn: visualsOnProp,
+  onVisualsChange,
   /* Given a block id shared into a chat thread, the block's DATA — or null if
      the grant is gone. Owned by app/app/page.js, which is the only layer that
      may touch lib/shares.js (check:tree enforces that boundary), and passed
@@ -330,6 +360,11 @@ export default function NotebookCanvas({
   // Container size in CSS px, so guides can be drawn across the entire visible
   // workspace instead of just spanning the two blocks being aligned.
   const [viewSize, setViewSize] = useState({ w: 1200, h: 800 })
+  /* The notebook's own background (lib/canvasbg.js). It is notebook data, not a
+     pref, so everyone who opens this notebook sees the same one. Resolved
+     for the current theme here, so the ground and the dots cannot disagree. */
+  const canvasBg = useMemo(() => resolveCanvasBg(nb?.canvasBg, dark), [nb?.canvasBg, dark])
+  const dotCanvasRef = useRef(null)
   // Signatures of the last committed guide/spacing state. The drag handler
   // fires on every mousemove; without these it would setState ~120×/second.
   const lastSnapSig = useRef('')
@@ -374,8 +409,43 @@ const [selectedIds, setSelectedIds] = useState(new Set())
      pay rarely and can reverse. */
   const [pendingSnap, setPendingSnap] = useState(null)
   const [ctxMenu, setCtxMenu] = useState(null)
-  const [mindMapMode, setMindMapMode] = useState(false)
+  const [mindMapLocal, setMindMapLocal] = useState(false)
+  const mindMapMode = onMindMapModeChange ? !!mindMapModeProp : mindMapLocal
+  /* Accepts a value or an updater, like the setState it replaces. Both targets
+     are React setters, so an updater passes straight through. */
+  const setMindMapMode = onMindMapModeChange || setMindMapLocal
   const [mindMapMaster, setMindMapMaster] = useState(null)
+  /* Turned off from OUTSIDE (Builder, a notebook switch), the half-made link
+     has to go too, or the next time the mode opens a block is already
+     "master" with nothing on screen saying so. */
+  useEffect(() => { if (!mindMapMode) setMindMapMaster(null) }, [mindMapMode])
+
+  /* ── Builder → Visuals state ────────────────────────────────────────
+     visualsTool: the armed creation tool ('select' = none armed).
+     mmSel: the selected mind-map topic, { shapeId, nodeId }. The map shape
+       itself is also in selectedShapeIds, so everything shapes already do
+       (drag, delete, copy) applies to the map.
+     mmDrop: the topic a dragged topic would be re-parented under.
+     shapeEdit: whose words are in the text editor, { shapeId, nodeId?,
+       initialChar? }. */
+  const [visualsLocal, setVisualsLocal] = useState(false)
+  const visualsOn = onVisualsChange ? !!visualsOnProp : visualsLocal
+  const setVisualsOn = onVisualsChange || setVisualsLocal
+  const [visualsTool, setVisualsTool] = useState('select')
+  const [mmSel, setMmSel] = useState(null)
+  const [mmDrop, setMmDrop] = useState(null)
+  const [shapeEdit, setShapeEdit] = useState(null)
+  const [visualsHint, setVisualsHint] = useState(null)
+  const bgClickGuardRef = useRef(0)
+  const visualsHintTimer = useRef(null)
+  useEffect(() => () => clearTimeout(visualsHintTimer.current), [])
+  function flashVisualsHint(msg) {
+    clearTimeout(visualsHintTimer.current)
+    setVisualsHint(msg || null)
+    if (msg) visualsHintTimer.current = setTimeout(() => setVisualsHint(null), 2400)
+  }
+  /* Closing the bar disarms its tool, and a link mode started from it. */
+  useEffect(() => { if (!visualsOn) { setVisualsTool('select'); flashVisualsHint(null) } }, [visualsOn])
   /* Canvas preferences. Defaulted here rather than required, so the component
      still renders if it's ever mounted without a provider above it (tests,
      Storybook, a future embed). gridPx is the grid pitch already multiplied by
@@ -404,6 +474,23 @@ const [selectedIds, setSelectedIds] = useState(new Set())
      which is how you end up snapping to lines nobody can see — or seeing
      lines that do not pull. */
   const gridOn = gridAlways || snapEnabled
+  /* THE DOT GRID IS DRAWN, NOT PATTERNED. See drawDotGrid for why the SVG
+     <pattern> went. A layout effect, not a plain effect: pan is React state and
+     the blocks move in the same commit, so a passive effect would paint the
+     dots one frame behind the blocks while you drag. clientWidth rather than
+     getBoundingClientRect, because this is a size read, not pointer maths. */
+  useLayoutEffect(() => {
+    const cv = dotCanvasRef.current
+    if (!cv) return
+    const w = cv.clientWidth, h = cv.clientHeight
+    if (!w || !h) return
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1
+    const pw = Math.round(w * dpr), ph = Math.round(h * dpr)
+    if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph }
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    drawDotGrid(ctx, { w, h, dpr, panX: pan.x, panY: pan.y, zoom: nbZoom }, canvasBg)
+  }, [pan.x, pan.y, nbZoom, viewSize.w, viewSize.h, canvasBg])
   const snapRef = useRef(false)
   const [snapTargets, setSnapTargets] = useState([])   // block ids we aligned against
   const [spacingTags, setSpacingTags] = useState([])   // equal-gap badges
@@ -427,6 +514,10 @@ const [drawMode, setDrawMode] = useState(false)
 const [drawColor, setDrawColor] = useState('#5B5FE8')
 const [drawSize, setDrawSize] = useState(3)
 const [showDrawPanel, setShowDrawPanel] = useState(false)
+/* Read by the canvas keydown handler, whose effect does not list drawMode in
+   its dependencies. A ref keeps Escape correct without re-binding. */
+const drawModeRef = useRef(false)
+drawModeRef.current = drawMode
 const [currentPath, setCurrentPath] = useState(null)
 const isDrawing = useRef(false)
 const drawPanelRef = useRef(null)
@@ -563,6 +654,21 @@ const drawPanelRef = useRef(null)
   const cropWrapRef = useRef(null)
   const [cropHost, setCropHost] = useState(null)
   const [addMenuOpen, setAddMenuOpen] = useState(false)
+  /* Ctrl/⌘K command palette (Builder Phase 1). */
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  useEffect(() => {
+    /* Capture phase and preventDefault: several browsers bind Ctrl+K to the
+       address or search bar, and a text field inside a block must not
+       swallow it first. */
+    function onKey(e) {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault(); e.stopPropagation()
+        setPaletteOpen(o => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
   /* The +Add button's rect in SCREEN space, captured on open. A fixed-position
      panel needs screen coordinates, and re-measuring on every render would fight
      the canvas transform for no reason — the button does not move while the menu
@@ -714,6 +820,17 @@ const drawings = activeSheet?.drawings || []
 const shapes = activeSheet?.shapes || EMPTY_SHAPES
 const selectedShapeList = shapes.filter(sh => selectedShapeIds.has(sh.id))
 const soleSelectedShape = selectedShapeList.length === 1 ? selectedShapeList[0] : null
+/* What is DRAWN and HIT: mind maps repaired if their stored tree is damaged,
+   connectors placed on the shapes they are attached to, both following the
+   gesture in flight. Stored shapes stay the source for writes. Returns the
+   same array as `shapes` when there is nothing to resolve, so the layer's
+   memo holds. */
+const shapesView = useMemo(() => {
+  const repaired = shapes.some(sh => sh.kind === 'mindmap') ? shapes.map(repairMindMap) : shapes
+  return resolveConnectors(repaired.some((sh, i) => sh !== shapes[i]) ? repaired : shapes, liveShapes)
+}, [shapes, liveShapes])
+const soleSelectedView = soleSelectedShape ? (shapesView.find(sh => sh.id === soleSelectedShape.id) || soleSelectedShape) : null
+const shapeById = id => shapesView.find(sh => sh.id === id)
   /* Pressing on a block that's ALREADY part of a multi-selection must not
      collapse the selection — that's what broke lasso dragging. selectBlock
      ran on pointerdown and replaced the selection with the single block, so
@@ -780,7 +897,9 @@ const soleSelectedShape = selectedShapeList.length === 1 ? selectedShapeList[0] 
      wire format and why ids are reminted on every paste. */
   async function copySelection({ cut = false } = {}) {
     const picked = blocks.filter(b => selectedIds.has(b.id))
-    const pickedShapes = shapes.filter(s => selectedShapeIds.has(s.id))
+    /* From the resolved view: a connector is copied with the ends it is
+       drawn with, so pasted without its shapes it lands where it was. */
+    const pickedShapes = shapesView.filter(s => selectedShapeIds.has(s.id))
     const { copyable, skipped } = splitCopyable(picked)
 
     const text = serializeSelection({ blocks: copyable, shapes: pickedShapes })
@@ -1173,7 +1292,55 @@ const soleSelectedShape = selectedShapeList.length === 1 ? selectedShapeList[0] 
     }, 200)
   }
 function addBlockAnimated(type, x, y) {
+    if (type === 'pipeline') { addPipeline(x, y); return }
     onAddBlock(type, x, y)
+  }
+
+  /* ── Builder Phase 1: Pipeline, Record, palette ─────────────────────── */
+
+  /** Top-left for a block of width w, centred in what you are looking at. */
+  function viewSpot(w = 600) {
+    const z = nbZoomRef.current
+    return {
+      x: (viewSize.w / 2 - panRef.current.x) / z - w / 2,
+      y: (Math.max(96, viewSize.h * 0.14) - panRef.current.y) / z,
+    }
+  }
+
+  /* A Pipeline always points at a database. The newest one on the sheet with
+     a Select field is used; with none, a starter "Clients" database is made
+     below the pipeline (lib/builder.js), with three example rows so the
+     board does not open empty. */
+  function addPipeline(x, y) {
+    const src = [...blocks].reverse().find(b => b.type === 'database' && firstStageProp(b.db))
+    if (src) {
+      onAddBlock('pipeline', x, y, null, null, null, null,
+        { sourceId: src.id, groupBy: firstStageProp(src.db), valueProp: firstValueProp(src.db) })
+      return
+    }
+    const { db, stageId, valueId } = starterPipelineDb()
+    const dbId = onAddBlock('database', x, y + 480, null, null, 720, 320, { name: 'Clients', db })
+    onAddBlock('pipeline', x, y, null, null, null, null, { sourceId: dbId, groupBy: stageId, valueProp: valueId })
+    toast('Pipeline added, reading a new Clients database below it')
+  }
+
+  /* Open a row in a Record block. From a Pipeline: the record that belongs
+     to that pipeline is RETARGETED if it exists (so clicking cards never
+     stacks up records), otherwise one opens to the pipeline's right. From the
+     palette: the newest record on the sheet is reused, or one opens in view. */
+  function openRecord(sourceId, rowId, pipeline) {
+    const existing = pipeline
+      ? blocks.find(b => b.type === 'record' && b.pipelineId === pipeline.id)
+      : [...blocks].reverse().find(b => b.type === 'record')
+    if (existing) {
+      const keepPipe = pipeline ? pipeline.id : (existing.sourceId === sourceId ? existing.pipelineId : null)
+      onUpdateBlock(existing.id, { sourceId, rowId, pipelineId: keepPipe })
+      setSelectedIds(new Set([existing.id]))
+      return
+    }
+    const at = pipeline ? { x: pipeline.x + (pipeline.w || 880) + 34, y: pipeline.y } : viewSpot(400)
+    const id = onAddBlock('record', at.x, at.y, null, null, 400, 520, { sourceId, rowId, pipelineId: pipeline?.id || null })
+    if (id) setSelectedIds(new Set([id]))
   }
 
   /* Which block is "new" was previously inferred as `bi === blocks.length - 1`
@@ -1487,6 +1654,10 @@ function addBlockAnimated(type, x, y) {
            more inner than a grab, a toolbar or a selection. */
         e.preventDefault()
         abandonInk()
+        /* And out of draw mode too (24 Sep 2026): one Escape drops the stroke
+           and puts you back on the pointer, rather than leaving the pen armed
+           for the next click. */
+        setDrawMode(false); setShowDrawPanel(false)
         return
       }
 
@@ -1505,6 +1676,15 @@ function addBlockAnimated(type, x, y) {
           e.preventDefault()
           setShortcutsOpen(false)
         }
+        return
+      }
+
+      /* Draw mode with no stroke in flight: Escape leaves draw mode and goes
+         back to the pointer. Above the ordinary Escape branch, because in draw
+         mode the pen is the innermost state. */
+      if (e.key === 'Escape' && drawModeRef.current) {
+        e.preventDefault()
+        setDrawMode(false); setShowDrawPanel(false)
         return
       }
 
@@ -1808,6 +1988,12 @@ function addBlockAnimated(type, x, y) {
   function handleBgClick(e) {
     if (e.target !== e.currentTarget) return
     if (drawMode) return
+    /* A Visuals gesture just ended: a shape was placed (the overlay that
+       took the press is gone, so its click lands here) or a text editor was
+       closed by clicking away. Neither click means "write here". Time-boxed
+       rather than a one-shot flag, so a gesture that produces no click
+       cannot swallow the next real one. */
+    if (performance.now() < bgClickGuardRef.current) return
 
     if (suppressNextBgClickRef.current) {
       suppressNextBgClickRef.current = false
@@ -2515,7 +2701,7 @@ function addBlockAnimated(type, x, y) {
          side. shapeBounds() is used rather than x/y/w/h so a ROTATED shape is
          judged by the room it actually occupies. */
       const shapeHit = new Set(shapeBase)
-      shapes.forEach(sh => {
+      shapesView.forEach(sh => {
         const b = shapeBounds(sh)
         const overlaps = b.x < rect.x + rect.w && b.x + b.w > rect.x &&
                          b.y < rect.y + rect.h && b.y + b.h > rect.y
@@ -3289,13 +3475,68 @@ function addBlockAnimated(type, x, y) {
     if (!shapes.length) return false
 
     const p = getCanvasPoint(e)
-    const hit = pickShape(shapes, p.x, p.y, shapeTol())
+    const hit = pickShape(shapesView, p.x, p.y, shapeTol())
+    /* An open text editor SAVES on the way out. Blurred explicitly because
+       the paths below preventDefault the press, which would otherwise keep
+       focus (and the unsaved words) in an editor that is about to unmount;
+       an unmounting textarea does not fire blur in Chrome. */
+    if (shapeEdit && document.activeElement?.matches?.('[data-ds-shape-editor]')) document.activeElement.blur()
     if (!hit) {
+      /* THE SELECTION'S BOUNDING ZONE MOVES THE GROUP (24 Sep 2026).
+         With two or more shapes selected, pressing anywhere inside their
+         combined box, not only on a stroke, grabs the whole group. Aiming
+         at a 2px line to move a diagram was the problem. A press that never
+         passes the 3px drag threshold is still a click on empty canvas: it
+         deselects exactly as before, and the bg click is left alone.
+         Shapes only; block multi-select is untouched. shapeBounds() rather
+         than x/y/w/h, so rotated shapes contribute their real extent. */
+      const additive = e.shiftKey || e.ctrlKey || e.metaKey
+      if (!additive && selectedShapeIds.size > 1) {
+        const sel = shapesView.filter(sh => selectedShapeIds.has(sh.id))
+        if (sel.length > 1) {
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+          for (const sh of sel) {
+            const b = shapeBounds(sh)
+            x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y)
+            x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h)
+          }
+          if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) {
+            e.preventDefault()
+            dragShapes(e, sel, p, () => setSelectedShapeIds(new Set()))
+            return true
+          }
+        }
+      }
       if (selectedShapeIds.size) setSelectedShapeIds(new Set())
+      if (mmSel) setMmSel(null)
       return false
     }
 
     e.preventDefault()
+
+    /* A mind map: a press lands on a TOPIC or on a collapse toggle. The root
+       moves the whole map (the ordinary shape drag below); any other topic
+       is selected, and dragging it onto another topic re-parents it. */
+    if (hit.kind === 'mindmap') {
+      suppressNextBgClickRef.current = true
+      const part = mmNodeAt(hit, p.x, p.y, shapeTol() / 2)
+      if (selectedIds.size) setSelectedIds(new Set())
+      setSelectedConnId(null)
+      setSelectedShapeIds(new Set([hit.id]))
+      if (part?.part === 'toggle') {
+        writeMindMap(mmToggle(hit, part.nodeId))
+        setMmSel({ shapeId: hit.id, nodeId: part.nodeId })
+        return true
+      }
+      if (part) setMmSel({ shapeId: hit.id, nodeId: part.nodeId })
+      if (part && part.nodeId !== hit.root && !(e.shiftKey || e.ctrlKey || e.metaKey)) {
+        dragTopic(e, hit, part.nodeId)
+        return true
+      }
+      dragShapes(e, [shapes.find(sh => sh.id === hit.id) || hit], p)
+      return true
+    }
+    if (mmSel) setMmSel(null)
     /* A bare-canvas CLICK creates a text block (handleBgClick), and the shape
        layer takes no pointer events — so as far as the click handler is
        concerned, pressing on a shape happened on empty canvas. Without this,
@@ -3325,8 +3566,225 @@ function addBlockAnimated(type, x, y) {
     return true
   }
 
+  /* ── Builder → Visuals: mind maps, text, creation ─────────────────── */
+
+  /** Write a mind map's tree back. Only the fields a tree edit changes, so
+   *  the patch cannot clobber a concurrent move. */
+  function writeMindMap(next) {
+    if (!next) return
+    onUpdateShape?.(next.id, { nodes: next.nodes, root: next.root, w: next.w, h: next.h })
+  }
+
+  /** Drag a topic onto another to re-parent it. A press that never moves
+   *  3px is just the selection it already made. */
+  function dragTopic(e, map, nodeId) {
+    let moved = false, over = null
+    function onMove(ev) {
+      if (!moved && Math.abs(ev.clientX - e.clientX) < 3 && Math.abs(ev.clientY - e.clientY) < 3) return
+      moved = true
+      const q = getCanvasPoint(ev)
+      const hitNode = mmNodeAt(map, q.x, q.y, 4)
+      const t = hitNode && hitNode.nodeId !== nodeId && !mmIsDescendant(map, nodeId, hitNode.nodeId) ? hitNode.nodeId : null
+      if (t !== over) { over = t; setMmDrop(t ? { shapeId: map.id, nodeId: t } : null) }
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      setMmDrop(null)
+      if (moved) suppressNextBgClickRef.current = true
+      if (over) {
+        const next = mmReparent(map, nodeId, over)
+        if (next) { writeMindMap(next); flashVisualsHint(`Moved under “${next.nodes[over].text || 'Topic'}”`) }
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  /** Start editing the words of a shape, or of a topic when nodeId is set. */
+  function startShapeEdit(shapeId, nodeId = null, initialChar = null) {
+    setShapeEdit({ shapeId, nodeId, initialChar })
+  }
+
+  /** The editor finished. `key` says how: Enter/Tab on a topic go on to
+   *  make a sibling/child and edit that; anything else just saves. */
+  function finishShapeEdit(text, key) {
+    const ed = shapeEdit
+    setShapeEdit(null)
+    if (key === 'blur') bgClickGuardRef.current = performance.now() + 400
+    if (!ed) return
+    const sh = shapeById(ed.shapeId)
+    const refocus = key !== 'blur'
+    if (!sh) return
+    if (ed.nodeId) {
+      let next = mmSetText(sh, ed.nodeId, text.trim())
+      let nextSel = ed.nodeId
+      if (key === 'Enter' || key === 'Tab') {
+        const r = key === 'Tab' ? mmAddChild(next, ed.nodeId) : mmAddSibling(next, ed.nodeId)
+        if (r.id) { next = r.shape; nextSel = r.id }
+      }
+      if (next !== sh) writeMindMap(next)
+      setSelectedShapeIds(new Set([sh.id]))
+      setMmSel({ shapeId: sh.id, nodeId: nextSel })
+      if (nextSel !== ed.nodeId) setShapeEdit({ shapeId: sh.id, nodeId: nextSel, initialChar: null })
+      else if (refocus) containerRef.current?.focus({ preventScroll: true })
+      return
+    }
+    const clean = text.replace(/\s+$/, '')
+    if (sh.kind === 'text' && !clean.trim()) {
+      /* An empty text box is nothing on the canvas and nothing to click. */
+      onDeleteShapes?.([sh.id])
+      setSelectedShapeIds(new Set())
+    } else if (clean !== (sh.text || '')) {
+      onUpdateShape?.(sh.id, { text: clean })
+    }
+    if (refocus) containerRef.current?.focus({ preventScroll: true })
+  }
+
+  /** Double-click: edit the words under the pointer. */
+  function handleShapeDoubleClick(e) {
+    if (e.target !== e.currentTarget || drawMode || mindMapMode) return
+    const p = getCanvasPoint(e)
+    const hit = pickShape(shapesView, p.x, p.y, shapeTol())
+    if (!hit) return
+    if (hit.kind === 'mindmap') {
+      const part = mmNodeAt(hit, p.x, p.y, shapeTol() / 2)
+      if (part?.part === 'node') { setMmSel({ shapeId: hit.id, nodeId: part.nodeId }); startShapeEdit(hit.id, part.nodeId) }
+      return
+    }
+    if (isLabelled(hit.kind)) startShapeEdit(hit.id)
+  }
+
+  const BOX_DEFAULTS = { rect: [140, 84], ellipse: [120, 84], diamond: [120, 100], triangle: [110, 96], text: [140, 34], sticky: [160, 128] }
+
+  /** A creation tool finished its gesture (VisualsOverlay). */
+  function onVisualCreate({ tool, a, b, dragged }) {
+    let shape = null
+    if (BOX_DEFAULTS[tool]) {
+      const [dw, dh] = BOX_DEFAULTS[tool]
+      const box = dragged && Math.abs(b.x - a.x) > 8 && Math.abs(b.y - a.y) > 8
+        ? { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }
+        : { x: a.x - dw / 2, y: a.y - dh / 2, w: dw, h: dh }
+      shape = createShape(tool, {
+        ...box, text: '', size: 1.5,
+        /* Visuals boxes are filled with the paper token so they can be
+           clicked anywhere inside, like every whiteboard's shapes. */
+        fill: tool === 'text' || tool === 'sticky' ? null : 'paper',
+      })
+    } else if (tool === 'line' || tool === 'arrow') {
+      if (!dragged) { flashVisualsHint(TOOL_HINTS[tool]); return }
+      shape = createShape(tool, { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y })
+    } else if (tool === 'connector') {
+      if (!dragged) { flashVisualsHint(TOOL_HINTS.connector); return }
+      const tol = shapeTol()
+      const from = pickTarget(shapesView, a.x, a.y, tol)
+      const to = pickTarget(shapesView, b.x, b.y, tol, from?.id)
+      shape = createShape('connector', { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y, from: from?.id, to: to?.id })
+    } else if (tool === 'mindmap') {
+      shape = createShape('mindmap', { x: a.x - 60, y: a.y - 17 })
+    }
+    if (!shape) return
+    bgClickGuardRef.current = performance.now() + 400
+    onAddShape?.(shape)
+    setVisualsTool('select')
+    if (selectedIds.size) setSelectedIds(new Set())
+    setSelectedShapeIds(new Set([shape.id]))
+    if (shape.kind === 'mindmap') {
+      setMmSel({ shapeId: shape.id, nodeId: shape.root })
+      startShapeEdit(shape.id, shape.root)
+      flashVisualsHint('Type the central idea. Tab adds a topic, Enter a sibling')
+    } else if (shape.kind === 'text' || shape.kind === 'sticky') {
+      startShapeEdit(shape.id)
+    }
+  }
+
+  /** A bar button. Pen and Link blocks are the canvas's existing modes;
+   *  every other tool arms the creation overlay. */
+  function onVisualTool(id) {
+    if (id === 'close') { setVisualsOn(false); if (mindMapMode) setMindMapMode(false); return }
+    if (id === 'pen') {
+      setVisualsTool('select'); if (mindMapMode) setMindMapMode(false)
+      setDrawMode(v => !v)
+      return
+    }
+    if (id === 'link') {
+      setVisualsTool('select'); if (drawMode) setDrawMode(false)
+      const on = !mindMapMode
+      setMindMapMode(on)
+      flashVisualsHint(on ? TOOL_HINTS.link : null)
+      return
+    }
+    if (drawMode) { setDrawMode(false); setShowDrawPanel(false) }
+    if (mindMapMode) setMindMapMode(false)
+    setVisualsTool(id)
+    flashVisualsHint(id === 'select' ? null : TOOL_HINTS[id])
+  }
+
+  /* Keys for Visuals, in the CAPTURE phase so they are decided before the
+     canvas's own letter shortcuts (which add blocks) and its Tab handling.
+     Only when focus is on the canvas itself: an input, a block's editor, or
+     the topic editor own their keys. */
+  useEffect(() => {
+    function onKey(e) {
+      if (shapeEdit) return
+      const t = e.target
+      const onCanvas = t === containerRef.current || t === document.body
+      if (!onCanvas || e.defaultPrevented) return
+      const plain = !e.ctrlKey && !e.metaKey && !e.altKey
+      const take = () => { e.preventDefault(); e.stopPropagation() }
+
+      if (mmSel) {
+        const map = shapeById(mmSel.shapeId)
+        if (!map || map.kind !== 'mindmap' || !map.nodes[mmSel.nodeId]) { setMmSel(null); return }
+        const id = mmSel.nodeId
+        if (e.key === 'Tab' || e.key === 'Enter') {
+          take()
+          const r = e.key === 'Tab' ? mmAddChild(map, id) : mmAddSibling(map, id)
+          if (r.id) { writeMindMap(r.shape); setMmSel({ shapeId: map.id, nodeId: r.id }); startShapeEdit(map.id, r.id) }
+          return
+        }
+        if (['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(e.key) && plain) {
+          take()
+          const n = mmNavigate(map, id, e.key)
+          if (n) setMmSel({ shapeId: map.id, nodeId: n })
+          return
+        }
+        if (e.key === 'F2' || (e.key === ' ' && plain)) { take(); startShapeEdit(map.id, id); return }
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          if (id === map.root) return   // the canvas deletes the whole map, with undo
+          take()
+          const r = mmRemoveBranch(map, id)
+          writeMindMap(r.shape)
+          setMmSel({ shapeId: map.id, nodeId: r.select })
+          return
+        }
+        if (e.key === 'Escape') { take(); setMmSel(null); setSelectedShapeIds(new Set()); return }
+        /* Typing on a selected topic replaces its text, like a cell. */
+        if (plain && e.key.length === 1 && e.key !== ' ') { take(); startShapeEdit(map.id, id, e.key); return }
+        return
+      }
+
+      if (visualsOn) {
+        if (e.key === 'Escape' && visualsTool !== 'select') { take(); setVisualsTool('select'); flashVisualsHint(null); return }
+        const tool = plain && !e.shiftKey ? VISUAL_KEYS[e.key.toLowerCase()] : null
+        if (tool) { take(); onVisualTool(tool === 'pen' ? 'pen' : tool); return }
+      }
+
+      if (soleSelectedView && isLabelled(soleSelectedView.kind) && (e.key === 'F2' || e.key === 'Enter') && plain) {
+        take(); startShapeEdit(soleSelectedView.id)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  })
+
+  /* A topic selection belongs to its map's selection. */
+  useEffect(() => {
+    if (mmSel && !selectedShapeIds.has(mmSel.shapeId)) setMmSel(null)
+  }, [selectedShapeIds, mmSel])
+
   /** Move every selected shape. Writes once, on mouseup. */
-  function dragShapes(e, list, origin) {
+  function dragShapes(e, list, origin, onClickWithoutDrag) {
     if (!list.length) return
     const start = list.map(sh => ({ ...sh }))
     let moved = false
@@ -3352,6 +3810,7 @@ function addBlockAnimated(type, x, y) {
       if (moved && last) last.forEach((sh, id) => onUpdateShape?.(id, { x: sh.x, y: sh.y }))
       setLiveShapes(null)
       if (moved) suppressNextBgClickRef.current = true
+      else onClickWithoutDrag?.()
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -3361,7 +3820,7 @@ function addBlockAnimated(type, x, y) {
   function onShapeHandleDown(e, handle) {
     e.preventDefault()
     e.stopPropagation()
-    const target = soleSelectedShape
+    const target = soleSelectedView
     if (!target) return
     /* Handles are real elements and stop propagation, so they never reach
        handleBgClick — but a mouseup that lands back on the canvas can, so the
@@ -3382,6 +3841,8 @@ function addBlockAnimated(type, x, y) {
         next = { ...start, rot: snapAngle(normaliseAngle(deg)) }
       } else {
         next = resizeShape(start, handle, p.x, p.y, { min: 8 })
+        /* Grabbing a connector's end detaches that end while it moves. */
+        if (start.kind === 'connector') next = { ...next, ...(handle === 'nw' ? { from: null } : { to: null }) }
       }
       last = new Map([[start.id, next]])
       setLiveShapes(last)
@@ -3390,7 +3851,14 @@ function addBlockAnimated(type, x, y) {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       const done = last?.get(start.id)
-      if (done) onUpdateShape?.(start.id, { x: done.x, y: done.y, w: done.w, h: done.h, rot: done.rot })
+      if (done && start.kind === 'connector') {
+        /* Dropped on a shape: attach that end to it. On empty canvas: a free
+           end, where it was dropped. */
+        const end = handle === 'nw' ? { x: done.x, y: done.y } : { x: done.x + done.w, y: done.y + done.h }
+        const other = handle === 'nw' ? start.to : start.from
+        const t = pickTarget(shapesView, end.x, end.y, shapeTol(), other)
+        onUpdateShape?.(start.id, { x: done.x, y: done.y, w: done.w, h: done.h, [handle === 'nw' ? 'from' : 'to']: t?.id || null })
+      } else if (done) onUpdateShape?.(start.id, { x: done.x, y: done.y, w: done.w, h: done.h, rot: done.rot })
       setLiveShapes(null)
       suppressNextBgClickRef.current = true
     }
@@ -3401,6 +3869,10 @@ function addBlockAnimated(type, x, y) {
   function deleteSelectedShapes() {
     const ids = [...selectedShapeIds]
     if (!ids.length) return
+    /* Connectors left behind keep the ends they were drawn with. Their
+       attachments stay, so the undo below re-attaches them for free. */
+    for (const { id, patch } of bakeConnectorsFor(shapes, ids)) onUpdateShape?.(id, patch)
+    setMmSel(null)
     const undo = onDeleteShapes?.(ids)
     setSelectedShapeIds(new Set())
     if (undo) toast(ids.length === 1 ? 'Shape deleted' : `${ids.length} shapes deleted`, { undo })
@@ -3475,7 +3947,7 @@ function addBlockAnimated(type, x, y) {
   }
 
   return (
-    <div ref={outerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', background: dark ? '#131311' : '#E4E1D9' }}>
+    <div ref={outerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', background: canvasBg.bg }}>
     {/* ── Floating Island ── */}
       {/* Title island — notebook identity plus the view controls.
           The overlap was arithmetic: with left:292 and maxWidth
@@ -3499,7 +3971,7 @@ function addBlockAnimated(type, x, y) {
           notice. */}
       <div style={{ minWidth: 0, paddingLeft: sidebarHidden ? ROW_LEFT_COLLAPSED : ROW_LEFT, paddingRight: 16, display: 'flex', justifyContent: 'flex-start', overflow: 'hidden', transition: `padding-left ${MOTION.enter} ${MOTION.standard}` }}>
 
-      <div style={{ flex: '0 1 auto', minWidth: 0, pointerEvents: 'auto', display: 'flex', gap: 2, height: 46, padding: '0 12px', overflow: 'hidden', background: `${surface}dd`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
+      <div style={{ ...islandChrome({ surface, border, dark }), flex: '0 1 auto', minWidth: 0, pointerEvents: 'auto', display: 'flex', gap: 2, padding: '0 12px', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
         {renamingNb ? (
           <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
         ) : (
@@ -3541,6 +4013,26 @@ function addBlockAnimated(type, x, y) {
 
       </div>
 
+      {paletteOpen && (
+        <CommandPalette
+          colors={colors}
+          databases={blocks.filter(b => b.type === 'database').map(b => ({ id: b.id, label: b.name || b.db?.name || 'Untitled database', name: b.name, db: b.db }))}
+          onClose={() => setPaletteOpen(false)}
+          onOpenRecord={(sourceId, rowId) => openRecord(sourceId, rowId, null)}
+          commands={[
+            ...ADD_ITEMS.filter(i => !getBlockType(i.type).createOpensPicker).map(i => ({
+              id: 'add-' + i.type, label: `Add ${i.label.toLowerCase()}`, icon: i.icon, keywords: i.keywords,
+              run: () => { const p = viewSpot(600); addBlockAnimated(i.type, p.x, p.y) },
+            })),
+            { id: 'snap', label: snapEnabled ? 'Turn snap off' : 'Turn snap on', icon: 'tool-snap', keywords: 'grid align magnet', run: toggleSnap },
+            { id: 'draw', label: drawMode ? 'Stop drawing' : 'Draw on the canvas', icon: 'tool-draw', keywords: 'pen ink', run: () => setDrawMode(v => !v) },
+            { id: 'visuals', label: visualsOn ? 'Close Visuals' : 'Open Visuals', icon: 'tool-mindmap', keywords: 'shapes diagram sticky connector whiteboard', run: () => setVisualsOn(!visualsOn) },
+            { id: 'mindmap', label: 'Start a mind map', icon: 'tool-mindmap', keywords: 'visuals tree brainstorm', run: () => { setVisualsOn(true); onVisualTool('mindmap') } },
+            { id: 'keys', label: 'Keyboard shortcuts', icon: 'status-info', hint: '?', keywords: 'help keys', run: () => setShortcutsOpen(true) },
+          ]}
+        />
+      )}
+
       {addMenuOpen && (
         <AddMenu
           anchorRect={addAnchor}
@@ -3576,7 +4068,39 @@ function addBlockAnimated(type, x, y) {
       )}
 
       {/* ── Floating Island Toolbar — centre column, so it's screen-centred ── */}
-      <div style={{ pointerEvents: 'auto', display: 'flex', gap: 6, height: 46, padding: '0 10px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 12, border: `1px solid ${border}`, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`, fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
+      <div style={{ ...islandChrome({ surface, border, dark }), pointerEvents: 'auto', display: 'flex', gap: 6, padding: '0 10px', fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
+        {/* THE ORDER IS AGENT · SNAP · ADD · DRAW · EXPORT, with Add in the middle.
+            Decided 24 Sep 2026. Add is what this island is FOR, so it sits
+            at the centre of a screen-centred row and carries the primary
+            plain ds-tbtn treatment, the same as its neighbours (no accent, no ring; decided 24 Sep). Mind map left the island for Builder → Visuals:
+            it is a mode you enter on purpose, not a button you need every minute.
+
+            Agent is a placeholder and says so. It is disabled rather than hidden,
+            so the slot exists and the row does not re-flow when it ships. It is
+            also skipped by islandButtons(), which filters out [disabled]. No
+            icon until the agent glyph is drawn (24 Sep 2026): a stand-in
+            implied a feature it is not. */}
+        <button disabled aria-disabled="true" className="ds-tbtn"
+          title="Agent · coming soon"
+          style={{ opacity: 0.55, cursor: 'default' }}>
+          Agent
+        </button>
+
+        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
+
+        <button onClick={toggleSnap}
+          title={snapEnabled ? 'Magnetic alignment: on · hold Alt while dragging to suspend' : 'Magnetic alignment: off'}
+          className={`ds-tbtn${snapEnabled ? ' is-on' : ''}`}>
+          <Icon name="tool-snap" size={14} />
+          Snap
+        </button>
+
+        {/* Crosscheck moved to the sheet rail. It only ever operates on table
+            columns, so a global toolbar slot advertised it on canvases where
+            it could do nothing — and it was the widest button in the row. */}
+
+        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
+
         {/* Add block menu.
 
             PORTALLED, not absolutely positioned inside this island — which is
@@ -3598,32 +4122,12 @@ function addBlockAnimated(type, x, y) {
               setAddMenuOpen(true)
             }}
             aria-expanded={addMenuOpen}
-            className={`ds-tbtn${addMenuOpen ? ' is-on' : ''}`}>
+            data-menu-toggle="add"
+            className={`ds-tbtn is-menu${addMenuOpen ? ' is-on' : ''}`}>
             <Icon name="action-add" size={14} />
             Add
           </button>
         </div>
-
-        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
-
-        <button onClick={toggleSnap}
-          title={snapEnabled ? 'Magnetic alignment: on · hold Alt while dragging to suspend' : 'Magnetic alignment: off'}
-          className={`ds-tbtn${snapEnabled ? ' is-on' : ''}`}>
-          <Icon name="tool-snap" size={14} />
-          Snap
-        </button>
-
-        {/* Crosscheck moved to the sheet rail. It only ever operates on table
-            columns, so a global toolbar slot advertised it on canvases where
-            it could do nothing — and it was the widest button in the row. */}
-
-        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
-
-        <button onClick={toggleMindMap} className={`ds-tbtn${mindMapMode ? ' is-on' : ''}`}
-          title={mindMapMode ? 'Exit mind map mode' : 'Click master then slave to connect'}>
-          <Icon name="tool-mindmap" size={14} />
-          Mind map
-        </button>
 
        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
@@ -3665,8 +4169,13 @@ function addBlockAnimated(type, x, y) {
                visible card is in the same place and the hover area reaches
                all the way back to the button. Do not "tidy" this into a
                margin. */
-            <div style={{ position: 'absolute', top: '100%', left: 0, paddingTop: 6, background: 'transparent', border: 'none', boxShadow: 'none', zIndex: Z.menu, minWidth: 180 }}>
-            <div style={{ minWidth: 180, background: surface, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}` }}>
+            /* Fixed WIDTH, not minWidth. Content-sized, the card changed
+               width with its contents, and three flex:1 buttons in 180px left
+               about 50px each for a 14px icon, a gap and a word, so they
+               squeezed. 260 fits Undo, Clear and Exit at a 32px height with
+               room around the icons. */
+            <div style={{ position: 'absolute', top: '100%', left: 0, paddingTop: 6, background: 'transparent', border: 'none', boxShadow: 'none', zIndex: Z.menu, width: 260 }}>
+            <div style={{ width: 260, boxSizing: 'border-box', background: surface, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10, boxShadow: `0 8px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.15)'}` }}>
               {/* First, because it changes what drawing DOES rather than how
                   it looks, and someone hunting for "why did my circle jump"
                   should find the switch before the colour swatches. */}
@@ -3699,7 +4208,10 @@ function addBlockAnimated(type, x, y) {
               <div>
                 <div style={{ fontSize: 11, color: text3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 600 }}>Color</div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {['#5B5FE8', '#1D9E75', '#f87171', '#E8B85B', '#E8E6E1'].map(c => (
+                  {/* Four inks. The fifth was near-white (#E8E6E1), which is
+                      invisible on the light canvas. Removed 24 Sep 2026;
+                      strokes already drawn in it keep their colour. */}
+                  {['#5B5FE8', '#1D9E75', '#f87171', '#E8B85B'].map(c => (
                     <div key={c} onClick={() => setDrawColor(c)}
                       style={{ width: 20, height: 20, borderRadius: '50%', background: c, cursor: 'pointer', border: drawColor === c ? `2px solid ${text}` : `2px solid transparent`, transition: 'border 0.1s', flexShrink: 0 }} />
                   ))}
@@ -3722,17 +4234,17 @@ function addBlockAnimated(type, x, y) {
               </div>
               <div style={{ display: 'flex', gap: 6, borderTop: `1px solid ${border}`, paddingTop: 8 }}>
                 <button onClick={undoLastDrawing}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
+                  style={{ flex: 1, minWidth: 0, height: 32, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 10px', whiteSpace: 'nowrap', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
                   <Icon name="draw-undo" size={14} /> Undo
                 </button>
                 <button onClick={clearAllDrawings}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}
+                  style={{ flex: 1, minWidth: 0, height: 32, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 10px', whiteSpace: 'nowrap', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}
                   onMouseEnter={e => { e.currentTarget.style.color = '#f87171'; e.currentTarget.style.borderColor = '#f87171' }}
                   onMouseLeave={e => { e.currentTarget.style.color = text2; e.currentTarget.style.borderColor = border }}>
                   <Icon name="draw-clear" size={14} /> Clear
                 </button>
                 <button onClick={() => { setDrawMode(false); setShowDrawPanel(false) }}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 0', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
+                  style={{ flex: 1, minWidth: 0, height: 32, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 10px', whiteSpace: 'nowrap', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
                   <Icon name="draw-exit" size={14} /> Exit
                 </button>
               </div>
@@ -4012,6 +4524,7 @@ function addBlockAnimated(type, x, y) {
           if (startShapeGesture(e)) return
           handleDrawMouseDown(e); startPan(e); startMarquee(e)
         }}
+        onDoubleClick={handleShapeDoubleClick}
         onMouseMove={handleDrawMouseMove}
         onMouseUp={handleDrawMouseUp}
         onMouseLeave={handleDrawMouseUp}
@@ -4157,32 +4670,47 @@ function addBlockAnimated(type, x, y) {
         }}
         style={{
           flex: 1, position: 'relative', overflow: 'hidden',
-          background: dark ? '#131311' : '#E4E1D9',
+          background: canvasBg.bg,
           cursor: 'crosshair', userSelect: 'none',
           // Inset ring while the canvas holds focus — without it a keyboard
           // user has no idea the arrows are about to do anything.
           outline: 'none',
           boxShadow: canvasFocused ? `inset 0 0 0 2px ${accent}55` : 'none',
-          transition: 'box-shadow .15s ease',
+          /* The ground fades when the notebook's background preset changes. */
+          transition: 'box-shadow .15s ease, background-color .2s ease',
         }}>
+        {/* The dots. Their own layer under the line grid; drawn by the layout
+            effect next to gridOn. Dot spacing is the notebook's, not gridSize,
+            so this layer and the line grid can differ on purpose. */}
+        {/* Builder → Visuals: the creation surface, the bar and its hint.
+            Inside the canvas box so the bar sits at the bottom of the CANVAS. */}
+        {visualsOn && visualsTool !== 'select' && !drawMode && !mindMapMode && (
+          <VisualsOverlay
+            tool={visualsTool}
+            accent={accent}
+            toCanvas={toCanvas}
+            toScreen={(x, y) => {
+              const r = containerRef.current.getBoundingClientRect(), z = nbZoomRef.current
+              return { x: r.left + panRef.current.x + x * z, y: r.top + panRef.current.y + y * z }
+            }}
+            targetAt={p => { const t = pickTarget(shapesView, p.x, p.y, shapeTol()); return t ? { id: t.id, ...shapeBounds(t) } : null }}
+            onCreate={onVisualCreate}
+          />
+        )}
+        {visualsOn && (
+          <VisualsBar colors={colors} tool={visualsTool} penOn={drawMode} linkOn={mindMapMode} onTool={onVisualTool} />
+        )}
+        {visualsOn && visualsHint && (
+          <div role="status" aria-live="polite" style={{
+            position: 'absolute', left: '50%', bottom: 82, transform: 'translateX(-50%)', zIndex: Z.hint, pointerEvents: 'none',
+            background: text, color: surface, fontFamily: 'var(--ds-font-body)', fontSize: 12, padding: '6px 10px', borderRadius: 8,
+            whiteSpace: 'nowrap', boxShadow: 'var(--ds-shadow-md)',
+          }}>{visualsHint}</div>
+        )}
+        <canvas ref={dotCanvasRef} aria-hidden="true"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} />
         <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
           <defs>
-            <filter id="nb-dot-soft" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation={0.55 * nbZoom} />
-            </filter>
-            {/* Same correction, and this one matters more than the lines do.
-
-                The gridlines render at 5% opacity — all but invisible. These
-                dots at 40% are what a user actually reads as "the grid", and
-                they were drawn at tile-local (r, r), i.e. tangent to the
-                lattice point rather than centred on it, putting every visible
-                dot one zoom-unit right and down of the line a block snaps to.
-                Pulling the tile back by r lands the dot centre exactly on the
-                intersection without moving the circle inside its tile, so the
-                blur halo is clipped exactly as before. */}
-            <pattern id="nb-dots" x={pan.x % gridPx - nbZoom} y={pan.y % gridPx - nbZoom} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
-              <circle cx={nbZoom} cy={nbZoom} r={nbZoom} fill={dark ? '#3a3835' : '#C0BCB2'} filter="url(#nb-dot-soft)" opacity={dark ? 0.45 : 0.4} />
-            </pattern>
             {/* Faint alignment grid. */}
             {/* THE TILE ORIGIN IS PULLED BACK HALF A PIXEL ON PURPOSE.
 
@@ -4199,7 +4727,6 @@ function addBlockAnimated(type, x, y) {
                 stroke={dark ? '#ffffff' : '#000000'} strokeWidth={1} opacity={dark ? 0.045 : 0.05} />
             </pattern>
           </defs>
-          <rect width="100%" height="100%" fill="url(#nb-dots)" />
           {/* The grid used to appear only while Snap was armed, which quietly
               made them one setting: turning snapping off also took away the
               thing people were eyeballing alignment against by hand. Settings →
@@ -4522,16 +5049,32 @@ function addBlockAnimated(type, x, y) {
           </svg>
 
           <ShapeLayer
-            shapes={shapes}
+            shapes={shapesView}
             selectedIds={selectedShapeIds}
-            soleSelected={soleSelectedShape}
+            soleSelected={soleSelectedView}
             live={liveShapes}
             zoom={nbZoom}
             accent={accent}
             surface={surface}
             stroke={text2}
             onHandleDown={onShapeHandleDown}
+            mm={mmSel}
+            mmDrop={mmDrop}
+            editing={shapeEdit}
           />
+          {shapeEdit && (() => {
+            const sh = shapeById(shapeEdit.shapeId)
+            if (!sh) return null
+            if (shapeEdit.nodeId) {
+              const b = mmNodeBox(sh, shapeEdit.nodeId)
+              if (!b) return null
+              return <ShapeTextEditor key={sh.id + shapeEdit.nodeId} node box={b} isRoot={shapeEdit.nodeId === sh.root}
+                value={sh.nodes[shapeEdit.nodeId]?.text} initialChar={shapeEdit.initialChar} onDone={finishShapeEdit} />
+            }
+            const live = liveShapes?.get(sh.id) || sh
+            return <ShapeTextEditor key={sh.id} box={{ x: live.x, y: live.y, w: live.w, h: live.h }} rot={live.rot}
+              value={sh.text} initialChar={shapeEdit.initialChar} big={sh.kind === 'text'} sticky={sh.kind === 'sticky'} onDone={finishShapeEdit} />
+          })()}
 
           {blocks.map((stored, bi) => {
             /* Shadowed once, here, so every `block.w` / `block.x` / blockDims()
@@ -4742,7 +5285,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -4804,7 +5347,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
               {/* TABLE BLOCK — now resizable */}
@@ -4848,7 +5391,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
               {/* IMAGE BLOCK */}
@@ -5016,7 +5559,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       hidden here. */}
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
                 )
               })()}
@@ -5083,7 +5626,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -5115,7 +5658,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   <FileBlock block={block} colors={colors} dark={dark} onUpdateBlock={onUpdateBlock} />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -5151,7 +5694,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -5201,7 +5744,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -5281,7 +5824,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -5334,7 +5877,105 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* PIPELINE and RECORD — Builder Phase 1 (24 Sep 2026).
+                  Views of a Database block (block.sourceId). Same frame as
+                  the database branch above; every write goes to the source
+                  database through onUpdateBlock, so undo and sync apply. */}
+              {block.type === 'pipeline' && (
+                <div style={{
+                  width: block.w || 880, height: block.h || 440,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="pipeline"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <PipelineBlock
+                      block={block}
+                      source={blocks.find(b => b.id === block.sourceId && b.type === 'database') || null}
+                      colors={colors}
+                      onUpdateSource={db => onUpdateBlock(block.sourceId, { db })}
+                      onUpdateBlock={patch => onUpdateBlock(block.id, patch)}
+                      onOpenRecord={rowId => openRecord(block.sourceId, rowId, block)}
+                      openRowId={blocks.find(b => b.type === 'record' && b.pipelineId === block.id)?.rowId || null}
+                    />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {block.type === 'record' && (
+                <div style={{
+                  width: block.w || 400, height: block.h || 520,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="record"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <RecordBlock
+                      block={block}
+                      source={blocks.find(b => b.id === block.sourceId && b.type === 'database') || null}
+                      databases={blocks.filter(b => b.type === 'database').map(b => ({ id: b.id, label: b.name || b.db?.name || 'Untitled database', name: b.name, db: b.db }))}
+                      pipeline={blocks.find(b => b.id === block.pipelineId && b.type === 'pipeline') || null}
+                      colors={colors}
+                      onUpdateDb={(id, db) => onUpdateBlock(id, { db })}
+                      onRetarget={patch => onUpdateBlock(block.id, patch)}
+                    />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -5390,7 +6031,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     isSelected={isSelected}
                     onUpdateBlock={onUpdateBlock}
                   />
-                  <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
 
@@ -5431,7 +6072,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onMouseDown={e => startBlockDrag(e, block)}>
                     <Icon name="block-section" size={14} style={{ color: accent, flexShrink: 0 }} />
                     {renamingBlockId === block.id ? (
-                      <input autoFocus defaultValue={block.name || 'Columns'}
+                      <input autoFocus data-ds-rename defaultValue={block.name || 'Columns'}
                         onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Columns' }); setRenamingBlockId(null) }}
                         onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
                         onMouseDown={e => e.stopPropagation()} maxLength={40}
@@ -5505,7 +6146,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onMouseDown={e => startBlockDrag(e, block)}>
                     <div style={{ width: 4, height: 18, borderRadius: 4, background: block.sectionColor || accent }} />
                     {renamingBlockId === block.id ? (
-                      <input autoFocus defaultValue={block.name || 'Section'} onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Section' }); setRenamingBlockId(null) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} onMouseDown={e => e.stopPropagation()} maxLength={40}
+                      <input autoFocus data-ds-rename defaultValue={block.name || 'Section'} onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Section' }); setRenamingBlockId(null) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} onMouseDown={e => e.stopPropagation()} maxLength={40}
                         style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${block.sectionColor || accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 0 }} />
                     ) : (
                       <span onDoubleClick={e => { e.stopPropagation(); setRenamingBlockId(block.id) }} style={{ flex: 1, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.name || 'Section'}</span>
@@ -5675,7 +6316,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   </div>
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
-                 <Ports {...portProps} show={isSelected || isHovered || !!linking} blockId={block.id} />
+                 <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
               </BlockErrorBoundary>

@@ -1,10 +1,12 @@
 'use client'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { safeLinkUrl } from '../../lib/urls'
 import { Z, SWATCHES, INK_SWATCH } from '../../lib/theme'
 import { columnsFromNodes, nodesInRange } from '../../lib/columns'
+import { CHECKLIST_HTML, caretIntoChecklist } from '../../lib/checklist'
+import { elementFrom } from '../../lib/insertblock'
 
 const COLUMN_COUNTS = [2, 3, 4, 5]
 
@@ -80,10 +82,17 @@ const COLOR_OPTIONS = [INK_SWATCH, ...SWATCHES]
    the press point before the command runs, so the format applies to nothing.
    Every control in this file — including the ones inside the popovers — must
    keep this. */
-function Cell({ run, title, children, wide, disabled, colors, ...rest }) {
-  const { raised, text, text2, text3 } = colors
+/* `active`: the selection already has this format (bold text, a heading
+   line). Shown as the accent tint, so Bold visibly reads as on when the
+   selected text is already bold (24 Sep 2026). Colour and tint only, never
+   weight or size, so an active button cannot change the pill's width. */
+const Cell = forwardRef(function Cell({ run, title, children, wide, disabled, colors, active, style: styleOverride, ...rest }, fwdRef) {
+  const { raised, text, text2, text3, accent, accentDim } = colors
+  const restBg = active ? accentDim : 'transparent'
+  const restFg = disabled ? text3 : active ? accent : text2
   return (
     <button
+      ref={fwdRef}
       type="button"
       onMouseDown={e => { e.preventDefault(); if (!disabled) run(e) }}
       title={title}
@@ -95,24 +104,26 @@ function Cell({ run, title, children, wide, disabled, colors, ...rest }) {
         padding: wide ? '0 8px' : 0,
         flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
-        background: 'transparent',
+        background: restBg,
         border: 'none',
         borderRadius: 6,
-        color: disabled ? text3 : text2,
+        color: restFg,
         cursor: disabled ? 'default' : 'pointer',
         fontFamily: 'var(--ds-font-body)',
         fontSize: wide ? 11 : 14,
         lineHeight: 1,
         transition: 'background var(--ds-motion-hover) var(--ds-ease-standard), color var(--ds-motion-hover) var(--ds-ease-standard)',
+        ...styleOverride,
       }}
-      onMouseEnter={e => { if (disabled) return; e.currentTarget.style.background = raised; e.currentTarget.style.color = text }}
-      onMouseLeave={e => { if (disabled) return; e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = text2 }}
+      aria-pressed={active === undefined ? undefined : !!active}
+      onMouseEnter={e => { if (disabled) return; e.currentTarget.style.background = active ? accentDim : raised; e.currentTarget.style.color = active ? accent : text }}
+      onMouseLeave={e => { if (disabled) return; e.currentTarget.style.background = restBg; e.currentTarget.style.color = restFg }}
       {...rest}
     >
       {children}
     </button>
   )
-}
+})
 
 /* 1px group boundary. Replaces v3's uppercase group-label ROWS: one row has no
    vertical space for a text header per group, and a hairline says the same
@@ -132,6 +143,25 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
   const ref = useRef(null)
   const [menu, setMenu] = useState(null)   // null | 'font' | 'color' | 'link'
   const [expanded, setExpanded] = useState(false)
+  /* What the current selection already is: which inline formats are on,
+     and which block it sits in. Read from the browser (queryCommandState /
+     queryCommandValue), the same source execCommand uses to decide whether
+     a press turns a format on or off, so the button and the action agree. */
+  const [active, setActive] = useState({})
+  const readActive = useCallback(() => {
+    const q = c => { try { return document.queryCommandState(c) } catch { return false } }
+    let block = ''
+    try { block = String(document.queryCommandValue('formatBlock') || '').toLowerCase() } catch { /* ignore */ }
+    const next = {
+      bold: q('bold'), italic: q('italic'), underline: q('underline'), strike: q('strikeThrough'),
+      ul: q('insertUnorderedList'), ol: q('insertOrderedList'), block,
+    }
+    setActive(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
+  }, [])
+  /* The secondary section, measured so the pill is placed from its CORE
+     width. See placeFrom. */
+  const secondaryRef = useRef(null)
+  const styleBtnRef = useRef(null)
   const [linkUrl, setLinkUrl] = useState('')
   const [linkError, setLinkError] = useState(null)
   /* Shown when Link is pressed with nothing selected. A hint, not an error:
@@ -180,7 +210,15 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
     const vw = window.innerWidth
     const vh = window.innerHeight
 
-    let left = rect.left + rect.width / 2 - w / 2
+    /* CENTRED ON THE CORE ROW, NOT THE WHOLE PILL (24 Sep 2026).
+       Centring on the full width meant opening the secondary section (about
+       +420px) re-centred the pill: it jumped left by half the growth, and
+       every core button moved with it. The core row's width is the pill minus
+       the secondary section, measured live, so it is the same collapsed or
+       expanded. The pill now grows to the right from a fixed left edge, and
+       only moves if it would otherwise run off the screen. */
+    const coreW = Math.max(0, w - (secondaryRef.current?.offsetWidth || 0))
+    let left = rect.left + rect.width / 2 - coreW / 2
     left = Math.max(EDGE, Math.min(left, vw - w - EDGE))
 
     const flipped = rect.top < FLIP_CLEARANCE
@@ -232,11 +270,12 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
         setEntryKey(k => k + 1)
       }
       placeFrom(rect)
+      readActive()
     }
     document.addEventListener('selectionchange', onSelectionChange)
     onSelectionChange()
     return () => document.removeEventListener('selectionchange', onSelectionChange)
-  }, [hide, placeFrom, rangeIsOurs, menu])
+  }, [hide, placeFrom, rangeIsOurs, menu, readActive])
 
   /* ── Follow the canvas ─────────────────────────────────────────────────
      Pan, zoom, a scroll inside the block, a window resize: none of these fire
@@ -307,8 +346,86 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
     }
   }, [onClose, menu, expanded, hide])
 
-  function exec(cmd, value = null) {
-    document.execCommand(cmd, false, value)
+  /* `value` defaults to undefined, not null. execCommand stringifies what it
+     is given, so insertHorizontalRule with null wrote <hr id="null"> into
+     the note. After every command the active states are read again, so Bold
+     flips the moment it is pressed. */
+  function exec(cmd, value) {
+    if (value === undefined) document.execCommand(cmd, false)
+    else document.execCommand(cmd, false, value)
+    readActive()
+  }
+
+  /* NORMAL TEXT: back to a plain paragraph AND no inline formatting.
+     It only did formatBlock('div'), which un-heads a heading but leaves bold,
+     italic, underline, strike, colour and font exactly as they were, so on
+     bold text it looked like it did nothing. A list item comes out of its
+     list too. Links are kept: they are content, not formatting. */
+  function makeNormal() {
+    if (safeState('insertUnorderedList')) document.execCommand('insertUnorderedList', false)
+    if (safeState('insertOrderedList')) document.execCommand('insertOrderedList', false)
+    document.execCommand('formatBlock', false, 'div')
+    document.execCommand('removeFormat', false)
+    /* removeFormat is unreliable on a MIXED selection (part bold, part not):
+       Chrome left the <b> in place, and queryCommandState reports "not bold"
+       for a mixed run, so toggling cannot catch it either. So every
+       formatting element the selection touches is unwrapped by hand,
+       keeping its text. Teleport links (span[data-ds-link]) and real links
+       are content, not formatting, and are left alone. */
+    const sel = window.getSelection()
+    const root = editableRef?.current
+    if (root && sel?.rangeCount) {
+      const range = sel.getRangeAt(0)
+      const els = Array.from(root.querySelectorAll('b,strong,i,em,u,s,strike,del,font,span:not([data-ds-link]):not([data-type])'))
+        .filter(el => !el.closest('[data-type="checklist"]') || el.tagName !== 'SPAN' || el.parentElement?.getAttribute('data-type') !== 'checklist')
+        .filter(el => { try { return range.intersectsNode(el) } catch { return false } })
+      for (const el of els.reverse()) el.replaceWith(...Array.from(el.childNodes))
+      if (els.length) root.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    readActive()
+  }
+  function safeState(c) { try { return document.queryCommandState(c) } catch { return false } }
+
+  /* TURN THE SELECTED LINES INTO CHECKLIST ITEMS.
+     This used insertHTML with an empty item, which REPLACED the selected text
+     with the item (the text ended up gone or sitting behind the checkbox) and
+     arrived broken the same way the / command's did (see lib/insertblock.js).
+     Now every selected line becomes an item holding that line's own text, built
+     by hand. A list's items each become a checklist item. An 'input' event is
+     dispatched afterwards, because direct DOM edits do not fire one and the
+     Notes autosave listens for it. */
+  function turnIntoChecklist() {
+    const root = editableRef?.current
+    const sel = window.getSelection()
+    if (!root || !sel?.rangeCount) return
+    const range = sel.getRangeAt(0)
+    let lines = nodesInRange(root, range)
+    if (!lines.length) return
+    const made = []
+    for (const line of lines) {
+      if (line.getAttribute?.('data-type') === 'checklist') { made.push(line); continue }
+      const sources = (line.tagName === 'UL' || line.tagName === 'OL') ? Array.from(line.children) : [line]
+      const items = sources.map(src => {
+        const item = elementFrom(CHECKLIST_HTML)
+        const span = item.querySelector('span')
+        span.innerHTML = ''
+        /* Headings and quotes give up their block, keep their words. */
+        for (const n of Array.from(src.childNodes)) span.appendChild(n)
+        if (!span.textContent.trim() && !span.querySelector('img')) span.innerHTML = '<br>'
+        return item
+      })
+      line.replaceWith(...items)
+      made.push(...items)
+    }
+    const last = made[made.length - 1]
+    if (last) {
+      const span = last.querySelector('span')
+      const r = document.createRange(); r.selectNodeContents(span); r.collapse(false)
+      root.focus(); sel.removeAllRanges(); sel.addRange(r)
+    }
+    root.dispatchEvent(new Event('input', { bubbles: true }))
+    hide()
+    onClose?.()
   }
 
   /* "Turn into N columns" — the one control in this pill that acts on a
@@ -414,7 +531,16 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
 
   if (typeof document === 'undefined') return null
 
-  const cellColors = { raised, text, text2, text3 }
+  const TEXT_STYLES = [
+    { id: 'normal', label: 'Normal text', css: { fontSize: 13 } },
+    { id: 'h1', label: 'Heading 1', css: { fontSize: 20, fontWeight: 700, fontFamily: 'var(--ds-font-head)' } },
+    { id: 'h2', label: 'Heading 2', css: { fontSize: 16, fontWeight: 700, fontFamily: 'var(--ds-font-head)' } },
+    { id: 'h3', label: 'Heading 3', css: { fontSize: 14, fontWeight: 600, fontFamily: 'var(--ds-font-head)' } },
+  ]
+  const currentStyle = ['h1', 'h2', 'h3'].includes(active.block) ? active.block : 'normal'
+  const styleLabel = TEXT_STYLES.find(t => t.id === currentStyle).label
+
+  const cellColors = { raised, text, text2, text3, accent, accentDim: colors.accentDim || 'var(--ds-accent-dim)' }
   /* Collapsed secondary controls are removed from the tab order outright, not
      just clipped. `max-width:0; overflow:hidden` hides them visually but the
      buttons are still full-size elements in the layout tree, so they stay
@@ -471,29 +597,41 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
       }}
     >
       {/* ── Core: Style ── */}
-      <Cell colors={cellColors} run={() => exec('bold')}          title="Bold"><b style={{ fontSize: 14 }}>B</b></Cell>
-      <Cell colors={cellColors} run={() => exec('italic')}        title="Italic"><i style={{ fontSize: 14, fontFamily: 'var(--ds-font-body)' }}>I</i></Cell>
-      <Cell colors={cellColors} run={() => exec('underline')}     title="Underline"><u style={{ fontSize: 14 }}>U</u></Cell>
-      <Cell colors={cellColors} run={() => exec('strikeThrough')} title="Strikethrough"><s style={{ fontSize: 14 }}>S</s></Cell>
+      <Cell colors={cellColors} active={active.bold}      run={() => exec('bold')}          title="Bold"><b style={{ fontSize: 14 }}>B</b></Cell>
+      <Cell colors={cellColors} active={active.italic}    run={() => exec('italic')}        title="Italic"><i style={{ fontSize: 14, fontFamily: 'var(--ds-font-body)' }}>I</i></Cell>
+      <Cell colors={cellColors} active={active.underline} run={() => exec('underline')}     title="Underline"><u style={{ fontSize: 14 }}>U</u></Cell>
+      <Cell colors={cellColors} active={active.strike}    run={() => exec('strikeThrough')} title="Strikethrough"><s style={{ fontSize: 14 }}>S</s></Cell>
 
       <Sep />
 
-      {/* ── Core: Block type. Normal is here, not behind the chevron. ── */}
-      <Cell colors={cellColors} run={() => exec('formatBlock', 'h1')}  title="Heading 1"><Icon name="text-h1" size={16} /></Cell>
-      <Cell colors={cellColors} run={() => exec('formatBlock', 'h2')}  title="Heading 2"><Icon name="text-h2" size={16} /></Cell>
-      <Cell colors={cellColors} run={() => exec('formatBlock', 'div')} title="Normal paragraph"><Icon name="block-text" size={16} /></Cell>
+      {/* ── Core: Text style (24 Sep 2026) ──
+          Normal text and the headings are ONE dropdown now, labelled with the
+          current style, the way Claude's editor does it. It replaced three
+          icon buttons (H1, H2, Normal) here plus H3 behind the chevron. The
+          button has a FIXED width, so switching from "Normal text" to
+          "Heading 1" cannot change the pill's width and move everything. */}
+      <Cell colors={cellColors} wide
+        ref={styleBtnRef}
+        run={() => setMenu(m => (m === 'style' ? null : 'style'))}
+        title="Text style"
+        aria-haspopup="listbox" aria-expanded={menu === 'style'}
+        style={{ width: 112, justifyContent: 'space-between', padding: '0 8px', fontSize: 12 }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{styleLabel}</span>
+        <Icon name="nav-chevron-down" size={12} />
+      </Cell>
 
       <Sep />
 
       {/* ── Core: Lists ── */}
-      <Cell colors={cellColors} run={() => exec('insertUnorderedList')} title="Bullet list"><Icon name="text-bullet-list" size={16} /></Cell>
-      <Cell colors={cellColors} run={() => exec('insertOrderedList')}   title="Numbered list"><Icon name="text-numbered-list" size={16} /></Cell>
+      <Cell colors={cellColors} active={active.ul} run={() => exec('insertUnorderedList')} title="Bullet list"><Icon name="text-bullet-list" size={16} /></Cell>
+      <Cell colors={cellColors} active={active.ol} run={() => exec('insertOrderedList')}   title="Numbered list"><Icon name="text-numbered-list" size={16} /></Cell>
 
       {/* ── Secondary section. Slides open SIDEWAYS on max-width, not width or
              flex-basis: a max-width transition animates without the contents
              reflowing at every intermediate size, so the eight buttons inside
              don't shuffle as the pill grows. ── */}
       <div
+        ref={secondaryRef}
         style={{
           display: 'flex', alignItems: 'center',
           /* 340 → 420: the Columns control (Sep + one wide Cell) added
@@ -503,8 +641,6 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
           transition: 'max-width 0.2s var(--ds-ease-standard)',
         }}
       >
-        <Sep />
-        <Cell {...hiddenWhenCollapsed} colors={cellColors} run={() => exec('formatBlock', 'h3')} title="Heading 3"><Icon name="text-h3" size={16} /></Cell>
 
         <Sep />
         {/* NO accent-color in the inserted markup at all.
@@ -518,16 +654,14 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
             anyway; omitting it is the honest fix, and it makes that rule's own
             comment ("new checklists are written without the declaration at
             all") true, which it wasn't. */}
-        <Cell {...hiddenWhenCollapsed} colors={cellColors} title="Checklist" run={() => exec('insertHTML',
-          '<div data-type="checklist" style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;"><input type="checkbox" style="margin-top:5px;cursor:pointer;width:15px;height:15px;flex-shrink:0;"><span></span></div>'
-        )}><Icon name="text-checklist" size={16} /></Cell>
-        <Cell {...hiddenWhenCollapsed} colors={cellColors} run={() => exec('formatBlock', 'blockquote')} title="Quote"><Icon name="text-quote" size={16} /></Cell>
+        <Cell {...hiddenWhenCollapsed} colors={cellColors} title="Checklist" run={turnIntoChecklist}><Icon name="text-checklist" size={16} /></Cell>
+        <Cell {...hiddenWhenCollapsed} colors={cellColors} active={active.block === 'blockquote'} run={() => exec('formatBlock', 'blockquote')} title="Quote"><Icon name="text-quote" size={16} /></Cell>
 
         <Sep />
         <Cell {...hiddenWhenCollapsed} colors={cellColors} run={() => exec('insertHorizontalRule')} title="Divider"><Icon name="text-divider" size={16} /></Cell>
-        <Cell {...hiddenWhenCollapsed} colors={cellColors} title="Code" run={() => exec('insertHTML',
-          '<code style="font-family:var(--ds-font-mono);font-size:0.92em;background:rgba(127,127,127,0.14);padding:1px 5px;border-radius:4px;">code</code>&nbsp;'
-        )}><Icon name="text-code" size={16} /></Cell>
+        {/* Inline "Code" was removed here (24 Sep 2026): it replaced the
+            selection with the literal word "code" instead of formatting it.
+            Code blocks live in the / menu. */}
         <Cell {...hiddenWhenCollapsed} colors={cellColors} run={openLinkMenu} title="Insert hyperlink" wide>Link</Cell>
 
         <Sep />
@@ -563,10 +697,12 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
       >
         <span style={{
           display: 'flex',
+          /* Right when closed, left when open: the section opens SIDEWAYS, so
+             the arrow points the way it will move (it pointed down/up). */
           transform: expanded ? 'rotate(180deg)' : 'none',
           transition: 'transform var(--ds-motion-enter) var(--ds-ease-standard)',
         }}>
-          <Icon name="nav-chevron-down" size={12} />
+          <Icon name="nav-chevron-right" size={12} />
         </span>
       </Cell>
 
@@ -604,6 +740,33 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
           ) : (
             <div style={{ marginTop: 6, fontSize: 11, color: text2 }}>Enter to add · Esc to cancel</div>
           )}
+        </div>
+      )}
+
+      {menu === 'style' && (
+        <div role="listbox" aria-label="Text style"
+          style={{ ...popover, left: styleBtnRef.current?.offsetLeft ?? 4, padding: 4, minWidth: 180 }}>
+          {TEXT_STYLES.map(t => {
+            const on = t.id === currentStyle
+            return (
+              <button key={t.id} type="button" role="option" aria-selected={on}
+                /* "Normal text" also clears inline formatting (makeNormal). */
+                onMouseDown={e => { e.preventDefault(); if (t.id === 'normal') makeNormal(); else exec('formatBlock', t.id); setMenu(null) }}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                  width: '100%', textAlign: 'left', border: 'none', borderRadius: 'var(--ds-radius-sm)',
+                  background: on ? (colors.accentDim || 'var(--ds-accent-dim)') : 'transparent',
+                  color: on ? accent : text2, cursor: 'pointer', padding: '7px 10px',
+                  fontFamily: 'var(--ds-font-body)', lineHeight: 1.2, ...t.css,
+                }}
+                onMouseEnter={e => { if (!on) { e.currentTarget.style.background = raised; e.currentTarget.style.color = text } }}
+                onMouseLeave={e => { if (!on) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = text2 } }}
+              >
+                <span>{t.label}</span>
+                {on && <Icon name="action-check" size={12} />}
+              </button>
+            )
+          })}
         </div>
       )}
 

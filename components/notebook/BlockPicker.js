@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
-import { searchBlocks } from '../../lib/teleport'
+import { searchTargets, serializeAddress } from '../../lib/teleport'
 import { BLOCK_TYPES } from './blockRegistry'
 import { Z } from '../../lib/theme'
 
@@ -31,9 +31,17 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
   const listRef = useRef(null)
   const inputRef = useRef(null)
 
-  const results = useMemo(
-    () => searchBlocks(notebooks, query, { exclude: currentBlockId, typeLabels: TYPE_LABELS }),
+  /* THREE GROUPS, IN THIS ORDER: Blocks, Sheets, Notebooks (24 Sep 2026).
+     Grouped rather than one ranked list, so the kind of target is obvious at
+     a glance and each group keeps its own ranking. Keyboard movement runs
+     over the flattened list, so the arrows go straight through the groups. */
+  const groups = useMemo(
+    () => searchTargets(notebooks, query, { exclude: currentBlockId, typeLabels: TYPE_LABELS }),
     [notebooks, query, currentBlockId]
+  )
+  const results = useMemo(
+    () => [...groups.blocks, ...groups.sheets, ...groups.notebooks],
+    [groups]
   )
 
   // Filtering can shrink the list under the cursor; clamp rather than letting
@@ -75,7 +83,7 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
       onMouseDown={e => e.stopPropagation()}
       onKeyDown={onKeyDown}
       role="dialog"
-      aria-label="Link to a block"
+      aria-label="Insert a link"
       style={{
         /* Fixed and portalled to <body>, like the slash menu and the format
            rail. The canvas applies `transform: scale()` for zoom, and an
@@ -100,8 +108,8 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
           ref={inputRef}
           value={query}
           onChange={e => { setQuery(e.target.value); setActive(0) }}
-          placeholder="Link to a block…"
-          aria-label="Search blocks"
+          placeholder="Link to a block, sheet or notebook…"
+          aria-label="Search blocks, sheets and notebooks"
         />
         <kbd className="ds-kbd">esc</kbd>
       </div>
@@ -111,51 +119,63 @@ export default function BlockPicker({ notebooks, currentBlockId, onPick, onCance
           <div style={{ padding: '18px 12px', textAlign: 'center', color: text2, fontSize: 13, lineHeight: 1.6 }}>
             {query
               ? <>Nothing matches “{query}”.</>
-              : <>No other blocks yet.<br />Links point at blocks, so make one first.</>}
+              : <>Nothing to link to yet.</>}
           </div>
         )}
 
         {results.map((r, i) => {
           const on = i === active
-          const def = BLOCK_TYPES[r.block.type]
+          const icon = r.kind === 'sheet' ? 'nav-sheet'
+            : r.kind === 'notebook' ? 'nav-notebook'
+            : (BLOCK_TYPES[r.block?.type]?.icon || 'block-text')
+          /* A group label goes above the first row of each group. */
+          const groupStart = i === 0 || results[i - 1].kind !== r.kind
+          const groupName = r.kind === 'block' ? 'Blocks' : r.kind === 'sheet' ? 'Sheets' : 'Notebooks'
+          /* The path matters: two blocks (or sheets) can share a name, and
+             this is the only thing telling them apart. */
+          const sub = r.kind === 'block' ? `${r.notebookName} › ${r.sheetName}` : r.path
           return (
-            <button
-              key={`${r.addr.sheetId}:${r.addr.blockId}`}
-              role="option"
-              aria-selected={on}
-              data-active={on ? 'true' : 'false'}
-              onMouseEnter={() => setActive(i)}
-              onClick={() => onPick(r)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                padding: '8px 10px', border: 'none', borderRadius: 6, cursor: 'pointer',
-                background: on ? accentDim : 'transparent',
-                color: on ? accent : text,
-                textAlign: 'left', fontFamily: 'var(--ds-font-body)',
-              }}>
-              <span style={{
-                width: 24, height: 24, borderRadius: 6, flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: on ? accent : raised, color: on ? '#fff' : text2,
-              }}>
-                <Icon name={def?.icon || 'block-text'} size={14} />
-              </span>
-              <span style={{ minWidth: 0, flex: 1 }}>
-                <span style={{ display: 'block', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {r.label}
-                </span>
-                {/* The path matters here in a way it wouldn't in a same-sheet
-                    picker: two blocks can legitimately share a name across
-                    sheets, and this is the only thing telling them apart. */}
-                <span style={{
-                  display: 'block', fontSize: 11, marginTop: 1,
-                  color: on ? accent : text3, opacity: on ? 0.8 : 1,
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            <div key={`${r.kind}:${serializeAddress(r.addr)}`}>
+              {groupStart && (
+                <div data-group-label style={{
+                  padding: i === 0 ? '4px 10px 4px' : '10px 10px 4px',
+                  fontSize: 11, fontWeight: 600, letterSpacing: 0.6, textTransform: 'uppercase', color: text3,
+                }}>{groupName}</div>
+              )}
+              <button
+                role="option"
+                aria-selected={on}
+                data-active={on ? 'true' : 'false'}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => onPick(r)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                  padding: '8px 10px', border: 'none', borderRadius: 6, cursor: 'pointer',
+                  background: on ? accentDim : 'transparent',
+                  color: on ? accent : text,
+                  textAlign: 'left', fontFamily: 'var(--ds-font-body)',
                 }}>
-                  {r.notebookName} › {r.sheetName}
+                <span style={{
+                  width: 24, height: 24, borderRadius: 6, flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: on ? accent : raised, color: on ? '#fff' : text2,
+                }}>
+                  <Icon name={icon} size={14} />
                 </span>
-              </span>
-            </button>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <span style={{ display: 'block', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {r.label}
+                  </span>
+                  <span style={{
+                    display: 'block', fontSize: 11, marginTop: 1,
+                    color: on ? accent : text3, opacity: on ? 0.8 : 1,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {sub}
+                  </span>
+                </span>
+              </button>
+            </div>
           )
         })}
       </div>

@@ -85,6 +85,9 @@ export default function BlockHandle({
       {renaming ? (
         <input
           autoFocus
+          /* Opts out of the global focus ring (globals.css): the field sits
+             in place of the title and should look like the title. */
+          data-ds-rename
           value={block.name || ''}
           placeholder="Untitled"
           onChange={e => onRename(e.target.value)}

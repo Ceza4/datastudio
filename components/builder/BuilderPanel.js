@@ -75,7 +75,7 @@ function SectionLabel({ children }) {
   )
 }
 
-export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, onClose }) {
+export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, onClose, visualsOn, onToggleVisuals }) {
   const { surface, raised, border, text, text2, text3, accent, accentDim, red } = colors
   const toast = useToast()
 
@@ -355,6 +355,36 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
         }}>
           <Icon name="status-error" size={14} style={{ marginTop: 1, flexShrink: 0 }} />
           <span>{storeError}</span>
+        </div>
+      )}
+
+      {/* ── visuals ───────────────────────────────────────────────── */}
+      {/* Builder → Visuals (24 Sep 2026). Opens the Visuals bar at the bottom
+          of the canvas: shapes, connectors, sticky notes, text, mind maps,
+          the pen, and Link blocks (the block-to-block mode that used to be
+          this row). Rows use the save button's shape above, so the panel
+          keeps one row style. Only with a notebook open: no canvas otherwise. */}
+      {notebook && onToggleVisuals && (
+        <div style={{ marginTop: 14 }}>
+          <SectionLabel>Visuals</SectionLabel>
+          <button onClick={onToggleVisuals} aria-pressed={!!visualsOn}
+            data-ds-builder-visuals
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+              padding: '10px 10px', borderRadius: 8, cursor: 'pointer',
+              border: `1px solid ${visualsOn ? accent : border}`,
+              background: visualsOn ? accentDim : 'transparent',
+              color: visualsOn ? accent : text2,
+              fontFamily: body, fontSize: 13, textAlign: 'left',
+            }}>
+            <Icon name="tool-mindmap" size={14} />
+            <span style={{ flex: 1 }}>
+              <span style={{ display: 'block' }}>{visualsOn ? 'Close Visuals' : 'Visuals'}</span>
+              <span style={{ display: 'block', fontSize: 11, color: text3, marginTop: 2 }}>
+                Shapes, connectors, sticky notes and mind maps, from a bar at the bottom of the canvas.
+              </span>
+            </span>
+          </button>
         </div>
       )}
 

@@ -118,7 +118,10 @@ function ToastHost({ toasts, onDismiss }) {
          must not miss. */
       aria-live={toasts.some(t => t.sticky) ? 'assertive' : 'polite'}
       style={{
-        position: 'fixed', left: '50%', bottom: 24, transform: 'translateX(-50%)',
+        position: 'fixed', left: '50%',
+        /* Lifted clear of anything docked at the bottom of the canvas (the
+           Visuals bar sets this while it is open). */
+        bottom: 'calc(24px + var(--ds-toast-lift, 0px))', transform: 'translateX(-50%)',
         zIndex: Z.toast,
         display: 'flex', flexDirection: 'column-reverse', alignItems: 'center',
         gap: 'var(--ds-space-2)',

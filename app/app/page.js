@@ -28,10 +28,12 @@ import { makeColors, Z } from '../../lib/theme'
 import * as H from '../../lib/undo'
 import SettingsPanel from '../../components/settings/SettingsPanel'
 import SyncChip from '../../components/ui/SyncChip'
+import { islandChrome, ISLAND_H } from '../../components/ui/island'
 import AccountButton from '../../components/ui/AccountButton'
 import BuilderPanel from '../../components/builder/BuilderPanel'
 import { templateAssetIds, TPL_OK } from '../../lib/templatestore'
 import { migratePrefs } from '../../lib/prefs'
+import { normalizeCanvasBg } from '../../lib/canvasbg'
 import { lockViewportZoom } from '../../lib/viewportlock'
 import { markdownToHtml, markdownTitle, MARKDOWN_EXTS } from '../../lib/markdown'
 import { processPdfFile, putPdf, newPdfId, prunePdfs, PDF_EXTS } from '../../lib/pdfs'
@@ -567,6 +569,16 @@ export default function AppPage() {
      false. That is the whole compatibility guarantee, and it is why this is a
      sibling island rather than a mode the workspace is put into. */
   const [builderOpen, setBuilderOpen] = useState(false)
+  /* Mind map mode lives here, not in NotebookCanvas, because its button is in
+     Builder → Visuals, which renders in this component. It is per-visit, not
+     per-notebook: switching notebooks turns it off, so you never land in a
+     notebook already half-way through linking blocks. */
+  const [mindMapOn, setMindMapOn] = useState(false)
+  useEffect(() => { setMindMapOn(false) }, [activeNotebookId])
+  /* Builder → Visuals bar. Same ownership as mind map mode: Builder opens
+     it, the canvas renders it. A notebook switch closes it. */
+  const [visualsOn, setVisualsOn] = useState(false)
+  useEffect(() => { setVisualsOn(false) }, [activeNotebookId])
 
   useEffect(() => {
     let cancelled = false
@@ -1173,11 +1185,15 @@ export default function AppPage() {
     if (!addr) return
     const nb = notebooks.find(n => n.id === addr.notebookId)
     if (!nb) return                        // dangling; the link renders struck through
+    if (nb.id !== activeNotebookId) setActiveNotebookId(nb.id)
+    /* A NOTEBOOK link stops here: open it on whatever sheet it was last on. */
+    if (!addr.sheetId) return
     const sheet = (nb.sheets || []).find(sh => sh.id === addr.sheetId)
     if (!sheet) return
 
-    if (nb.id !== activeNotebookId) setActiveNotebookId(nb.id)
     if (sheet.id !== (nb.activeSheetId || nb.sheets?.[0]?.id)) setNotebookActiveSheet(nb.id, sheet.id)
+    /* A SHEET link stops here: the sheet is the target, no block to reveal. */
+    if (!addr.blockId) return
     setRevealRequest({ blockId: addr.blockId, nonce: Date.now() })
   }
 
@@ -1912,6 +1928,14 @@ export default function AppPage() {
   function renameNotebook(nbId, name) {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, name }))
   }
+  /* The notebook's canvas background (lib/canvasbg.js). A notebook field, so
+     it saves, syncs and shares with the notebook. The patch is merged and then
+     normalised here, so the stored object is always whole. A partial one from
+     a slider can never reach the renderer. */
+  function updateNotebookCanvasBg(nbId, patch) {
+    setNotebooks(prev => prev.map(n => n.id !== nbId ? n
+      : { ...n, canvasBg: patch === null ? undefined : normalizeCanvasBg({ ...normalizeCanvasBg(n.canvasBg), ...patch }) }))
+  }
   function _getActiveSheetId(n) { return n.activeSheetId || n.sheets?.[0]?.id }
   /* The block SHAPE now lives in components/notebook/blockRegistry.js. This
      function keeps only what it was always really about: generating an id and
@@ -1950,6 +1974,8 @@ export default function AppPage() {
     if (keys.every(k => k === 'w' || k === 'h' || k === 'x' || k === 'y')) return 'resize'
     if (keys.length === 1 && keys[0] === 'name') return 'rename'
     if (keys.length === 1 && keys[0] === 'content') return 'edit text'
+    if (keys.length === 1 && keys[0] === 'text') return 'edit text'
+    if (keys.includes('nodes')) return 'mind map edit'
     return 'edit'
   }
 
@@ -2728,13 +2754,9 @@ export default function AppPage() {
                NotebookCanvas.js is derived from this geometry; move one and
                the other has to move. */
             position: 'absolute', top: 16, left: 18, zIndex: Z.chromeTop,
-            height: 46, boxSizing: 'border-box',
+            ...islandChrome({ surface, border, dark }),
             display: 'flex', alignItems: 'center', gap: 8,
-            padding: '0 12px', borderRadius: 12,
-            background: `${surface}ee`,
-            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
-            border: `1px solid ${border}`,
-            boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
+            padding: '0 12px',
             color: text2, cursor: 'pointer', fontFamily: 'var(--ds-font-body)', fontSize: 13,
             animation: 'dsToastIn 0.18s ease',
           }}
@@ -3188,7 +3210,21 @@ export default function AppPage() {
             measures containment against it, and the Builder button has to sit
             OUTSIDE that box or pressing Builder would leave Settings open
             behind the panel. */}
-        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: Z.chrome, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        {/* ONE ISLAND, NOT FOUR. Builder, People, Settings and Account used to be
+            four separate floating buttons, each with its own glass, border and
+            shadow. Beside the title island and the centre toolbar, which each
+            hold many buttons, that read as a different kind of object. They now
+            share one island shaped like the centre toolbar: 46px, ds-tbtn
+            buttons inside, 10px side padding, 6px gap.
+
+            THE GLASS IS A LAYER BEHIND THE BUTTONS, NOT ON THIS DIV. Builder's
+            panel is frosted and opens inside this element. A backdrop-filter
+            on an ancestor makes it the backdrop root, so the panel's own blur
+            would only sample this island's backdrop and stop blurring the
+            canvas. zIndex -1 keeps the layer under the buttons: this div is
+            already a stacking context (absolute + zIndex). */}
+        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: Z.chrome, display: 'flex', alignItems: 'center', gap: 6, height: ISLAND_H, padding: '0 10px', boxSizing: 'border-box', fontFamily: 'var(--ds-font-body)' }}>
+          <div aria-hidden="true" style={{ ...islandChrome({ surface, border, dark }), position: 'absolute', inset: 0, height: 'auto', zIndex: -1, pointerEvents: 'none' }} />
 
           {/* ── Builder ──
               §9.1. A separate optional mode, deliberately additive: it opens a
@@ -3205,7 +3241,7 @@ export default function AppPage() {
           <div data-kbd-zone style={{ position: 'relative' }}>
             <button onClick={() => setBuilderOpen(o => !o)} aria-label="Builder" aria-expanded={builderOpen}
               data-ds-builder-button
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${builderOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 13, color: builderOpen ? accent : text2, cursor: 'pointer' }}>
+              className={`ds-tbtn${builderOpen ? ' is-on' : ''}`}>
               <Icon name="action-duplicate" size={14} />
               Builder
             </button>
@@ -3217,6 +3253,10 @@ export default function AppPage() {
                 notebook={notebooks.find(n => n.id === activeNotebookId) || null}
                 onUseTemplate={addNotebookFromTemplate}
                 onClose={() => setBuilderOpen(false)}
+                visualsOn={visualsOn}
+                /* Turning it ON closes Builder: the bar is at the bottom of the
+                   canvas and the next thing you do is use it. */
+                onToggleVisuals={() => { if (!visualsOn) setBuilderOpen(false); setVisualsOn(!visualsOn) }}
               />
             )}
           </div>
@@ -3255,15 +3295,15 @@ export default function AppPage() {
 
               Same button shape as Settings beside it, deliberately — three of a
               kind rather than one real button and two labels. */}
-          <button onClick={() => setPeopleOpen(o => !o)} aria-label="People" aria-expanded={peopleOpen}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${peopleOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 13, color: peopleOpen ? accent : text2, cursor: 'pointer' }}>
+          <button onClick={() => setPeopleOpen(o => !o)} aria-label="People" aria-expanded={peopleOpen} data-menu-toggle="people"
+            className={`ds-tbtn${peopleOpen ? ' is-on' : ''}`}>
             <Icon name="share-people" size={14} />
             People
           </button>
 
           <div ref={settingsRef} data-kbd-zone style={{ position: 'relative' }}>
             <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: `${surface}ee`, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: `1px solid ${settingsOpen ? accent : border}`, borderRadius: 10, boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`, fontFamily: 'var(--ds-font-body)', fontSize: 13, color: settingsOpen ? accent : text2, cursor: 'pointer' }}>
+              className={`ds-tbtn${settingsOpen ? ' is-on' : ''}`}>
               <Icon name="settings-gear" size={14} />
               Settings
             </button>
@@ -3276,6 +3316,10 @@ export default function AppPage() {
                 onDeleteAllData={deleteAllLocalData}
                 syncStatus={syncStatus}
                 account={account}
+                /* The background is the ACTIVE notebook's, not a pref. With no
+                   notebook open the section says so instead of editing nothing. */
+                canvasNotebook={notebooks.find(n => n.id === activeNotebookId) || null}
+                onCanvasBgChange={patch => activeNotebookId && updateNotebookCanvasBg(activeNotebookId, patch)}
               />
             )}
           </div>
@@ -3340,6 +3384,10 @@ export default function AppPage() {
           {activeNotebookId && notebooks.find(n => n.id === activeNotebookId) && (
             <NotebookCanvas
               nb={notebooks.find(n => n.id === activeNotebookId)}
+              mindMapMode={mindMapOn}
+              onMindMapModeChange={setMindMapOn}
+              visualsOn={visualsOn}
+              onVisualsChange={setVisualsOn}
               dark={dark}
               colors={colors}
               prefs={prefs}

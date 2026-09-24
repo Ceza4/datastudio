@@ -6,8 +6,8 @@ import {
   fontStack, normalizeMargin, MARGIN_STEP,
 } from '../../lib/pagesetup'
 import {
-  isColumnsRow, isColumnBody, isCaretAtColumnStart, isColumnsRowEmpty,
-  readWidths, writeWidths,
+  isColumnsRow, columnsOf, readWidths, writeWidths, evenWidths,
+  resizePair, normalizeColumnRows, handleColumnKeyDown, DIVIDER_PX,
 } from '../../lib/columns'
 
 /*
@@ -133,6 +133,8 @@ function DocumentBlockInner({
     if (clean === savedContent.current) return
     el.innerHTML = clean
     savedContent.current = clean
+    /* Repair pre-rebuild columns rows (see lib/columns.js). */
+    normalizeColumnRows(el)
   }, [block.content])
 
   /* ── Measure ──────────────────────────────────────────────────────────── */
@@ -165,20 +167,9 @@ function DocumentBlockInner({
      function body is still in its temporal dead zone at the point that
      array is evaluated, not just at the point the callback body runs. */
   const maybeCollapseEmptyColumns = useCallback(() => {
-    const sel = window.getSelection()
-    if (!sel?.rangeCount) return
-    const node = sel.getRangeAt(0).startContainer
-    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
-    const row = isColumnsRow(el)
-    if (!row || !isColumnsRowEmpty(row)) return
-    const para = document.createElement('div')
-    para.innerHTML = '<br>'
-    row.replaceWith(para)
-    const r = document.createRange()
-    r.selectNodeContents(para)
-    r.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(r)
+    /* Now the repair pass, not a whole-row collapse: see TextBlockContent.js
+       and lib/columns.js. Columns are removed one at a time, on purpose. */
+    normalizeColumnRows(ref.current)
   }, [])
 
   /* Trailing save, so typing a paragraph is one write rather than one per
@@ -217,40 +208,15 @@ function DocumentBlockInner({
       document.execCommand(e.shiftKey ? 'outdent' : 'indent')
     }
 
-    /* Backspace at a column boundary — same reasoning and same shape as
-       TextBlockContent.js's own handling of this (see that file's comment):
-       a custom data-type div structure has no native "this is a real
-       boundary" semantics, so an unhandled Backspace at column-start is
-       undefined behaviour against a CSS grid track. First column no-ops;
-       any later column moves the caret to the end of the previous one
-       rather than letting native contentEditable attempt a cross-track
-       merge. Kept in this file rather than shared with TextBlockContent's
-       handler because the two files' keydown handlers have entirely
-       different shapes (this one is a single useCallback switch, that one
-       owns slash-menu key interception too) — the LOGIC is shared, via
-       lib/columns.js's isColumnBody/isCaretAtColumnStart; only the wiring
-       is written twice, which is the same division DocumentBlock and
-       TextBlockContent already use for everything else. */
-    if (e.key === 'Backspace') {
-      const sel = window.getSelection()
-      if (!sel?.rangeCount) return
-      const range = sel.getRangeAt(0)
-      if (!range.collapsed) return
-      const node = range.startContainer
-      const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
-      const colBody = isColumnBody(el)
-      if (!colBody || !isCaretAtColumnStart(colBody, range)) return
-      e.preventDefault()
-      const prevCol = colBody.previousElementSibling?.previousElementSibling
-      if (prevCol && prevCol.classList?.contains('ds-col')) {
-        const r = document.createRange()
-        r.selectNodeContents(prevCol)
-        r.collapse(false)
-        sel.removeAllRanges()
-        sel.addRange(r)
-      }
+    /* Column edges: arrows, Backspace and Delete hop to the neighbouring
+       column, leave the row, or remove an empty column. Shared with Notes
+       through lib/columns.js, so the two editors cannot drift apart. */
+    const col = handleColumnKeyDown(e)
+    if (col.handled && col.changed) {
+      setDocHeight(ref.current?.scrollHeight || 0)
+      persist()
     }
-  }, [])
+  }, [persist])
 
   /* Column-divider resize — see TextBlockContent.js's startColumnResize for
      the full reasoning (no existing internal-gutter-drag code anywhere in
@@ -262,11 +228,22 @@ function DocumentBlockInner({
   const startColumnResize = useCallback((divider, startEvent) => {
     const row = isColumnsRow(divider)
     if (!row) return
-    const cols = Array.from(row.children).filter(c => c.classList?.contains('ds-col'))
+    const cols = columnsOf(row)
     const dividers = Array.from(row.children).filter(c => c.dataset?.type === 'col-divider')
     const idx = dividers.indexOf(divider)
     if (idx < 0) return
+    /* Double-click a divider: back to an even split. */
+    if (startEvent.detail >= 2) {
+      writeWidths(row, evenWidths(cols.length))
+      setDocHeight(ref.current?.scrollHeight || 0)
+      persist()
+      return
+    }
+    /* Percent of the CONTENT width (dividers are fixed px), and scaled, since
+       the block can sit under a canvas zoom. */
     const rowRect = row.getBoundingClientRect()
+    const scale = rowRect.width / (row.offsetWidth || rowRect.width)
+    const contentW = Math.max(1, rowRect.width - DIVIDER_PX * (cols.length - 1) * scale)
     const startX = startEvent.clientX
     const startWidths = readWidths(row)
     if (startWidths.length !== cols.length) return
@@ -275,21 +252,16 @@ function DocumentBlockInner({
     divider.setAttribute('data-dragging', 'true')
 
     function onMove(ev) {
-      const dxPct = ((ev.clientX - startX) / rowRect.width) * 100
-      const w = startWidths.slice()
-      w[idx] = startWidths[idx] + dxPct
-      w[idx + 1] = startWidths[idx + 1] - dxPct
-      writeWidths(row, w)
+      const dPct = ((ev.clientX - startX) / contentW) * 100
+      writeWidths(row, resizePair(startWidths, idx, dPct))
     }
     function onUp() {
       document.body.style.cursor = ''
       divider.removeAttribute('data-dragging')
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
-      /* A resize doesn't fire a contentEditable 'input' event (it's a plain
-         style write, not a DOM edit inside the editable in the way the
-         browser tracks), so the usual onInput → persist path never runs.
-         Call both explicitly, same as onInput normally would. */
+      /* A resize is a style write, not an edit the browser reports as input,
+         so the usual onInput → persist path never runs. */
       setDocHeight(ref.current?.scrollHeight || 0)
       persist()
     }

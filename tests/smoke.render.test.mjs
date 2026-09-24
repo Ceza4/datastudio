@@ -549,6 +549,28 @@ console.log('\n builder')
   check('ShapeLayer — every kind at once', () =>
     render(ShapeLayer, { ...base, shapes: all, selectedIds: new Set() }))
 
+  /* Builder → Visuals kinds (24 Sep 2026): labels, a sticky, a text box, an
+     attached connector, a mind map with a selected topic and one mid-edit. */
+  {
+    const { addChild } = await import('../lib/mindmap.js')
+    const { resolveConnectors } = await import('../lib/shapes.js')
+    let map = createShape('mindmap', { id: 'mm1', x: 300, y: 200 })
+    const r1 = addChild(map, map.root); map = r1.shape
+    const vis = resolveConnectors([
+      createShape('rect', { id: 'v1', x: 0, y: 300, w: 120, h: 60, text: 'Lead', fill: 'paper' }),
+      createShape('sticky', { id: 'v2', x: 200, y: 300, w: 150, h: 120, text: 'Call\nAnn' }),
+      createShape('text', { id: 'v3', x: 0, y: 450, w: 140, h: 34, text: 'Title' }),
+      createShape('connector', { id: 'v4', x: 0, y: 0, w: 1, h: 1, from: 'v1', to: 'v2' }),
+      map,
+    ])
+    check('ShapeLayer — Visuals kinds', () =>
+      render(ShapeLayer, { ...base, shapes: vis, selectedIds: new Set(['mm1']), mm: { shapeId: 'mm1', nodeId: r1.id }, editing: { shapeId: 'mm1', nodeId: map.root } }))
+    const out = render(ShapeLayer, { ...base, shapes: vis, selectedIds: new Set() })
+    ok(out.includes('Lead') && out.includes('Title') && out.includes('var(--ds-sticky)'), 'labels, text boxes and stickies render their words')
+    ok(out.includes('Central idea') && out.includes('data-mm-node'), 'a mind map renders its topics')
+    ok(out.includes('var(--ds-paper)'), 'a token fill resolves to its CSS variable')
+  }
+
   check('ShapeLayer — empty sheet', () =>
     render(ShapeLayer, { ...base, shapes: [], selectedIds: new Set() }))
 
@@ -585,7 +607,9 @@ console.log('\n builder')
   const inkMarkup = render(ShapeLayer, { ...base, shapes: [inked], selectedIds: new Set() })
   ok(inkMarkup.includes('Q'),
      'a stroke renders as a smoothed path, not a faceted polyline')
-  ok(inkMarkup.includes('stroke="#f00"') && inkMarkup.includes('fill="none"'),
+  /* Colours are in style since Visuals (24 Sep 2026): a fill can be a CSS
+     variable, which only CSS resolves. */
+  ok(/stroke:\s*#f00/.test(inkMarkup) && /fill:\s*none/.test(inkMarkup),
      'in its own colour, and never filled — a stroke has no interior')
 
   const markup = render(ShapeLayer, { ...base, shapes: all, selectedIds: new Set([boxed.id]), soleSelected: boxed })

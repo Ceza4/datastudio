@@ -1,6 +1,21 @@
 'use client'
 import { memo } from 'react'
-import { shapePath, arrowHead, shapeTransform, centreOf, isLinear, corners, shapeBounds } from '../../lib/shapes'
+import { shapePath, arrowHead, shapeTransform, centreOf, isLinear, corners, shapeBounds, isLabelled } from '../../lib/shapes'
+import { layout, setTextMeasurer, NODE_H, TOGGLE_R, countDescendants, mindmapBounds } from '../../lib/mindmap'
+
+/* Topic widths come from real text metrics in the browser. Installed once,
+   at module load, so layout() (which hit testing also calls) and the
+   rendered text agree to the pixel. The fallback estimate stays for tests. */
+if (typeof document !== 'undefined') {
+  try {
+    const ctx = document.createElement('canvas').getContext('2d')
+    const family = getComputedStyle(document.body || document.documentElement).fontFamily || 'Inter, system-ui, sans-serif'
+    if (ctx) setTextMeasurer((text, bold) => { ctx.font = `${bold ? 600 : 500} 13px ${family}`; return ctx.measureText(text).width })
+  } catch { /* the estimate stays */ }
+}
+
+/** A stored colour token name ('accent', 'amber') or a literal colour. */
+export const tokenColor = c => (!c ? null : /^[a-z][a-z0-9-]*$/.test(c) ? `var(--ds-${c})` : c)
 
 /*
   components/notebook/ShapeLayer.js
@@ -42,26 +57,130 @@ export const OFF = 3000
 /* One shape. memo()'d on purpose — this is what keeps a drag from
    reconciling every other shape on the sheet. Props are primitives and one
    stable object, so the default shallow compare is enough. */
-const Shape = memo(function Shape({ s, stroke, selected, accent }) {
-  const col = selected ? accent : (s.color || stroke)
+const Shape = memo(function Shape({ s, stroke, selected, accent, editing }) {
+  const col = selected ? accent : (tokenColor(s.color) || stroke)
   const common = {
-    fill: s.fill || 'none',
-    stroke: col,
     strokeWidth: s.size || 2,
     strokeLinecap: 'round',
     strokeLinejoin: 'round',
-    transform: shapeTransform(s),
-    style: { pointerEvents: 'none' },
+    /* Colours go through style, not attributes: a stored fill can be a CSS
+       variable (Visuals shapes use the paper token), and var() is only
+       guaranteed inside CSS. */
+    style: { pointerEvents: 'none', fill: tokenColor(s.fill) || 'none', stroke: col },
   }
+  const sticky = s.kind === 'sticky'
+  const label = isLabelled(s.kind) && s.text && !editing
   return (
     <g style={{ transform: `translate(${OFF}px, ${OFF}px)` }}>
-      <path d={shapePath(s)} {...common} />
-      {s.kind === 'arrow' && (
-        <polyline
-          points={arrowHead(s, Math.max(9, (s.size || 2) * 5)).map(p => `${p.x},${p.y}`).join(' ')}
-          {...common} fill="none"
-        />
-      )}
+      <g transform={shapeTransform(s)}>
+        {sticky ? (
+          <rect x={s.x} y={s.y} width={s.w} height={s.h} rx={4}
+            style={{ pointerEvents: 'none', fill: 'var(--ds-sticky)', stroke: selected ? accent : 'var(--ds-sticky-edge)', strokeWidth: selected ? 2 : 1 }} />
+        ) : s.kind === 'text' ? (
+          /* A text box has no outline of its own: the words are the shape.
+             Selection draws the box, through the handles. */
+          null
+        ) : (
+          <path d={shapePath(s)} {...common} />
+        )}
+        {(s.kind === 'arrow' || s.kind === 'connector') && (
+          <polyline
+            points={arrowHead(s, Math.max(9, (s.size || 2) * 5)).map(p => `${p.x},${p.y}`).join(' ')}
+            {...common} style={{ ...common.style, fill: 'none' }}
+          />
+        )}
+        {label && <Label s={s} />}
+      </g>
+    </g>
+  )
+})
+
+/* The words on a box. foreignObject so they WRAP, which svg text cannot do;
+   the box clips them, the same as Miro, rather than growing the shape. The
+   triangle's usable area is its lower two thirds. */
+function Label({ s }) {
+  const big = s.kind === 'text'
+  const top = s.kind === 'triangle' ? s.h * 0.34 : 0
+  return (
+    <foreignObject x={s.x} y={s.y + top} width={Math.max(1, s.w)} height={Math.max(1, s.h - top)} style={{ pointerEvents: 'none', overflow: 'hidden' }}>
+      <div style={{
+        width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: big ? '2px 4px' : 8, boxSizing: 'border-box', textAlign: 'center',
+        fontFamily: 'var(--ds-font-body)', fontSize: big ? 16 : 13, fontWeight: big ? 600 : 500, lineHeight: 1.35,
+        color: s.kind === 'sticky' ? 'var(--ds-sticky-text)' : 'var(--ds-text)',
+        whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'hidden',
+      }}>{s.text}</div>
+    </foreignObject>
+  )
+}
+
+/* A whole mind map: branches first, then topics over them. Topic text is
+   HTML inside foreignObject so a long title ends in an ellipsis instead of
+   running out of its box. */
+const MindMap = memo(function MindMap({ s, selected, selNode, dropNode, editingNode, accent }) {
+  const { boxes, visible } = layout(s)
+  const N = s.nodes
+  const edges = []
+  for (const id of visible) {
+    const n = N[id]
+    if (n.collapsed) continue
+    const pb = boxes[id]
+    for (const k of n.children) {
+      const cb = boxes[k]
+      if (!cb) continue
+      const x1 = s.x + pb.x + pb.w, y1 = s.y + pb.y + NODE_H / 2
+      const x2 = s.x + cb.x, y2 = s.y + cb.y + NODE_H / 2, mx = (x1 + x2) / 2
+      edges.push(<path key={k} d={`M ${x1} ${y1} C ${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`}
+        style={{ fill: 'none', stroke: tokenColor(N[k].color) || accent, strokeWidth: 2, strokeLinecap: 'round' }} />)
+    }
+  }
+  return (
+    <g style={{ transform: `translate(${OFF}px, ${OFF}px)`, pointerEvents: 'none' }}>
+      {selected && !selNode && (() => {
+        const b = mindmapBounds(s)
+        return <rect x={b.x - 8} y={b.y - 8} width={b.w + 16} height={b.h + 16} rx={10}
+          style={{ fill: 'none', stroke: accent, strokeWidth: 1, strokeDasharray: '4 3', opacity: 0.7 }} />
+      })()}
+      {edges}
+      {visible.map(id => {
+        const n = N[id], b = boxes[id], isRoot = id === s.root
+        const x = s.x + b.x, y = s.y + b.y
+        const col = tokenColor(n.color) || accent
+        const sel = selNode === id, drop = dropNode === id
+        return (
+          <g key={id} data-mm-node={id}>
+            {sel && <rect x={x - 4} y={y - 4} width={b.w + 8} height={NODE_H + 8} rx={isRoot ? 13 : 11}
+              style={{ fill: 'none', stroke: accent, strokeWidth: 2, opacity: 0.35 }} />}
+            <rect x={x} y={y} width={b.w} height={NODE_H} rx={isRoot ? 10 : 8}
+              style={{
+                fill: isRoot ? 'var(--ds-text)' : 'var(--ds-paper)',
+                stroke: sel || drop ? accent : isRoot ? 'var(--ds-text)' : col,
+                strokeWidth: sel ? 2.5 : 1.5,
+                strokeDasharray: drop ? '4 3' : undefined,
+              }} />
+            {editingNode !== id && (
+              <foreignObject x={x} y={y} width={b.w} height={NODE_H}>
+                <div style={{
+                  height: NODE_H, lineHeight: `${NODE_H}px`, padding: '0 14px', boxSizing: 'border-box',
+                  fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: isRoot ? 600 : 500,
+                  color: isRoot ? 'var(--ds-base)' : n.text ? 'var(--ds-text)' : 'var(--ds-text-3)',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{n.text || 'Topic'}</div>
+              </foreignObject>
+            )}
+            {n.children.length > 0 && (
+              <g>
+                <circle cx={x + b.w + TOGGLE_R + 1} cy={y + NODE_H / 2} r={TOGGLE_R}
+                  style={{ fill: 'var(--ds-paper)', stroke: isRoot ? 'var(--ds-text)' : col, strokeWidth: 1.5 }} />
+                <text x={x + b.w + TOGGLE_R + 1} y={y + NODE_H / 2 + 0.5} textAnchor="middle" dominantBaseline="middle"
+                  style={{ fontFamily: 'var(--ds-font-mono)', fontSize: 11, fontWeight: 600, fill: 'var(--ds-text-2)' }}>
+                  {n.collapsed ? countDescendants(s, id) : '−'}
+                </text>
+              </g>
+            )}
+          </g>
+        )
+      })}
     </g>
   )
 })
@@ -70,6 +189,9 @@ const Shape = memo(function Shape({ s, stroke, selected, accent }) {
    handles, and a rotate handle standing off the top edge. */
 function Handles({ s, zoom, accent, surface, onHandleDown }) {
   const px = n => n / zoom
+  /* A mind map draws its own selection (the topic ring, or a dashed box
+     around the map); it has no handles to offer. */
+  if (s.kind === 'mindmap') return null
   const pts = corners(s)
   const c = centreOf(s)
 
@@ -179,21 +301,36 @@ function MultiSelect({ list, zoom, accent }) {
 function ShapeLayer({
   shapes, selectedIds, zoom, accent, surface, stroke,
   soleSelected, onHandleDown, live,
+  /* Builder → Visuals. `mm` = { shapeId, nodeId } the selected topic;
+     `mmDrop` = the topic a dragged topic would land under; `editing` =
+     { shapeId, nodeId? } whose words are in the text editor right now, so
+     the rendered copy steps aside instead of showing twice. */
+  mm, mmDrop, editing,
 }) {
   return (
     <svg style={{
       position: 'absolute', top: -OFF, left: -OFF, width: OFF * 3, height: OFF * 3,
       pointerEvents: 'none', zIndex: 7, overflow: 'visible',
     }}>
-      {shapes.map(s => (
+      {shapes.map(s => {
         /* `live` is a Map of id -> shape for the gesture in flight. A Map and
            not a single shape because a multi-selection drags together. Reading
            it here instead of writing every pointermove into the notebook keeps
            a drag out of the 600ms autosave and out of undo — the same reason
-           blocks have liveOf(). */
-        <Shape key={s.id} s={(live && live.get(s.id)) || s}
-          stroke={stroke} accent={accent} selected={selectedIds.has(s.id)} />
-      ))}
+           blocks have liveOf(). Connectors arrive already resolved (the
+           canvas runs resolveConnectors with the same live map). */
+        const cur = (s.kind !== 'connector' && live && live.get(s.id)) || s
+        if (cur.kind === 'mindmap') {
+          return <MindMap key={s.id} s={cur} accent={accent}
+            selected={selectedIds.has(s.id)}
+            selNode={mm?.shapeId === s.id ? mm.nodeId : null}
+            dropNode={mmDrop?.shapeId === s.id ? mmDrop.nodeId : null}
+            editingNode={editing?.shapeId === s.id ? editing.nodeId : null} />
+        }
+        return <Shape key={s.id} s={cur}
+          stroke={stroke} accent={accent} selected={selectedIds.has(s.id)}
+          editing={editing?.shapeId === s.id && !editing.nodeId} />
+      })}
       {/* Exactly one selected gets handles; more than one gets the group
           chrome. Never both — handles on one member of a group imply that
           dragging them resizes the group, which it does not. */}
@@ -204,7 +341,7 @@ function ShapeLayer({
         />
       )}
       {soleSelected && (
-        <Handles s={(live && live.get(soleSelected.id)) || soleSelected}
+        <Handles s={(soleSelected.kind !== 'connector' && live && live.get(soleSelected.id)) || soleSelected}
           zoom={zoom} accent={accent} surface={surface} onHandleDown={onHandleDown} />
       )}
     </svg>

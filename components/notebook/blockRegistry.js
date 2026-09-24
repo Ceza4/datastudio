@@ -689,6 +689,62 @@ export const BLOCK_TYPES = {
     hasContent: b => !!b.name?.trim(),
     cloneFields: ['target'],
   },
+
+  /* ── Builder Phase 1 (24 Sep 2026) ────────────────────────────────────
+     Pipeline and Record are VIEWS of a Database block, not data of their
+     own: `sourceId` names the database, and every edit goes back into that
+     block's `db`. So deleting a Pipeline loses nothing, and one database can
+     have several pipelines. See the "Builder — Full System Builder plan"
+     doc and lib/database.js (stageSummary, moveRow, addActivity). */
+  pipeline: {
+    label: 'Pipeline',
+    icon: 'block-kanban',
+    order: 14,
+    menuGroup: 'data',
+    desc: 'Stages, cards and value per stage, from a database',
+    keywords: 'pipeline crm stages deals clients leads funnel board sales builder',
+    key: null,
+    resizable: 'both',
+    rail: null,
+    exportAs: ['*'],
+    focusSelector: 'button',
+    /* sourceId/groupBy/valueProp are filled in by the canvas when the block
+       is added: it points the pipeline at a database on the sheet, or makes
+       a starter one (lib/builder.js). Null here = "not connected yet". */
+    create: ({ id, x, y, w, h }) => ({
+      id, type: 'pipeline', x, y, w: w || 880, h: h || 440,
+      name: 'Pipeline', sourceId: null, groupBy: null, valueProp: null,
+    }),
+    dims: { w: 880, h: 440 },
+    minDims: { w: 420, h: 240 },
+    hasContent: () => false,          // the data lives in the database
+    cloneFields: ['sourceId', 'groupBy', 'valueProp'],
+  },
+
+  record: {
+    label: 'Record',
+    icon: 'nav-notebook',
+    order: 15,
+    /* Not in the Add menu: a Record is opened FROM something (a pipeline
+       card, the Ctrl/⌘K palette, a relationship chip), never made empty. */
+    hiddenFromAddMenu: true,
+    menuGroup: 'data',
+    desc: 'One row of a database, as a page',
+    keywords: 'record row profile crm',
+    key: null,
+    resizable: 'both',
+    rail: null,
+    exportAs: ['*'],
+    focusSelector: 'input,button,textarea',
+    create: ({ id, x, y, w, h }) => ({
+      id, type: 'record', x, y, w: w || 400, h: h || 520,
+      name: 'Record', sourceId: null, rowId: null, pipelineId: null,
+    }),
+    dims: { w: 400, h: 520 },
+    minDims: { w: 320, h: 260 },
+    hasContent: () => false,
+    cloneFields: ['sourceId', 'rowId', 'pipelineId'],
+  },
 }
 
 /* ── derived lookups ──────────────────────────────────────────────────── */

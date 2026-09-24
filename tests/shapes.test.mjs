@@ -40,7 +40,7 @@ const arrow = (o = {}) => createShape('arrow', { x: 30, y: 30, w: 200, h: 120, .
 
 console.log('\n construction')
 {
-  ok(SHAPE_KINDS.length === 7, 'seven kinds — adding one is a decision, not a tweak')
+  ok(SHAPE_KINDS.length === 11, 'eleven kinds (Visuals added sticky, text, connector, mindmap) — adding one is a decision, not a tweak')
   ok(createShape('rect', { w: -80, h: 40 }).w === 80, 'a boxed kind normalises negative width — it has no meaning')
   ok(createShape('arrow', { w: -80 }).w === -80, 'a linear kind KEEPS negative width, or the arrowhead swaps ends')
   ok(createShape('arrow', { rot: 40 }).rot === 0, 'a linear kind ignores rot — the angle already lives in its endpoints')

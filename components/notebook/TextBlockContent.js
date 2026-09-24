@@ -1,5 +1,7 @@
 'use client'
 import { useRef, useEffect, useState, useCallback, memo } from 'react'
+import { createPortal } from 'react-dom'
+import { Z } from '../../lib/theme'
 import TextBlockToolbar from './TextBlockToolbar'
 import SlashMenu, { filterCommands, SLASH_BLOCK_IDS, COLUMNS_COMMAND_N } from './SlashMenu'
 import BlockPicker from './BlockPicker'
@@ -10,10 +12,16 @@ import {
 import { safeLinkUrl } from '../../lib/urls'
 import { sanitizeEditorHtml } from '../../lib/sanitize'
 import {
-  columnsHtml,
-  isColumnsRow, isColumnBody, isCaretAtColumnStart, isColumnsRowEmpty,
-  readWidths, writeWidths,
+  columnsHtml, isColumnsRow, columnsOf, readWidths, writeWidths, evenWidths,
+  resizePair, normalizeColumnRows, handleColumnKeyDown, DIVIDER_PX,
 } from '../../lib/columns'
+import { CHECKLIST_HTML, normalizeChecklists, caretIntoChecklist } from '../../lib/checklist'
+import { insertBlockAtCaret, elementFrom } from '../../lib/insertblock'
+import {
+  CODE_LANGS, codeBlockHtml, codeText, isCodeBlock, normalizeCodeBlocks,
+  handleCodeKeyDown, handleCodePaste, setCaretOffset, setCodeLang,
+} from '../../lib/codeblock'
+import { addressKind } from '../../lib/teleport'
 
 /* TextBlockContent — SESSION A (FIXED)
    --------------------------------------------------------------------------
@@ -96,6 +104,8 @@ function TextBlockContentInner({
   // component owns the caret and therefore has to own the arrow keys too.
   const [slashMenu, setSlashMenu] = useState(null)
   const [linkPicker, setLinkPicker] = useState(null)
+  /* { block, left, top } while a code block's language menu is open. */
+  const [codeLangMenu, setCodeLangMenu] = useState(null)
   const [isEmpty, setIsEmpty] = useState(true)
   // Mirror of slashMenu for the keydown handler. handleKeyDown is attached via
   // React's synthetic system and reads state from the render closure; during
@@ -139,7 +149,9 @@ function TextBlockContentInner({
     if (!ref.current) return
     const html = ref.current.innerHTML || ''
     const stripped = html.replace(/<br\s*\/?>/gi, '').replace(/<[^>]*>/g, '').trim()
-    const hasStructure = /<(h[1-6]|ul|ol|li|hr|pre|div\s[^>]*data-type|img)/i.test(html)
+    /* blockquote, table and input were missing, so a note holding only an
+       empty Quote still showed "Type / for commands" over it. */
+    const hasStructure = /<(h[1-6]|ul|ol|li|hr|pre|blockquote|table|input|div\s[^>]*data-type|img)/i.test(html)
     setIsEmpty(!stripped && !hasStructure)
   }, [])
 
@@ -181,6 +193,14 @@ function TextBlockContentInner({
          do. If this element has focus, the user is mid-sentence and their DOM is
          the truth — an undo aimed at a block you are actively typing in is not
          a case worth breaking the caret for. */
+      /* OUR OWN SAVE COMING BACK, compared RAW as well. persistContent saves
+         the raw innerHTML, and the sanitizer re-serialises it slightly
+         differently (a style's trailing ";" for one), so comparing only the
+         sanitised copy said "changed" for our own save. The editor then
+         rewrote innerHTML the moment it lost focus. Clicking a checkbox takes
+         focus, so the box was replaced mid-click and the first tick did
+         nothing (reproduced 24 Sep 2026). */
+      if (initialContent === savedContent.current) return
       if (clean === savedContent.current) return
       /* The focus guard is deliberately AFTER the equality check and applies
          only once something has been loaded. On a first mount this element
@@ -189,6 +209,15 @@ function TextBlockContentInner({
       if (savedContent.current !== null && document.activeElement === ref.current) return
       ref.current.innerHTML = clean
       savedContent.current = clean
+      /* Repair columns rows saved before the 24 Sep rebuild (their structure
+         was stripped by the sanitizer) and any row an edit left malformed.
+         If it changes anything, the next save writes the repaired version. */
+      normalizeColumnRows(ref.current)
+      /* Same for checklists and code blocks (lib/checklist.js,
+         lib/codeblock.js): repairs broken items and upgrades old
+         <pre><code> blocks to the new code block. */
+      normalizeChecklists(ref.current)
+      normalizeCodeBlocks(ref.current)
       checkEmpty()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -414,7 +443,8 @@ function TextBlockContentInner({
       const res = resolveTarget(notebooks, addr)
       if (res.ok) {
         el.removeAttribute(DANGLING_ATTR)
-        el.setAttribute('title', 'Go to this block')
+        const kind = addressKind(addr)
+        el.setAttribute('title', kind === 'sheet' ? 'Go to this sheet' : kind === 'notebook' ? 'Go to this notebook' : 'Go to this block')
       } else {
         el.setAttribute(DANGLING_ATTR, res.reason)
         el.setAttribute('title', DANGLING_MESSAGE[res.reason] || 'This link no longer resolves.')
@@ -452,7 +482,14 @@ function TextBlockContentInner({
      land after. HTML construction itself lives in lib/columns.js — the one
      piece genuinely shared with DocumentBlock.js. */
   function insertColumns(n) {
-    document.execCommand('insertHTML', false, columnsHtml(n) + '<div><br></div>')
+    /* Built by hand (lib/insertblock.js), with the caret in the first
+       column: insertHTML left it on the line below the new row. */
+    const row = insertBlockAtCaret(ref.current, elementFrom(columnsHtml(n)))
+    const first = row?.querySelector('[data-type="col"] > *')
+    if (first) {
+      const r = document.createRange(); r.setStart(first, 0); r.collapse(true)
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r)
+    }
   }
 
   /* "Turn into N columns" is NOT implemented here. It acts on a real
@@ -475,12 +512,18 @@ function TextBlockContentInner({
   function startColumnResize(divider, startEvent) {
     const row = isColumnsRow(divider)
     if (!row) return
-    const cols = Array.from(row.children).filter(c => c.classList?.contains('ds-col'))
+    const cols = columnsOf(row)
     const dividers = Array.from(row.children).filter(c => c.dataset?.type === 'col-divider')
     const idx = dividers.indexOf(divider)
     if (idx < 0) return
+    /* Double-click a divider: back to an even split. */
+    if (startEvent.detail >= 2) { writeWidths(row, evenWidths(cols.length)); persistContent(); return }
 
+    /* Percentages are of the CONTENT width. The dividers are fixed px and
+       take no part in the split, so measuring against the whole row made
+       every drag run slightly ahead of the pointer. */
     const rowRect = row.getBoundingClientRect()
+    const contentW = Math.max(1, rowRect.width - DIVIDER_PX * (cols.length - 1) * (rowRect.width / (row.offsetWidth || rowRect.width)))
     const startX = startEvent.clientX
     const startWidths = readWidths(row)
     if (startWidths.length !== cols.length) return // malformed row, bail rather than corrupt it
@@ -489,11 +532,8 @@ function TextBlockContentInner({
     divider.setAttribute('data-dragging', 'true')
 
     function onMove(ev) {
-      const dxPct = ((ev.clientX - startX) / rowRect.width) * 100
-      const w = startWidths.slice()
-      w[idx] = startWidths[idx] + dxPct
-      w[idx + 1] = startWidths[idx + 1] - dxPct
-      writeWidths(row, w)
+      const dPct = ((ev.clientX - startX) / contentW) * 100
+      writeWidths(row, resizePair(startWidths, idx, dPct))
     }
     function onUp() {
       document.body.style.cursor = ''
@@ -512,42 +552,45 @@ function TextBlockContentInner({
      handleKeyDown's Backspace branch intercepts explicitly. Same collapse
      shape the checklist's own empty-item handling already uses. */
   function maybeCollapseEmptyColumns() {
-    const sel = window.getSelection()
-    if (!sel?.rangeCount) return
-    const node = sel.getRangeAt(0).startContainer
-    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
-    const row = isColumnsRow(el)
-    if (!row || !isColumnsRowEmpty(row)) return
-    const para = document.createElement('div')
-    para.innerHTML = '<br>'
-    row.replaceWith(para)
-    const r = document.createRange()
-    r.selectNodeContents(para)
-    r.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(r)
+    /* Was: dissolve the whole row the moment every column had no text, which
+       also fired when you cleared a column to retype it. Columns now go one
+       at a time, on purpose (Backspace in an empty column; see
+       lib/columns.js). What runs after every input is the repair pass, which
+       puts back any structure the browser broke (a merged column, a lost
+       divider, a stray text node in the grid). */
+    normalizeColumnRows(ref.current)
   }
 
   function insertQuote() {
     document.execCommand('formatBlock', false, 'blockquote')
   }
 
+  /* The caret goes INTO the new item, ready to type. insertHTML leaves it
+     after the inserted markup, i.e. on the empty line below the item, and the
+     old empty <span> could not hold a caret at all. A one-off marker finds
+     the item just inserted; it is removed before anything can save it. */
   function insertChecklist() {
-    document.execCommand('insertHTML', false,
-      '<div data-type="checklist" style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;">' +
-      '<input type="checkbox" style="margin-top:5px;cursor:pointer;width:15px;height:15px;flex-shrink:0;" contenteditable="false">' +
-      '<span style="flex:1;min-height:1em;outline:none;"></span></div><div><br></div>'
-    )
+    /* Built by hand, not insertHTML: see lib/insertblock.js. insertHTML
+       stripped the item's text span in this editor and it vanished. */
+    const item = insertBlockAtCaret(ref.current, elementFrom(CHECKLIST_HTML))
+    if (item) caretIntoChecklist(item, window.getSelection())
   }
 
   function insertDivider() {
     document.execCommand('insertHTML', false, '<hr><div><br></div>')
   }
 
+  /* The new code block (lib/codeblock.js): header with language and Copy,
+     highlighting, line numbers. Starts empty with the caret on line 1. The
+     old one started with "// your code here" as REAL text, which you had to
+     delete before you could type. */
   function insertCodeBlock() {
     document.execCommand('insertHTML', false,
-      '<pre><code>// your code here</code></pre><div><br></div>'
-    )
+      codeBlockHtml('plain').replace('data-type="code"', 'data-type="code" data-ds-new="1"') + '<div><br></div>')
+    const block = ref.current?.querySelector('[data-ds-new]')
+    if (!block) return
+    block.removeAttribute('data-ds-new')
+    setCaretOffset(block, 0)
   }
 
   /* ── Keyboard handler (markdown shortcuts + checklist Enter) ── */
@@ -584,6 +627,22 @@ function TextBlockContentInner({
           return
         default:
           break
+      }
+    }
+
+    /* ── Code blocks own their keys ──────────────────────────────────
+       Enter, Tab, and Backspace/Delete across a line edge go through the
+       code block's text model (lib/codeblock.js). An empty block is removed
+       by Backspace or Delete, like any empty block. Everything else typed in
+       a code block is plain typing: no markdown shortcuts, no ``` trigger,
+       so "# " in a Python comment stays a comment. */
+    {
+      const sel = window.getSelection()
+      const n = sel?.rangeCount ? sel.getRangeAt(0).startContainer : null
+      if (n && isCodeBlock(n.nodeType === Node.TEXT_NODE ? n.parentElement : n)) {
+        const r = handleCodeKeyDown(e)
+        if (r.changed) { persistContent(); checkEmpty() }
+        return
       }
     }
 
@@ -650,7 +709,7 @@ function TextBlockContentInner({
           const newItem = document.createElement('div')
           newItem.setAttribute('data-type', 'checklist')
           newItem.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:3px 0;'
-          newItem.innerHTML = '<input type="checkbox" style="margin-top:5px;cursor:pointer;width:15px;height:15px;flex-shrink:0;" contenteditable="false"><span style="flex:1;min-height:1em;outline:none;"></span>'
+          newItem.innerHTML = '<input type="checkbox" style="margin-top:5px;cursor:pointer;width:15px;height:15px;flex-shrink:0;" contenteditable="false"><span style="flex:1;min-height:1em;outline:none;"><br></span>'
           checklistItem.after(newItem)
           const span = newItem.querySelector('span')
           if (span) {
@@ -663,6 +722,19 @@ function TextBlockContentInner({
         }
         persistContent()
         checkEmpty()
+        return
+      }
+    }
+
+    /* ── Column edges ───────────────────────────────────────────────────
+       Arrows, Backspace and Delete at a column's edge hop to the neighbour,
+       leave the row, or remove an empty column. Handled only AT an edge;
+       everywhere else in a column the browser does its normal thing. All
+       of it lives in lib/columns.js, shared with the Document block. */
+    {
+      const col = handleColumnKeyDown(e)
+      if (col.handled) {
+        if (col.changed) { persistContent(); checkEmpty() }
         return
       }
     }
@@ -696,38 +768,8 @@ function TextBlockContentInner({
       const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
       const checklistItem = el?.closest?.('[data-type="checklist"]')
 
-      /* ── Backspace at a column boundary ──────────────────────────────
-         Same class of problem the checklist branch below already solves,
-         and the same reason it needs explicit handling: a custom
-         data-type div structure has no native "this is a real boundary"
-         semantics, so an unhandled Backspace at column-start is "whatever
-         the browser happens to do" against a CSS grid track — exactly the
-         undefined behavior the checklist fix's own history warns about.
-         Recommended shape (flagged in the spec as a judgment call): the
-         first column no-ops (nothing above it in the row to go to); any
-         later column moves the caret to the end of the PREVIOUS column
-         rather than letting native contentEditable attempt a cross-track
-         merge. Deletion, if the row ends up fully empty as a result of
-         ordinary typing elsewhere, is handled separately by
-         maybeCollapseEmptyColumns() — this branch only ever moves the
-         caret, it never deletes text itself. */
-      if (!checklistItem) {
-        const colBody = isColumnBody(el)
-        if (colBody && isCaretAtColumnStart(colBody, range)) {
-          e.preventDefault()
-          e.stopPropagation()
-          const prevCol = colBody.previousElementSibling?.previousElementSibling
-          if (prevCol && prevCol.classList?.contains('ds-col')) {
-            const r = document.createRange()
-            r.selectNodeContents(prevCol)
-            r.collapse(false)
-            sel.removeAllRanges()
-            sel.addRange(r)
-          }
-          return
-        }
-        return
-      }
+      /* Column edges are handled above, by handleColumnKeyDown. */
+      if (!checklistItem) return
 
       const textSpan = checklistItem.querySelector('span')
       if (!textSpan) return
@@ -881,10 +923,20 @@ function TextBlockContentInner({
      per keystroke is its own performance bug. persistContent is already
      idempotent — it early-returns when the html has not changed — so a
      trailing call that lands after the user has stopped is free. */
-  function handleInput() {
+  function handleInput(e) {
+    /* Mid-composition (IME) the text is provisional; repairing or
+       re-highlighting now would fight the composition. */
+    if (e?.nativeEvent?.isComposing) return
     maybeCollapseEmptyColumns()
+    normalizeChecklists(ref.current)
+    normalizeCodeBlocks(ref.current)   // also re-highlights, keeping the caret
     checkEmpty()
-    detectSlash()
+    {
+      /* "/" in code is a character, not a command. */
+      const sel = window.getSelection()
+      const n = sel?.anchorNode
+      if (!(n && isCodeBlock(n.nodeType === Node.TEXT_NODE ? n.parentElement : n))) detectSlash()
+    }
     if (inputSaveRef.current) clearTimeout(inputSaveRef.current)
     inputSaveRef.current = setTimeout(() => {
       inputSaveRef.current = null
@@ -906,6 +958,8 @@ function TextBlockContentInner({
   function handlePaste(e) {
     const cd = e.clipboardData
     if (!cd) return
+    /* Into a code block: always plain text, as lines. */
+    if (handleCodePaste(e)) { persistContent(); return }
     e.preventDefault()
 
     const html = cd.getData('text/html')
@@ -926,7 +980,35 @@ function TextBlockContentInner({
 
   function handleClick(e) {
     e.stopPropagation()
+    /* Code block header: Copy, and the language picker. Delegated, like the
+       teleport links, because blocks come and go with the content. */
+    const copyBtn = e.target.closest?.('[data-type="code-copy"]')
+    if (copyBtn) {
+      const block = isCodeBlock(copyBtn)
+      if (block) {
+        navigator.clipboard?.writeText(codeText(block)).then(() => {
+          copyBtn.setAttribute('data-copied', '')
+          setTimeout(() => copyBtn.removeAttribute('data-copied'), 1400)
+        }).catch(() => {})
+      }
+      return
+    }
+    const langBtn = e.target.closest?.('[data-type="code-lang"]')
+    if (langBtn) {
+      const block = isCodeBlock(langBtn)
+      if (block) {
+        const r = langBtn.getBoundingClientRect()
+        setCodeLangMenu({ block, left: r.left, top: r.bottom + 4 })
+      }
+      return
+    }
     if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
+      /* A ticked box has to be written as the `checked` ATTRIBUTE. Ticking
+         only changes the element's property, and innerHTML (what is saved)
+         serialises attributes, so every tick was lost on the next load. */
+      const box = e.target
+      if (box.checked) box.setAttribute('checked', 'checked')
+      else box.removeAttribute('checked')
       setTimeout(() => persistContent(), 0)
       return
     }
@@ -1042,6 +1124,59 @@ function TextBlockContentInner({
       border-left: 3px solid rgba(128,128,128,0.35);
       font-style: italic; opacity: 0.9;
     }
+
+    /* ── Code block (lib/codeblock.js), 24 Sep 2026 ──
+       A rounded card: header bar with the language and Copy, then the code
+       with line numbers. Every label here is CSS content, not text, so none
+       of it is copied, saved or exported with the code. */
+    [data-ds-text] [data-type="code"] {
+      margin: 10px 0; border: 1px solid var(--ds-border); border-radius: 10px;
+      overflow: hidden; background: var(--ds-code-bg);
+    }
+    [data-ds-text] [data-type="code-head"] {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 30px; padding: 0 8px 0 12px; box-sizing: border-box;
+      background: var(--ds-code-head); border-bottom: 1px solid var(--ds-border);
+      font-family: var(--ds-font-mono); font-size: 11px; user-select: none;
+    }
+    [data-ds-text] [data-type="code-lang"],
+    [data-ds-text] [data-type="code-copy"] {
+      cursor: pointer; padding: 3px 6px; border-radius: 6px; color: var(--ds-text-2);
+    }
+    [data-ds-text] [data-type="code-lang"]:hover,
+    [data-ds-text] [data-type="code-copy"]:hover { background: var(--ds-raised); color: var(--ds-text); }
+    [data-ds-text] [data-type="code-lang"]::after { content: ' \\25BE'; opacity: 0.6; }
+    [data-ds-text] [data-type="code-copy"]::before { content: 'Copy'; }
+    [data-ds-text] [data-type="code-copy"][data-copied]::before { content: 'Copied'; color: var(--ds-green); }
+    [data-ds-text] [data-type="code"][data-lang="plain"] [data-type="code-lang"]::before { content: 'Plain text'; }
+    [data-ds-text] [data-type="code"][data-lang="js"] [data-type="code-lang"]::before { content: 'JavaScript'; }
+    [data-ds-text] [data-type="code"][data-lang="ts"] [data-type="code-lang"]::before { content: 'TypeScript'; }
+    [data-ds-text] [data-type="code"][data-lang="python"] [data-type="code-lang"]::before { content: 'Python'; }
+    [data-ds-text] [data-type="code"][data-lang="sql"] [data-type="code-lang"]::before { content: 'SQL'; }
+    [data-ds-text] [data-type="code"][data-lang="json"] [data-type="code-lang"]::before { content: 'JSON'; }
+    [data-ds-text] [data-type="code"][data-lang="html"] [data-type="code-lang"]::before { content: 'HTML'; }
+    [data-ds-text] [data-type="code"][data-lang="css"] [data-type="code-lang"]::before { content: 'CSS'; }
+    [data-ds-text] [data-type="code"][data-lang="bash"] [data-type="code-lang"]::before { content: 'Shell'; }
+    [data-ds-text] [data-type="code"] pre {
+      margin: 0; padding: 10px 0; background: transparent; border: none; border-radius: 0;
+      font-family: var(--ds-font-mono); font-size: 13px; line-height: 1.65;
+      white-space: pre-wrap; overflow-x: auto;
+    }
+    [data-theme='dark'] [data-ds-text] [data-type="code"] pre { background: transparent; }
+    [data-ds-text] [data-type="code"] code { counter-reset: ds-ln; display: block; }
+    [data-ds-text] [data-type="code-line"] {
+      display: block; position: relative; min-height: 1.65em;
+      padding: 0 14px 0 3.6em; counter-increment: ds-ln;
+    }
+    [data-ds-text] [data-type="code-line"]::before {
+      content: counter(ds-ln); position: absolute; left: 0; width: 2.6em;
+      text-align: right; color: var(--ds-text-3); opacity: 0.55; user-select: none;
+    }
+    [data-ds-text] [data-type="tk-kw"] { color: var(--ds-code-kw); }
+    [data-ds-text] [data-type="tk-str"] { color: var(--ds-code-str); }
+    [data-ds-text] [data-type="tk-num"] { color: var(--ds-code-num); }
+    [data-ds-text] [data-type="tk-fn"] { color: var(--ds-code-fn); }
+    [data-ds-text] [data-type="tk-com"] { color: var(--ds-code-com); font-style: italic; }
   `
 
   /* ── Render ─────────────────────────────────────────────── */
@@ -1051,6 +1186,45 @@ function TextBlockContentInner({
   return (
     <>
       <style>{scopedStyles}</style>
+      {/* Code block language menu. Portalled and fixed, like the slash menu:
+          the block sits under the canvas zoom transform. */}
+      {codeLangMenu && typeof document !== 'undefined' && createPortal(
+        <>
+          <div onMouseDown={() => setCodeLangMenu(null)}
+            style={{ position: 'fixed', inset: 0, zIndex: Z.popoverScrim }} />
+          <div role="listbox" aria-label="Code language" data-kbd-zone
+            onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setCodeLangMenu(null) } }}
+            style={{
+              position: 'fixed', left: codeLangMenu.left, top: codeLangMenu.top, zIndex: Z.popover,
+              minWidth: 160, padding: 4, borderRadius: 10,
+              background: 'var(--ds-surface)', border: '1px solid var(--ds-border)',
+              boxShadow: 'var(--ds-shadow-lg)', fontFamily: 'var(--ds-font-body)',
+            }}>
+            {CODE_LANGS.map(l => {
+              const on = codeLangMenu.block.getAttribute('data-lang') === l.id
+              return (
+                <button key={l.id} role="option" aria-selected={on}
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => {
+                    setCodeLang(codeLangMenu.block, l.id)
+                    setCodeLangMenu(null)
+                    persistContent()
+                  }}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left', border: 'none',
+                    padding: '6px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                    fontFamily: 'var(--ds-font-body)',
+                    background: on ? 'var(--ds-accent-dim)' : 'transparent',
+                    color: on ? 'var(--ds-accent)' : 'var(--ds-text-2)',
+                  }}>
+                  {l.label}
+                </button>
+              )
+            })}
+          </div>
+        </>,
+        document.body
+      )}
       <div style={{ position: 'relative' }}>
         {isEmpty && !slashMenu && (
           <div style={{
