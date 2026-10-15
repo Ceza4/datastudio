@@ -13,6 +13,7 @@
 import {
   emptyHistory, record, undo, redo, canUndo, canRedo,
   shouldCoalesce, nextUndoLabel, nextRedoLabel, COALESCE_MS, HISTORY_LIMIT,
+  revertChange, deepEqual,
 } from '../lib/undo.js'
 
 let pass = 0, fail = 0
@@ -189,6 +190,71 @@ console.log('\n  a full round trip through a realistic sequence')
   }
   eq(cur, S(5), 'and redoing everything returns to the end')
   ok(!canRedo(h), 'with nothing left to redo')
+}
+
+
+/* ── DEF-003: undo after a sync pull ──────────────────────────────────────
+   A pull is not recorded, so the current workspace can hold another device's
+   work that no history entry knows about. Undo must revert ITS entry onto
+   that, never restore a snapshot over it. Shapes mirror the real thing:
+   notebooks → sheets → blocks, every level keyed by id. */
+console.log('\n  undo after another device\'s edit was pulled (DEF-003)')
+{
+  const blk = (id, content, x = 0) => ({ id, type: 'text', x, y: 0, content })
+  const ws = (blocks, name = 'P') => [{ id: 'nb1', name, activeSheetId: 's1', sheets: [{ id: 's1', name: 'Sheet 1', blocks }] }]
+  const parse = v => JSON.parse(JSON.stringify(v))     // a pull hands back fresh objects
+
+  const S0 = ws([blk('a1', 'A one')])
+  const S1 = ws([blk('a1', 'A one'), blk('a2', 'A two')])           // A adds a2
+  let h = record(emptyHistory(), entry('add', S0, S1))
+  const pulled = parse(ws([blk('a1', 'A one'), blk('a2', 'A two'), blk('b1', 'B one')]))  // B's b1 arrives
+
+  const u = undo(h, pulled)
+  const ids = u.state[0].sheets[0].blocks.map(b => b.id)
+  eq(ids, ['a1', 'b1'], "undoing A's add removes a2 and KEEPS B's pulled block")
+  const r = redo(u.history, u.state)
+  eq(r.state[0].sheets[0].blocks.map(b => b.id), ['a1', 'a2', 'b1'], 'redo puts a2 back, b1 still there')
+
+  /* A deleted something, then B's edit arrived: undo restores it beside its old neighbour. */
+  const D0 = ws([blk('a1', 'x'), blk('a2', 'y'), blk('a3', 'z')])
+  const D1 = ws([blk('a1', 'x'), blk('a3', 'z')])
+  const Dp = parse(ws([blk('a1', 'x'), blk('a3', 'z'), blk('b1', 'B')]))
+  const du = undo(record(emptyHistory(), entry('delete', D0, D1)), Dp)
+  eq(du.state[0].sheets[0].blocks.map(b => b.id), ['a1', 'a2', 'a3', 'b1'], 'an undone delete returns to its slot, B’s block kept')
+
+  /* Same block, different fields: A moved it, B retyped it. Undo the move only. */
+  const M0 = ws([blk('a1', 'old', 0)])
+  const M1 = ws([blk('a1', 'old', 300)])
+  const Mp = parse(ws([blk('a1', 'B rewrote this', 300)]))
+  const mu = undo(record(emptyHistory(), entry('move', M0, M1)), Mp)
+  eq([mu.state[0].sheets[0].blocks[0].x, mu.state[0].sheets[0].blocks[0].content], [0, 'B rewrote this'],
+    "undoing A's move puts it back WITHOUT reverting B's text")
+
+  /* Same field changed by both: the later edit wins over the undo. */
+  const T0 = ws([blk('a1', 'v0')]), T1 = ws([blk('a1', 'vA')])
+  const Tp = parse(ws([blk('a1', 'vB')]))
+  eq(undo(record(emptyHistory(), entry('edit text', T0, T1)), Tp).state[0].sheets[0].blocks[0].content, 'vB',
+    'when B changed the same field since, B’s value is not overwritten by an undo')
+
+  /* Table cells: positional merge, so A's cell reverts and B's cell stays. */
+  const tb = rows => ws([{ id: 't', type: 'table', rows }])
+  const C0 = tb([['1', '2'], ['3', '4']]), C1 = tb([['A', '2'], ['3', '4']])
+  const Cp = parse(tb([['A', '2'], ['3', 'B']]))
+  eq(undo(record(emptyHistory(), entry('edit', C0, C1)), Cp).state[0].sheets[0].blocks[0].rows, [['1', '2'], ['3', 'B']],
+    "a cell A edited reverts, a cell B edited since is kept")
+
+  /* The local case is exactly what it always was: same reference in, `before` out. */
+  ok(undo(h, S1).state === S0, 'with nothing pulled in between, undo returns the recorded `before` itself')
+  ok(revertChange(S1, S0, S1) === S0, 'revertChange fast path is identity on before')
+  ok(deepEqual(parse(S1), S1) && !deepEqual(S0, S1), 'deepEqual compares by value')
+
+  /* A sheet reorder by A, then B adds a sheet: undo restores the order, keeps B's sheet. */
+  const sh = (sheets) => [{ id: 'nb1', name: 'P', sheets }]
+  const s = id => ({ id, name: id, blocks: [] })
+  const R0 = sh([s('s1'), s('s2'), s('s3')]), R1 = sh([s('s3'), s('s1'), s('s2')])
+  const Rp = parse(sh([s('s3'), s('s1'), s('s2'), s('sB')]))
+  eq(undo(record(emptyHistory(), entry('reorder', R0, R1)), Rp).state[0].sheets.map(x => x.id), ['s1', 's2', 's3', 'sB'],
+    'a reorder is undone and a sheet added since stays at the end')
 }
 
 console.log(`\n ${pass} passed, ${fail} failed\n`)

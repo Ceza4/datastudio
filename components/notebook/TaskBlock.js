@@ -1,4 +1,5 @@
 'use client'
+import { renameKeyDown, renameCancelled, selectAllOnFocus } from '../../lib/renameinput'
 import { useState, useEffect, memo } from 'react'
 import Icon from '../ui/Icon'
 import {
@@ -129,10 +130,11 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
           <input
             autoFocus
             defaultValue={block.title || ''}
-            onBlur={e => { set({ title: e.target.value }); setEditingTitle(false) }}
+            onFocus={selectAllOnFocus}
+            onBlur={e => { if (!renameCancelled(e)) set({ title: e.target.value }); setEditingTitle(false) }}
             onKeyDown={e => {
               e.stopPropagation()
-              if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur()
+              renameKeyDown()(e)
             }}
             onMouseDown={e => e.stopPropagation()}
             placeholder="What needs doing?"

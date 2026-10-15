@@ -1,4 +1,5 @@
 'use client'
+import { renameKeyDown, renameCancelled, selectAllOnFocus } from '../../lib/renameinput'
 import { useState } from 'react'
 import { attributionLabel, personHue } from '../../lib/attribution'
 import { presenceLabel } from '../../lib/presence'
@@ -97,9 +98,13 @@ export default function BlockHandle({
           value={block.name || ''}
           placeholder="Untitled"
           onChange={e => onRename(e.target.value)}
-          onBlur={onStopRename}
+          /* Renames live, keystroke by keystroke — so Escape has to put the
+             name it found back itself (lib/renameinput.js). */
+          onFocus={e => { e.currentTarget.dataset.dsOriginal = e.currentTarget.value; selectAllOnFocus(e) }}
+          onBlur={e => { renameCancelled(e); onStopRename?.(e) }}
           onKeyDown={e => {
-            if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur()
+            const el = e.currentTarget
+            renameKeyDown(() => onRename(el.dataset.dsOriginal ?? ''))(e)
           }}
           onMouseDown={e => e.stopPropagation()}
           onClick={e => e.stopPropagation()}

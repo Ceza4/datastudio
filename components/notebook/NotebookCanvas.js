@@ -1,4 +1,5 @@
 'use client'
+import { renameKeyDown, renameCancelled, selectAllOnFocus } from '../../lib/renameinput'
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
 import { resolveCanvasBg, drawDotGrid } from '../../lib/canvasbg'
 import { islandChrome } from '../ui/island'
@@ -4405,10 +4406,10 @@ function addBlockAnimated(type, x, y) {
 
       <div style={{ ...islandChrome({ surface, border, dark }), flex: '0 1 auto', minWidth: 0, pointerEvents: 'auto', display: 'flex', gap: 2, padding: '0 12px', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
         {renamingNb ? (
-          <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
+          <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onFocus={selectAllOnFocus} onBlur={e => { if (renameCancelled(e)) { setNbLabel(nb.name); setRenamingNb(false); return } onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={renameKeyDown()} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
         ) : (
           <span onDoubleClick={() => setRenamingNb(true)} title={nb.name}
-            style={{ fontFamily: 'var(--ds-font-head)', fontSize: 16, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, flex: '0 1 auto', minWidth: 48, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
+            style={{ fontFamily: 'var(--ds-font-head)', fontSize: 16, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, flex: '0 1 auto', minWidth: 36, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
         )}
         {activeSheet && !renamingSheet && (
           <span onDoubleClick={() => { setSheetLabel(activeSheet.name); setRenamingSheet(true) }}
@@ -4422,13 +4423,41 @@ function addBlockAnimated(type, x, y) {
           </span>
         )}
         {renamingSheet && (
-          <input autoFocus value={sheetLabel} onChange={e => setSheetLabel(e.target.value)} onBlur={commitSheetRename} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text2, fontSize: 11, outline: 'none', minWidth: 60, marginRight: 4 }} />
+          <input autoFocus value={sheetLabel} onChange={e => setSheetLabel(e.target.value)} onFocus={selectAllOnFocus} onBlur={e => { if (renameCancelled(e)) { setRenamingSheet(false); return } commitSheetRename() }} onKeyDown={renameKeyDown()} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text2, fontSize: 11, outline: 'none', minWidth: 60, marginRight: 4 }} />
         )}
 
         <div style={{ width: 1, height: 22, background: border, margin: '0 8px', flexShrink: 0 }} />
+        {/* Back to 100% AROUND WHAT YOU ARE LOOKING AT (audit DEF-005). It
+            used to jump to the world origin as well, so after zooming out to
+            find something and clicking here, the canvas came back empty — the
+            blocks were still there, a screen or two away, with nothing to say
+            so. */}
         <span style={{ fontSize: 12, color: text3, fontFamily: 'var(--ds-font-body)', fontVariantNumeric: 'tabular-nums', padding: '0 4px', cursor: 'pointer', flexShrink: 0 }}
-          onClick={() => { nbZoomRef.current = 1; setNbZoom(1); panRef.current = { x: 60, y: 60 }; setPan({ x: 60, y: 60 }) }}
-          title="Click to reset the view">{Math.round(nbZoom * 100)}%</span>
+          onClick={() => {
+            stopPanAnim()
+            const z = nbZoomRef.current, p0 = panRef.current
+            const left = sidebarHidden ? ROW_LEFT_COLLAPSED : ROW_LEFT
+            const cx = (left + viewSize.w) / 2, cy = (TOP_ROW_H + viewSize.h) / 2
+            /* Anchor: the selection if there is one, else the middle of the
+               blocks you can currently see, else the middle of the view. At
+               25% the view is sixteen screens of world; centring on empty
+               middle would still lose the work at its edge. */
+            const world = (sx, sy) => ({ x: (sx - p0.x) / z, y: (sy - p0.y) / z })
+            const a = world(left, TOP_ROW_H), b = world(viewSize.w, viewSize.h)
+            const pool = selectedIds.size ? blocks.filter(bk => selectedIds.has(bk.id))
+              : blocks.filter(bk => { const d = blockDims(bk); return bk.x < b.x && bk.x + d.w > a.x && bk.y < b.y && bk.y + d.h > a.y })
+            let anchor = world(cx, cy)
+            if (pool.length) {
+              let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+              for (const bk of pool) { const d = blockDims(bk); x0 = Math.min(x0, bk.x); y0 = Math.min(y0, bk.y); x1 = Math.max(x1, bk.x + d.w); y1 = Math.max(y1, bk.y + d.h) }
+              /* Centre of the group, but never so far down that its top edge
+                 lands above the island row. */
+              anchor = { x: (x0 + x1) / 2, y: Math.min((y0 + y1) / 2, y0 + (cy - TOP_ROW_H - 24)) }
+            }
+            const next = { x: cx - anchor.x, y: cy - anchor.y }
+            nbZoomRef.current = 1; setNbZoom(1); panRef.current = next; setPan({ ...next })
+          }}
+          title="Zoom to 100%">{Math.round(nbZoom * 100)}%</span>
 
         {/* Lock state. Text only — the padlock glyph is gone, but the state
             itself still needs saying, because pan and zoom really are frozen
@@ -4543,20 +4572,20 @@ function addBlockAnimated(type, x, y) {
           </button>
         )}
 
-        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
+        <div className="ds-isl-sep" style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
         <button onClick={toggleSnap}
           title={snapEnabled ? 'Magnetic alignment: on · hold Alt while dragging to suspend' : 'Magnetic alignment: off'}
           className={`ds-tbtn${snapEnabled ? ' is-on' : ''}`}>
           <Icon name="tool-snap" size={14} />
-          Snap
+          <span className="ds-tbtn-label">Snap</span>
         </button>
 
         {/* Crosscheck moved to the sheet rail. It only ever operates on table
             columns, so a global toolbar slot advertised it on canvases where
             it could do nothing — and it was the widest button in the row. */}
 
-        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
+        <div className="ds-isl-sep" style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
         {/* Add block menu.
 
@@ -4580,13 +4609,14 @@ function addBlockAnimated(type, x, y) {
             }}
             aria-expanded={addMenuOpen}
             data-menu-toggle="add"
+            title="Add a block"
             className={`ds-tbtn is-menu${addMenuOpen ? ' is-on' : ''}`}>
             <Icon name="action-add" size={14} />
-            Add
+            <span className="ds-tbtn-label">Add</span>
           </button>
         </div>
 
-       <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
+       <div className="ds-isl-sep" style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
         {/* THE PANEL MUST NOT VANISH ON THE WAY TO ITS OWN BUTTONS.
 
@@ -4619,7 +4649,7 @@ function addBlockAnimated(type, x, y) {
             className={`ds-tbtn${drawMode ? ' is-on' : ''}`}
             title={drawMode ? 'Turn drawing off' : 'Draw on the canvas · hover for options'}>
             <Icon name="tool-draw" size={14} />
-            Draw
+            <span className="ds-tbtn-label">Draw</span>
           </button>
           {showDrawPanel && (
             /* paddingTop carries the 6px offset instead of marginTop, so the
@@ -4710,12 +4740,12 @@ function addBlockAnimated(type, x, y) {
           )}
         </div>
 
-        <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
+        <div className="ds-isl-sep" style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
         <button onClick={() => setExportOpen(true)} className="ds-tbtn"
           title="Export this sheet, or just the selected blocks">
           <Icon name="action-export" size={14} />
-          Export
+          <span className="ds-tbtn-label">Export</span>
         </button>
 
       </div>
@@ -6743,8 +6773,9 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     <Icon name="block-section" size={14} style={{ color: accent, flexShrink: 0 }} />
                     {renamingBlockId === block.id ? (
                       <input autoFocus data-ds-rename defaultValue={block.name || 'Columns'}
-                        onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Columns' }); setRenamingBlockId(null) }}
-                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+                        onFocus={selectAllOnFocus}
+                        onBlur={e => { if (!renameCancelled(e)) onUpdateBlock(block.id, { name: e.target.value || 'Columns' }); setRenamingBlockId(null) }}
+                        onKeyDown={renameKeyDown()}
                         onMouseDown={e => e.stopPropagation()} maxLength={40}
                         style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 0 }} />
                     ) : (
@@ -6816,7 +6847,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onMouseDown={e => startBlockDrag(e, block)}>
                     <div style={{ width: 4, height: 18, borderRadius: 4, background: block.sectionColor || accent }} />
                     {renamingBlockId === block.id ? (
-                      <input autoFocus data-ds-rename defaultValue={block.name || 'Section'} onBlur={e => { onUpdateBlock(block.id, { name: e.target.value || 'Section' }); setRenamingBlockId(null) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} onMouseDown={e => e.stopPropagation()} maxLength={40}
+                      <input autoFocus data-ds-rename defaultValue={block.name || 'Section'} onFocus={selectAllOnFocus} onBlur={e => { if (!renameCancelled(e)) onUpdateBlock(block.id, { name: e.target.value || 'Section' }); setRenamingBlockId(null) }} onKeyDown={renameKeyDown()} onMouseDown={e => e.stopPropagation()} maxLength={40}
                         style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${block.sectionColor || accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 0 }} />
                     ) : (
                       <span onDoubleClick={e => { e.stopPropagation(); setRenamingBlockId(block.id) }} style={{ flex: 1, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.name || 'Section'}</span>

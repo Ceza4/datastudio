@@ -592,6 +592,31 @@ h1, h2, h3, h4 {
    open is not a mode, and on Add the ring read as a glow. */
 .ds-tbtn.is-menu.is-on { box-shadow: none; }
 
+/* THE CENTRED TOOLBAR GOES ICON-ONLY BELOW 1700px (audit DEF-002).
+
+   The top row is a 1fr·auto·1fr grid so the toolbar sits at true screen
+   centre — which means the title island gets (viewport − toolbar)/2 minus the
+   300px the sidebar takes. At 1440 that was 169px for a name, the zoom, the
+   LOCKED state and the full-screen button (~245px), so the island clipped its
+   own controls: "My …", half a full-screen button, and "LO" for LOCKED — the
+   one thing that explains why the canvas will not scroll. Dropping the four
+   words gives the island ~100px back on each side. The words stay in the
+   accessibility tree (visually hidden, not display:none) and every button
+   keeps a tooltip. Agent has no glyph yet, so it keeps its word. */
+@media (max-width: 1699px) {
+  [data-ds-island="top"] .ds-tbtn-label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  [data-ds-island="top"] .ds-tbtn:has(.ds-tbtn-label) { padding: 0 9px; }
+}
+/* And at laptop widths (1366 is still the commonest Windows panel) the
+   separators close up too — 24px back, which is the last of what the island
+   needs. !important because the separators are inline-styled. */
+@media (max-width: 1439px) {
+  [data-ds-island="top"] .ds-isl-sep { margin: 0 1px !important; }
+}
+
 /* Primary action in the toolbar (Crosscheck). */
 .ds-tbtn.is-accent {
   color: var(--ds-accent);

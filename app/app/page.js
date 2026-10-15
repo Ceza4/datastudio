@@ -1,4 +1,5 @@
 'use client'
+import { renameKeyDown, renameCancelled, selectAllOnFocus } from '../../lib/renameinput'
 import Icon from '../../components/ui/Icon'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { usePrefs } from '../providers'
@@ -997,11 +998,23 @@ export default function AppPage() {
   const markUndo = useCallback(label => { pendingLabelRef.current = label }, [])
 
   const applyHistory = useCallback(step => {
-    const res = step(historyRef.current)
+    /* The workspace as it is NOW, pulls included — workspaceRef is updated
+       synchronously by applyRemoteRows, before React re-renders. Undo reverts
+       its own entry onto this rather than restoring a stale snapshot over
+       another device's work (lib/undo.js, DEF-003). */
+    const current = workspaceRef.current?.notebooks ?? prevNotebooksRef.current
+    const res = step(historyRef.current, current)
     if (!res) return null
-    applyingHistoryRef.current = true
     historyRef.current = res.history
-    setNotebooks(res.state)
+    /* Only arm the skip flag when a change will actually be committed. If the
+       revert lands on the very array already on screen (everything it would
+       undo was already undone by someone else) the capture effect never runs,
+       the flag is never consumed, and the NEXT real edit is silently left out
+       of the history. */
+    if (res.state !== current) {
+      applyingHistoryRef.current = true
+      setNotebooks(res.state)
+    }
     /* Clamped, always. The recorded id is usually right, but an entry from
        before a notebook was deleted names one that is no longer in `res.state`
        — and pointing activeNotebookId at a notebook that does not exist renders
@@ -1953,14 +1966,30 @@ export default function AppPage() {
   function removeFromFolder(itemId, folderId) {
     setFolders(prev => prev.map(f => f.id === folderId ? { ...f, itemIds: f.itemIds.filter(id => id !== itemId) } : f))
   }
+  /* "My Project", then "My Project 2", "My Project 3" … Three projects all
+     called My Project are three rows in the sidebar nobody can tell apart
+     (audit DEF-008). */
+  function uniqueProjectName(base = 'My Project') {
+    const taken = new Set(notebooks.map(n => (n.name || '').trim().toLowerCase()))
+    if (!taken.has(base.toLowerCase())) return base
+    for (let i = 2; ; i++) if (!taken.has(`${base} ${i}`.toLowerCase())) return `${base} ${i}`
+  }
   function createNotebook() {
-    const nb = freshNotebook()
+    const nb = { ...freshNotebook(), name: uniqueProjectName() }
     setNotebooks(prev => [...prev, nb])
     setActiveNotebookId(nb.id)
     /* New projects land expanded — the sidebar should show Sheet 1 right
        away instead of making the user click to reveal what they just made. */
     setExpandedNotebookIds(prev => new Set(prev).add(nb.id))
     return nb.id
+  }
+  /* The sidebar's Project button names the new project straight away, the
+     way its Folder button already did — the field opens with the name
+     selected, so typing replaces it and Enter keeps it. */
+  function createNotebookAndRename() {
+    const id = createNotebook()
+    const name = uniqueProjectName()
+    setTimeout(() => { setRenamingNotebookId(id); setRenamingNotebookLabel(name) }, 30)
   }
 
   /**
@@ -2095,6 +2124,22 @@ export default function AppPage() {
      Only what was removed comes back. A whole-array snapshot would be less
      code and would also silently revert anything the user did in the seven
      seconds the toast was up. */
+  /* A toast's UNDO and Ctrl+Z are the same act, so when nothing has happened
+     since the change they take the same path: the history steps back, and
+     Ctrl+Shift+Z can redo it. Restoring by hand instead recorded the restore
+     as a NEW edit labelled "edit" — so the very next Ctrl+Z deleted the thing
+     again, announced as "Undid edit" (audit DEF-004). Once anything else has
+     happened the hand restore is still the right tool: the change is no longer
+     the top of the history to step back from. */
+  function undoVia(label, fallback) {
+    return () => {
+      const past = historyRef.current.past
+      const top = past[past.length - 1]
+      if (top?.label === label && top.after === workspaceRef.current?.notebooks) { undoEdit(); return }
+      fallback()
+    }
+  }
+
   function restoreNotebookBlocks(snap) {
     setNotebooks(prev => prev.map(n => {
       if (n.id !== snap.nbId) return n
@@ -2191,7 +2236,11 @@ export default function AppPage() {
       }) }
     }))
 
-    return { undo: () => restoreNotebookBlocks(snap), count: removeIds.size }
+    /* The toast's UNDO and Ctrl+Z are the same act — see undoVia. */
+    return {
+      undo: undoVia('delete', () => restoreNotebookBlocks(snap)),
+      count: removeIds.size,
+    }
   }
 
   /* The single-block form every existing caller already speaks. */
@@ -2342,6 +2391,7 @@ export default function AppPage() {
        it away again if nothing was put on it. */
     const standIn = (nb.sheets || []).length === 1 ? { id: newSheetId(), name: 'Sheet 1', blocks: [] } : null
 
+    markUndo('delete sheet')
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       let newSheets = (n.sheets || []).filter(s => s.id !== sheetId)
@@ -2364,14 +2414,14 @@ export default function AppPage() {
     /* Back at its own tab position, and looking at whatever sheet you were
        looking at before — a sheet that returns last, with the notebook now
        showing a different tab, does not read as the same sheet coming back. */
-    return () => setNotebooks(prev => prev.map(n => {
+    return undoVia('delete sheet', () => setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
       let sheets = [...(n.sheets || [])]
       if (sheets.some(s => s.id === sheetId)) return n
       if (standIn) sheets = sheets.filter(s => s.id !== standIn.id || (s.blocks || []).length > 0 || (s.shapes || []).length > 0)
       sheets.splice(Math.min(at, sheets.length), 0, sheet)
       return { ...n, sheets, activeSheetId: prevActiveSheetId || n.activeSheetId }
-    }))
+    })))
   }
   function renameNotebookSheet(nbId, sheetId, name) {
     setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, sheets: (n.sheets || []).map(s => s.id === sheetId ? { ...s, name } : s) }))
@@ -2413,6 +2463,7 @@ export default function AppPage() {
        sheet), and the undo removes it again if nothing was put in it. */
     const standIn = remaining.length === 0 ? { ...freshNotebook(), name: 'Untitled project' } : null
 
+    markUndo('delete project')
     setNotebooks(prev => {
       const next = prev.filter(n => n.id !== nbId)
       return standIn && !next.length ? [standIn] : next
@@ -2420,7 +2471,7 @@ export default function AppPage() {
     if (activeNotebookId === nbId || standIn) setActiveNotebookId(standIn ? standIn.id : (remaining[0]?.id || null))
     if (standIn) setExpandedNotebookIds(prev => new Set(prev).add(standIn.id))
 
-    return () => {
+    return undoVia('delete project', () => {
       setNotebooks(prev => {
         if (prev.some(n => n.id === nbId)) return prev
         const pristine = n => (n.sheets || []).every(sh => !(sh.blocks || []).length && !(sh.shapes || []).length)
@@ -2429,7 +2480,7 @@ export default function AppPage() {
         return next
       })
       setActiveNotebookId(prevActiveId)
-    }
+    })
   }
 
   function renderNotebookInSidebar(nb, folderId) {
@@ -2459,8 +2510,9 @@ export default function AppPage() {
           {renamingNotebookId === nb.id ? (
             <input autoFocus value={renamingNotebookLabel}
               onChange={e => setRenamingNotebookLabel(e.target.value)}
-              onBlur={() => { renameNotebook(nb.id, renamingNotebookLabel.trim() || nb.name); setRenamingNotebookId(null) }}
-              onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+              onFocus={selectAllOnFocus}
+              onBlur={e => { if (!renameCancelled(e)) renameNotebook(nb.id, renamingNotebookLabel.trim() || nb.name); setRenamingNotebookId(null) }}
+              onKeyDown={renameKeyDown()}
               onClick={e => e.stopPropagation()}
               maxLength={40}
               style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, outline: 'none', minWidth: 0 }} />
@@ -2503,8 +2555,9 @@ export default function AppPage() {
                       autoFocus
                       value={renamingSheetLabel}
                       onChange={e => setRenamingSheetLabel(e.target.value)}
-                      onBlur={() => { renameNotebookSheet(nb.id, sheet.id, renamingSheetLabel || sheet.name); setRenamingSheetId(null) }}
-                      onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+                      onFocus={selectAllOnFocus}
+                      onBlur={e => { if (!renameCancelled(e)) renameNotebookSheet(nb.id, sheet.id, renamingSheetLabel.trim() || sheet.name); setRenamingSheetId(null) }}
+                      onKeyDown={renameKeyDown()}
                       onClick={e => e.stopPropagation()}
                       style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none', minWidth: 0 }}
                     />
@@ -2973,7 +3026,7 @@ export default function AppPage() {
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
                 <Icon name="nav-folder" size={14} /> Folder
               </button>
-              <button onClick={createNotebook}
+              <button onClick={createNotebookAndRename}
                 style={{ flex: 1, padding: '8px 0', background: 'transparent', border: `1px solid ${border}`, borderRadius: 6, color: text3, fontFamily: 'var(--ds-font-body)', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = accent }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = text3 }}>
@@ -3046,8 +3099,9 @@ export default function AppPage() {
                     {renamingFolderId === folder.id ? (
                       <input autoFocus value={renamingFolderLabel}
                         onChange={e => setRenamingFolderLabel(e.target.value)}
-                        onBlur={() => commitFolderRename(folder.id)}
-                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+                        onFocus={selectAllOnFocus}
+                        onBlur={e => { if (renameCancelled(e)) { setRenamingFolderId(null); return } commitFolderRename(folder.id) }}
+                        onKeyDown={renameKeyDown()}
                         onClick={e => e.stopPropagation()}
                         style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, outline: 'none', minWidth: 0 }} />
                     ) : (
