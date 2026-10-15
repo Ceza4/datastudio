@@ -4870,7 +4870,10 @@ function addBlockAnimated(type, x, y) {
           <div onMouseDown={() => setShortcutsOpen(false)}
             style={{ position: 'fixed', inset: 0, zIndex: Z.modalScrim, background: 'rgba(0,0,0,0.35)' }} />
           <div role="dialog" aria-label="Keyboard shortcuts" className="ds-island"
-            style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: Z.modal, width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflowY: 'auto', padding: 18 }}>
+            /* Opaque: .ds-island is 94% so a toolbar reads as floating, but a
+               page of small text over blocks let their titles show through
+               the shortcut list (audit DEF-017). */
+            style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: Z.modal, width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflowY: 'auto', padding: 18, background: surface }}>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
               <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700, flex: 1 }}>Keyboard shortcuts</span>
               <button onClick={() => setShortcutsOpen(false)} aria-label="Close"

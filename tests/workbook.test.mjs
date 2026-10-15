@@ -165,5 +165,39 @@ console.log('\n  header row detection: forms with title lines and merged headers
   ok(single.headerRow === 0 && single.rows.length === 2, 'a one-column sheet still uses row 1')
 }
 
+console.log('\n  dates land on their own day in every time zone (DEF-020)')
+{
+  const X = (await import('xlsx')).default || (await import('xlsx'))
+  const ws = { '!ref': 'A1:B2', A1: { t: 's', v: 'When' }, B1: { t: 's', v: 'At' },
+    A2: { t: 'n', v: 46246, z: 'yyyy-mm-dd' }, B2: { t: 'n', v: 46246.5, z: 'yyyy-mm-dd hh:mm' } }
+  const book = { SheetNames: ['S'], Sheets: { S: ws } }
+  const bytes = X.write(book, { type: 'array', bookType: 'xlsx' })
+  const prevTZ = process.env.TZ
+  for (const tz of ['UTC', 'Europe/Kiev', 'Europe/Vilnius', 'Europe/Paris', 'America/New_York', 'Asia/Kolkata']) {
+    process.env.TZ = tz
+    const got = readWorkbook(new Uint8Array(bytes)).Sheets.S
+    const d = got.A2.v, t = got.B2.v
+    ok(d instanceof Date && d.getFullYear() === 2026 && d.getMonth() === 7 && d.getDate() === 12 && d.getHours() === 0 && d.getSeconds() === 0,
+      `${tz}: 2026-08-12 reads as local midnight on the 12th (got ${d})`)
+    ok(t instanceof Date && t.getDate() === 12 && t.getHours() === 12 && t.getMinutes() === 0, `${tz}: a date-time keeps its clock time`)
+  }
+  process.env.TZ = prevTZ
+  const plainNum = readWorkbook(new Uint8Array(X.write({ SheetNames: ['S'], Sheets: { S: { '!ref': 'A1', A1: { t: 'n', v: 46246 } } } }, { type: 'array', bookType: 'xlsx' }))).Sheets.S.A1
+  ok(plainNum.t === 'n' && plainNum.v === 46246, 'a number without a date format stays a number')
+}
+
+console.log('\n  European grouped thousands (DEF-019)')
+{
+  const { readDelimitedText } = await import('../lib/workbook.js')
+  const wb = readDelimitedText(new TextEncoder().encode('N;Amount\nA;1.234,50\nB;99,9\nC;1.234.567\nD;12.345.678,9'))
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  ok(ws.B2.t === 'n' && ws.B2.v === 1234.5, '1.234,50 is 1234.5, like 99,9 beside it')
+  ok(ws.B4.t === 'n' && ws.B4.v === 1234567, '1.234.567 is 1234567')
+  ok(ws.B5.t === 'n' && ws.B5.v === 12345678.9, '12.345.678,9 is 12345678.9')
+  const us = readDelimitedText(new TextEncoder().encode('N,Amount\nA,1.234\nB,"1,234.50"'))
+  const wu = us.Sheets[us.SheetNames[0]]
+  ok(wu.B2.v === 1.234, 'a comma-delimited file still reads 1.234 as a decimal')
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

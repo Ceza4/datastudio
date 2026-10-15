@@ -100,3 +100,26 @@ Environment unless stated: Chromium 141 headless, 1440×900, production build of
 - Root cause: `ResizeHandle` (10 px bands, 5 px either side of the edge) was rendered inside each block's body, and every body except Chat is `overflow:hidden`, so the outer half and the border itself were clipped out of hit-testing.
 - Fix: one `ResizeHandle` on the block wrapper (same box, no clipping) instead of 19 inside the bodies; hidden in full screen; Countdown still has none.
 - Verification: Notes, Table, Database, Kanban, Chat — pressing exactly on the border hits the `e` handle and widens by the dragged 100 px; 2 px outside also hits.
+
+## DEF-016 · P3 · Polish · FIXED (verified)
+**Every route had the same tab title, and the 404 was Next's bare stock page with no way back.**
+- Fix: title template `%s · DataStudio`; server layouts name Sign in / Create an account / Reset your password / Choose a new password / Plans; `/app` shows "<project> · DataStudio"; `app/not-found.js` keeps the words and adds "Open DataStudio" / "Home".
+- Verification: titles read back per route; 404 screenshot.
+
+## DEF-017 · P3 · Visual · FIXED (code-verified)
+**The keyboard-shortcuts dialog was 94 % opaque, so block titles under it showed through its text.** Fix: opaque `surface` background on that dialog only.
+
+## DEF-018 · P2 · Usability · FIXED (verified after rebuild)
+**"/h1", "/h2", "/h3" in a note matched nothing**, closed the slash menu and left "/h1" in the text. Fix: slash filter also matches the command id prefix.
+
+## DEF-019 · P2 · Data correctness · FIXED (verified)
+**European CSVs: "1.234,50" stayed text while "99,9" in the same column became a number**, so sums silently skipped it.
+- Fix: dot-grouped thousands with a comma decimal (or ≥2 dot groups) parse as numbers in comma-decimal files. A lone "1.234" keeps its old reading (ambiguous).
+- Verification: 4 unit assertions; in-app import shows 1234.5.
+
+## DEF-020 · P1 · Data correctness · FIXED (verified)
+**Every date imported from an .xlsx landed ONE DAY EARLY for users east of Greenwich — including Kyiv and Vilnius.**
+- Repro: import an .xlsx with 2026-08-12 in a date cell, browser in Europe/Kiev → table shows 2026-08-11 (and 2026-09-01 → 2026-08-31).
+- Root cause: SheetJS 0.18.5 with `cellDates:true` builds dates from a local `new Date(1899,11,30)` and corrects by `getTimezoneOffset()` (whole minutes); that epoch is in local mean time, which has seconds (Kyiv: 4 s), so each date became 23:59:56 the day before. AppPage then (correctly) read the local calendar day.
+- Fix: `readWorkbook` reads serials with their number formats and builds local dates from `SSF.parse_date_code` calendar fields (1904 workbooks honoured).
+- Verification: 13 unit assertions across UTC, Kyiv, Vilnius, Paris, New York, Kolkata (fail on the old code — 23:59:56); in-app import in Europe/Kiev shows 2026-08-12 / 2026-09-01.

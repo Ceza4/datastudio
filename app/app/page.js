@@ -919,6 +919,13 @@ export default function AppPage() {
 
   useEffect(() => { loadAccount() }, [loadAccount])
 
+  /* The tab says which project it is (DEF-016) — two windows on two projects
+     were two identical tabs. Name only; it changes on rename and switch. */
+  const activeTitle = notebooks.find(n => n.id === activeNotebookId)?.name || ''
+  useEffect(() => {
+    document.title = activeTitle ? `${activeTitle} · DataStudio` : 'DataStudio — Excel, reimagined.'
+  }, [activeTitle])
+
   useEffect(() => {
     /* Gated on `hydrated` for the same reason the autosave is: starting sync
        over a workspace that has not finished loading would push an empty one.

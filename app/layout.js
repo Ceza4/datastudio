@@ -33,7 +33,10 @@ const dmMono = localFont({
 })
 
 export const metadata = {
-  title: 'DataStudio — Excel, reimagined.',
+  /* Each page names itself in the tab (audit DEF-016): every route —
+     sign-in, pricing, a 404 — used to read "DataStudio — Excel, reimagined.",
+     so tabs, history and bookmarks could not be told apart. */
+  title: { default: 'DataStudio — Excel, reimagined.', template: '%s · DataStudio' },
   description: 'Import multiple spreadsheets, drag columns onto a canvas, crosscheck data and export a clean custom file in seconds.',
 }
 

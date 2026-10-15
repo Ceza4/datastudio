@@ -101,8 +101,11 @@ export const SLASH_BLOCK_IDS = new Set(SLASH_BLOCK_ITEMS.map(i => i.id))
 export function filterCommands(filter) {
   const q = (filter || '').toLowerCase().trim()
   if (!q) return COMMANDS
+  /* The id too: "/h1", "/h2", "/h3" is what Notion and Markdown hands type,
+     and matched nothing — the menu closed and left "/h1" in the note as text
+     (audit DEF-018). */
   return COMMANDS.filter(c =>
-    c.label.toLowerCase().includes(q) || c.keywords.toLowerCase().includes(q)
+    c.label.toLowerCase().includes(q) || c.keywords.toLowerCase().includes(q) || String(c.id).toLowerCase().startsWith(q)
   )
 }
 

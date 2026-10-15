@@ -971,8 +971,8 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
         {/* Sheets first, bottom-left, where Excel keeps them. */}
         <SheetTabs block={block} colors={colors} onUpdateBlock={onUpdateBlock} />
         <span style={{ color: accentText, fontWeight: 700, minWidth: 34, flexShrink: 0 }}>{colName(cur.c)}{cur.r + 1}</span>
-        <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{nRows.toLocaleString()} rows</span>
-        <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{nCols} cols</span>
+        <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{nRows.toLocaleString()} {nRows === 1 ? 'row' : 'rows'}</span>
+        <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{nCols} {nCols === 1 ? 'col' : 'cols'}</span>
         {stats.cells > 1 && <span>{stats.cells.toLocaleString()} selected</span>}
         {ranges.length > 0 && <span>{ranges.length + 1} ranges</span>}
 

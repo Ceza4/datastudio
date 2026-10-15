@@ -92,7 +92,10 @@ export default function Login() {
     <div style={{
       minHeight:'100vh', background:t.base,
       display:'flex', alignItems:'center', justifyContent:'center',
-      fontFamily:'var(--ds-font-body)'
+      fontFamily:'var(--ds-font-body)',
+      /* A gutter on phones (the card ran edge to edge at 390px) and room
+         under the absolute logo row, so a tall card never slides under it. */
+      padding:'72px 16px 24px', boxSizing:'border-box',
     }}>
 
       {/* TOP LEFT LOGO */}
