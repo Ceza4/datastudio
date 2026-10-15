@@ -7,6 +7,7 @@ import { Z, SWATCHES, INK_SWATCH } from '../../lib/theme'
 import { columnsFromNodes, nodesInRange } from '../../lib/columns'
 import { CHECKLIST_HTML, caretIntoChecklist } from '../../lib/checklist'
 import { elementFrom } from '../../lib/insertblock'
+import { NOTE_HIGHLIGHTS, lastHighlight, setLastHighlight, selectionHighlight, toggleHighlight, sameColor } from '../../lib/highlight'
 
 const COLUMN_COUNTS = [2, 3, 4, 5]
 
@@ -141,13 +142,27 @@ const EDGE = 8          // minimum distance from any viewport edge
 export default function TextBlockToolbar({ colors, onClose, editableRef }) {
   const { surface, raised, border, text, text2, text3, accent } = colors
   const ref = useRef(null)
-  const [menu, setMenu] = useState(null)   // null | 'font' | 'color' | 'link'
+  const [menu, setMenu] = useState(null)   // null | 'font' | 'color' | 'link' | 'style' | 'columns' | 'hl'
+  /* The highlighter's one-click colour (lib/highlight.js keeps it across
+     blocks and reloads, so Ctrl+Shift+H in the editor uses the same one). */
+  const [hlColor, setHlColor] = useState(lastHighlight)
+  const hlBtnRef = useRef(null)
   const [expanded, setExpanded] = useState(false)
   /* What the current selection already is: which inline formats are on,
      and which block it sits in. Read from the browser (queryCommandState /
      queryCommandValue), the same source execCommand uses to decide whether
      a press turns a format on or off, so the button and the action agree. */
   const [active, setActive] = useState({})
+  /* The selection's highlight: a colour, null, or 'mixed'. Not a browser
+     command state — highlights are lib/highlight.js's own markup. */
+  const readHighlight = useCallback(() => {
+    try {
+      const sel = window.getSelection()
+      const root = editableRef?.current
+      if (!root || !sel?.rangeCount) return null
+      return selectionHighlight(root, sel.getRangeAt(0))
+    } catch { return null }
+  }, [editableRef])
   const readActive = useCallback(() => {
     const q = c => { try { return document.queryCommandState(c) } catch { return false } }
     let block = ''
@@ -155,9 +170,10 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
     const next = {
       bold: q('bold'), italic: q('italic'), underline: q('underline'), strike: q('strikeThrough'),
       ul: q('insertUnorderedList'), ol: q('insertOrderedList'), block,
+      hl: readHighlight(),
     }
     setActive(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
-  }, [])
+  }, [readHighlight])
   /* The secondary section, measured so the pill is placed from its CORE
      width. See placeFrom. */
   const secondaryRef = useRef(null)
@@ -259,11 +275,16 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
       if (menu === 'link') return
       const sel = window.getSelection()
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { hide(); return }
+      /* Nothing to format: a selection that is only whitespace — in practice
+         a tab, which Chrome can select as a unit and then measure at the
+         window's corner, putting the pill top-left of the screen. */
+      if (!sel.toString().replace(/[\s\u200B]/g, '')) { hide(); return }
       const range = sel.getRangeAt(0)
       if (!rangeIsOurs(range)) { hide(); return }
       anchorRange.current = range.cloneRange()
       const rect = range.getBoundingClientRect()
       if (!rect || (rect.width === 0 && rect.height === 0)) { hide(); return }
+      if (rect.left <= 0 && rect.top <= 0) { hide(); return }   // unmeasurable, never draw at the corner
       lastRect.current = rect
       if (!visibleRef.current) {
         visibleRef.current = true
@@ -355,6 +376,22 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
     else document.execCommand(cmd, false, value)
     readActive()
   }
+
+  /* HIGHLIGHT. A toggle, like running a marker over the same words twice:
+     if the whole selection already has this colour it comes off, otherwise
+     the selection gets it (replacing any other colour). `null` removes.
+     The words stay selected afterwards, so trying another colour is one
+     more click rather than a re-select. */
+  function highlight(color) {
+    const root = editableRef?.current
+    if (!root) return
+    toggleHighlight(root, color)
+    if (color) { setLastHighlight(color); setHlColor(color) }
+    setMenu(null)
+    readActive()
+  }
+  const hlActive = !!active.hl && active.hl !== 'mixed' && sameColor(active.hl, hlColor)
+  const hlId = (NOTE_HIGHLIGHTS.find(h => h.value === hlColor) || NOTE_HIGHLIGHTS[0]).id
 
   /* NORMAL TEXT: back to a plain paragraph AND no inline formatting.
      It only did formatBlock('div'), which un-heads a heading but leaves bold,
@@ -602,6 +639,31 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
       <Cell colors={cellColors} active={active.underline} run={() => exec('underline')}     title="Underline"><u style={{ fontSize: 14 }}>U</u></Cell>
       <Cell colors={cellColors} active={active.strike}    run={() => exec('strikeThrough')} title="Strikethrough"><s style={{ fontSize: 14 }}>S</s></Cell>
 
+      {/* ── Core: Highlight (1 Oct 2026) ──
+          In the CORE row, not behind the chevron: it is one of the three most
+          used things anyone does to notes, and both Apple Notes and Notion get
+          complaints for burying it. A SPLIT button, the same grammar as the
+          Document ribbon's text colour and highlight: the pen applies the
+          last colour (and lifts it off text that already has it — shown as
+          the active tint), the narrow chevron opens the four colours. The bar
+          under the pen is the colour the text will actually get in THIS
+          theme, not the stored pastel. */}
+      <div ref={hlBtnRef} style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+        <Cell colors={cellColors} active={hlActive} run={() => highlight(hlColor)}
+          title={hlActive ? 'Remove highlight (Ctrl+Shift+H)' : 'Highlight (Ctrl+Shift+H)'}>
+          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+            <Icon name="pdf-highlight" size={14} />
+            <span style={{ width: 14, height: 3, borderRadius: 4, background: `var(--ds-hl-${hlId}-mark)` }} />
+          </span>
+        </Cell>
+        <Cell colors={cellColors} run={() => setMenu(m => (m === 'hl' ? null : 'hl'))}
+          title="Highlight colours" aria-label="Highlight colours"
+          aria-haspopup="true" aria-expanded={menu === 'hl'}
+          style={{ width: 14, minWidth: 14, padding: 0 }}>
+          <Icon name="nav-chevron-down" size={12} />
+        </Cell>
+      </div>
+
       <Sep />
 
       {/* ── Core: Text style (24 Sep 2026) ──
@@ -767,6 +829,55 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
               </button>
             )
           })}
+        </div>
+      )}
+
+      {menu === 'hl' && (
+        <div role="menu" aria-label="Highlight colours"
+          style={{ ...popover, left: hlBtnRef.current?.offsetLeft ?? 4, padding: 6, minWidth: 0 }}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {NOTE_HIGHLIGHTS.map(h => {
+              const on = !!active.hl && active.hl !== 'mixed' && sameColor(active.hl, h.value)
+              return (
+                <button key={h.id} type="button" role="menuitemradio" aria-checked={on}
+                  onMouseDown={e => { e.preventDefault(); highlight(h.value) }}
+                  title={on ? `Remove ${h.name.toLowerCase()} highlight` : `${h.name} highlight`}
+                  aria-label={`${h.name} highlight`}
+                  /* A sample of the result — "Ab" on the tint it will get in
+                     this theme — rather than a dot of the stored pastel, which
+                     in dark mode is a much brighter colour than the text ends
+                     up. The ring marks the colour the selection already has. */
+                  style={{
+                    width: 30, height: 26, borderRadius: 'var(--ds-radius-sm)',
+                    border: 'none', padding: 0, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'transparent', color: text,
+                    boxShadow: on ? `inset 0 0 0 1.5px ${accent}` : 'none',
+                    fontFamily: 'var(--ds-font-body)', fontSize: 12, fontWeight: 500,
+                    transition: 'background var(--ds-motion-hover) var(--ds-ease-standard)',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = raised }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                >
+                  <span style={{ background: `var(--ds-hl-${h.id})`, borderRadius: 4, padding: '1px 4px', lineHeight: 1.3 }}>Ab</span>
+                </button>
+              )
+            })}
+          </div>
+          <div style={{ height: 1, background: border, margin: '6px 2px 4px' }} />
+          <button type="button" role="menuitem" disabled={!active.hl}
+            onMouseDown={e => { e.preventDefault(); if (active.hl) highlight(null) }}
+            style={{
+              display: 'block', width: '100%', textAlign: 'left', background: 'transparent',
+              border: 'none', borderRadius: 'var(--ds-radius-sm)',
+              color: active.hl ? text2 : text3, cursor: active.hl ? 'pointer' : 'default',
+              fontFamily: 'var(--ds-font-body)', fontSize: 12, padding: '6px 8px',
+            }}
+            onMouseEnter={e => { if (active.hl) { e.currentTarget.style.background = raised; e.currentTarget.style.color = text } }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = active.hl ? text2 : text3 }}
+          >
+            Remove highlight
+          </button>
         </div>
       )}
 

@@ -22,6 +22,7 @@ import {
   handleCodeKeyDown, handleCodePaste, setCaretOffset, setCodeLang,
 } from '../../lib/codeblock'
 import { addressKind } from '../../lib/teleport'
+import { toggleHighlight, lastHighlight, highlightCss } from '../../lib/highlight'
 
 /* TextBlockContent — SESSION A (FIXED)
    --------------------------------------------------------------------------
@@ -56,6 +57,10 @@ function TextBlockContentInner({
   onEditStart,
   onEditEnd,
   minHeight = 80,
+  /* Set only in full screen: the block has a fixed height there, so the
+     editor becomes the scroller. Without it a long note grew past the
+     window and the caret reveal scrolled the CANVAS instead. */
+  maxHeight,
   showRail = false,
   /* Teleporters. All optional — a text block still works standalone, which
      keeps this component testable and reusable outside the canvas. */
@@ -218,6 +223,7 @@ function TextBlockContentInner({
          <pre><code> blocks to the new code block. */
       normalizeChecklists(ref.current)
       normalizeCodeBlocks(ref.current)
+      normalizeNoteWhitespace(ref.current)
       checkEmpty()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -287,7 +293,9 @@ function TextBlockContentInner({
 
     const textBefore = node.textContent.substring(0, range.startOffset)
     // Allow spaces in the query ("/bullet l") but bail once it's clearly prose.
-    const match = textBefore.match(/(^|\s)\/([^/]{0,20})$/)
+    /* \u200B counts as a word boundary too (stray zero-width spaces from
+       pasted text); a tab already does, as \s. */
+    const match = textBefore.match(/(^|[\s\u200B])\/([^/]{0,20})$/)
 
     if (match) {
       const filter = match[2]
@@ -650,6 +658,18 @@ function TextBlockContentInner({
        User types "# " — we catch the space keydown, check that
        the text before cursor is "#", prevent the space, delete
        the "#", and apply the heading format. */
+    /* Ctrl+Shift+H (Cmd on a Mac): highlight the selection in the last-used
+       colour, or lift it off if it already has that colour — the toolbar's
+       pen button, from the keyboard. Notion's binding; Chrome reserves
+       nothing on it. KeyH by code as well as key, so a non-Latin layout
+       still has the shortcut. A collapsed caret does nothing: a highlight
+       on nothing would be an invisible empty span. */
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (e.code === 'KeyH' || e.key.toLowerCase() === 'h')) {
+      e.preventDefault(); e.stopPropagation()
+      if (ref.current) toggleHighlight(ref.current, lastHighlight())
+      return
+    }
+
     if (e.key === ' ' && !slashMenu) {
       if (tryMarkdownShortcut()) {
         e.preventDefault()
@@ -735,6 +755,19 @@ function TextBlockContentInner({
       const col = handleColumnKeyDown(e)
       if (col.handled) {
         if (col.changed) { persistContent(); checkEmpty() }
+        return
+      }
+    }
+
+    /* ── Tabs are deleted in one press, whatever shape they are in ───────
+       A plain "\t" normally deletes natively, but a tab can also be a
+       wrapper span (Chrome's own Apple-tab-span on paste) or one of the
+       non-editable tab spans from earlier on 2 Oct, which Chrome refuses to
+       Backspace over. Handled here explicitly so it never depends on which. */
+    if ((e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (deleteTabBeside(e.key === 'Backspace' ? -1 : 1)) {
+        e.preventDefault(); e.stopPropagation()
+        persistContent()
         return
       }
     }
@@ -851,19 +884,124 @@ function TextBlockContentInner({
       return
     }
 
-    /* Tab in code blocks: insert 2 spaces */
-    if (e.key === 'Tab') {
+    /* TAB IN A NOTE — it used to do nothing visible: the browser's default
+       moved focus out of the editor to an invisible target. Now it behaves
+       the way Apple Notes and Notion do:
+         · code block  → two spaces (unchanged)
+         · list item   → nest it one level; Shift+Tab lifts it back out
+         · checklist   → indent the item one step; Shift+Tab outdents
+         · anywhere else → a plain tab character; Shift+Tab removes the
+           tab right before the caret if there is one.
+       Tab is the editor's while typing; Esc leaves the editor, then Tab
+       moves focus on as before. */
+    if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const sel = window.getSelection()
-      if (sel?.rangeCount) {
-        const node = sel.getRangeAt(0).startContainer
-        const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
-        if (el?.closest?.('pre')) {
-          e.preventDefault()
-          document.execCommand('insertText', false, '  ')
-          return
+      if (!sel?.rangeCount) return
+      const node = sel.getRangeAt(0).startContainer
+      const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
+      if (!ref.current?.contains(el)) return
+      e.preventDefault(); e.stopPropagation()
+
+      if (el?.closest?.('pre')) {
+        if (!e.shiftKey) document.execCommand('insertText', false, '  ')
+        return
+      }
+      if (el?.closest?.('li')) {
+        document.execCommand(e.shiftKey ? 'outdent' : 'indent')
+        persistContent()
+        return
+      }
+      const check = el?.closest?.('[data-type="checklist"]')
+      if (check) {
+        const STEP = 24, MAX = STEP * 6
+        const now = parseFloat(check.style.marginLeft) || 0
+        const next = Math.max(0, Math.min(MAX, now + (e.shiftKey ? -STEP : STEP)))
+        check.style.marginLeft = next ? `${next}px` : ''
+        persistContent()
+        return
+      }
+      if (e.shiftKey) {
+        /* Shift+Tab takes back the tab right before the caret, if any. */
+        const r = sel.getRangeAt(0)
+        const c = r.startContainer
+        if (r.collapsed && c.nodeType === Node.TEXT_NODE && c.data[r.startOffset - 1] === '\t') {
+          const d = document.createRange()
+          d.setStart(c, r.startOffset - 1); d.setEnd(c, r.startOffset)
+          sel.removeAllRanges(); sel.addRange(d)
+          document.execCommand('delete')
+          persistContent()
         }
+        return
+      }
+      /* A plain tab character. The note keeps whitespace (white-space:
+         pre-wrap on the editor), so it renders as a real tab stop, and the
+         browser does caret, typing, Backspace, undo and "/" all by itself. */
+      document.execCommand('insertText', false, '\t')
+      persistContent()
+      return
+    }
+  }
+
+  /* Notes keep whitespace now (pre-wrap, so a tab is a real tab). HTML that
+     arrived from an import or a paste can carry source formatting — line
+     breaks and indentation between tags — that used to collapse away and
+     would now show. Strip it once on load, outside code blocks. Also turns
+     the short-lived tab spans of 2 Oct 2026 into plain tabs. */
+  /** Delete the tab directly before (dir -1) or after (dir 1) a collapsed
+   *  caret. Returns true when it did. */
+  function deleteTabBeside(dir) {
+    const sel = window.getSelection()
+    if (!sel?.rangeCount) return false
+    const r = sel.getRangeAt(0)
+    if (!r.collapsed || !ref.current?.contains(r.startContainer)) return false
+    const c = r.startContainer, o = r.startOffset
+    const isTabEl = n => n?.nodeType === 1 && n.textContent === '\t'
+    /* A tab character in this text node, right next to the caret. */
+    if (c.nodeType === Node.TEXT_NODE) {
+      const i = dir < 0 ? o - 1 : o
+      if (c.data[i] === '\t') {
+        /* Through execCommand so Ctrl+Z brings it back; by hand if Chrome
+           declines. */
+        const before = c.data
+        const k = document.createRange(); k.setStart(c, i); k.setEnd(c, i + 1)
+        sel.removeAllRanges(); sel.addRange(k)
+        document.execCommand('delete')
+        if (c.isConnected && c.data === before) {
+          c.deleteData(i, 1)
+          const m = document.createRange(); m.setStart(c, i); m.collapse(true)
+          sel.removeAllRanges(); sel.addRange(m)
+        }
+        return true
       }
     }
+    /* A tab wrapped in its own span, next to the caret. */
+    let n = null
+    if (c.nodeType === Node.TEXT_NODE) {
+      if (dir < 0 && o === 0) n = c.previousSibling
+      if (dir > 0 && o === c.length) n = c.nextSibling
+    } else n = dir < 0 ? c.childNodes[o - 1] : c.childNodes[o]
+    if (!isTabEl(n)) return false
+    const k = document.createRange(); k.setStartBefore(n); k.collapse(true)
+    n.remove()
+    sel.removeAllRanges(); sel.addRange(k)
+    return true
+  }
+
+  function normalizeNoteWhitespace(root) {
+    if (!root) return
+    root.querySelectorAll('[data-ds-tab]').forEach(t => t.replaceWith(document.createTextNode('\t')))
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const dead = []
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (n.parentElement?.closest('pre, code')) continue
+      /* Only formatting BETWEEN tags: a whitespace-only run that contains a
+         line break. A line break inside real text is kept — that is a
+         pasted line break, and pre-wrap now shows it as one. */
+      if (/[\r\n]/.test(n.data) && /^[ \t\r\n]*$/.test(n.data)) { dead.push(n); continue }
+      if (n.data.includes('\u200B')) n.data = n.data.replace(/\u200B/g, '')
+    }
+    dead.forEach(n => n.remove())
+    root.normalize()
   }
 
   function tryMarkdownShortcut() {
@@ -1057,6 +1195,12 @@ function TextBlockContentInner({
        a 1-2px accent line against the body text in each theme and keep or drop
        this one line. */
     [data-ds-text] { caret-color: var(--ds-accent); }
+    /* A tab is a real tab character, drawn to the next 4-character stop. */
+
+    /* Highlights: each stored Document-palette value repainted with its
+       theme token (see lib/highlight.js for why storage and display differ).
+       Generated from the palette so the two cannot drift. */
+    ${highlightCss('[data-ds-text]')}
     [data-ds-text] h1 { font-size: 26px; font-weight: 700; font-family: var(--ds-font-head); margin: 14px 0 6px; line-height: 1.3; }
     [data-ds-text] h2 { font-size: 20px; font-weight: 700; font-family: var(--ds-font-head); margin: 12px 0 4px; line-height: 1.3; }
     [data-ds-text] h3 { font-size: 16px; font-weight: 600; font-family: var(--ds-font-head); margin: 10px 0 3px; line-height: 1.4; }
@@ -1077,12 +1221,12 @@ function TextBlockContentInner({
     [data-ds-text] pre {
       background: rgba(0,0,0,0.06); border-left: 3px solid var(--ds-accent);
       padding: 14px 16px; border-radius: 0 8px 8px 0;
-      font-family: var(--ds-font-mono); font-size: 13px; line-height: 1.7;
+      font-family: var(--ds-font-code); font-size: 13px; line-height: 1.7;
       overflow-x: auto; margin: 10px 0; white-space: pre-wrap;
       position: relative;
     }
     [data-theme='dark'] [data-ds-text] pre { background: rgba(255,255,255,0.06); }
-    [data-ds-text] code { font-family: var(--ds-font-mono); }
+    [data-ds-text] code { font-family: var(--ds-font-code); }
     [data-ds-text] [data-type="checklist"] {
       display: flex; align-items: flex-start; gap: 8px; padding: 4px 0;
     }
@@ -1159,7 +1303,7 @@ function TextBlockContentInner({
     [data-ds-text] [data-type="code"][data-lang="bash"] [data-type="code-lang"]::before { content: 'Shell'; }
     [data-ds-text] [data-type="code"] pre {
       margin: 0; padding: 10px 0; background: transparent; border: none; border-radius: 0;
-      font-family: var(--ds-font-mono); font-size: 13px; line-height: 1.65;
+      font-family: var(--ds-font-code); font-size: 13px; line-height: 1.65;
       white-space: pre-wrap; overflow-x: auto;
     }
     [data-theme='dark'] [data-ds-text] [data-type="code"] pre { background: transparent; }
@@ -1243,6 +1387,7 @@ function TextBlockContentInner({
         <div
           ref={ref}
           data-ds-text=""
+          data-ds-textblock=""
           contentEditable
           suppressContentEditableWarning
           /* Capture phase. A teleport link sits inside an editable region, so
@@ -1251,7 +1396,12 @@ function TextBlockContentInner({
              they meant to follow. Intercepting on the way down means the
              caret never lands there. */
           onClickCapture={handleLinkClick}
-          onFocus={() => onEditStart?.()}
+          onFocus={() => {
+            /* Tab spans from earlier on 2 Oct become plain tabs here too, not
+               only on load — a note already open would otherwise keep them. */
+            ref.current?.querySelectorAll('[data-ds-tab]').forEach(t => t.replaceWith(document.createTextNode('\t')))
+            onEditStart?.()
+          }}
           onBlur={e => {
             /* PERSIST FIRST, ALWAYS.
 
@@ -1286,6 +1436,7 @@ function TextBlockContentInner({
           onContextMenu={handleContextMenu}
           style={{
             minHeight,
+            ...(maxHeight ? { minHeight: maxHeight, maxHeight, boxSizing: 'border-box' } : null),
             padding: '10px 14px',
             fontSize: 14,
             color: text,
@@ -1297,6 +1448,9 @@ function TextBlockContentInner({
             wordBreak: 'break-word',
             overflowWrap: 'break-word',
             overflowY: 'auto',
+            /* Keep typed whitespace: a tab is a tab, two spaces are two. */
+            whiteSpace: 'pre-wrap',
+            tabSize: '2.5em',
           }}
         />
       </div>

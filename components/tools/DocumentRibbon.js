@@ -9,6 +9,14 @@ import {
   marginPresetFor, normalizeMargin, pageInches,
 } from '../../lib/pagesetup'
 import { columnsHtml, columnsFromNodes, nodesInRange } from '../../lib/columns'
+import {
+  applyInlineStyle, applyParagraphStyle, indentParagraphs, caretElement, rangeIn, setRange,
+  tableHtml, imageFileToDataUrl, PT_TO_PX, PAGE_BREAK_HTML,
+} from '../../lib/docedit'
+import { useToast } from '../ui/Toast'
+import { docApi, runDoc, subscribeDoc } from '../../lib/docbridge'
+import { CASES, BULLET_STYLES, NUMBER_STYLES, SYMBOLS, MATH_SYMBOLS, dateFormats } from '../../lib/docformat'
+import { CITE_STYLES } from '../../lib/doccite'
 
 const COLUMN_COUNTS = [2, 3, 4, 5]
 
@@ -62,10 +70,30 @@ const COLUMN_COUNTS = [2, 3, 4, 5]
   -------------------------------------------------------------------------- */
 
 const TABS = [
+  { id: 'file',   label: 'File' },
   { id: 'home',   label: 'Home' },
   { id: 'insert', label: 'Insert' },
   { id: 'layout', label: 'Layout' },
+  { id: 'refs',   label: 'References' },
+  { id: 'review', label: 'Review' },
   { id: 'view',   label: 'View' },
+]
+
+/* Word's style gallery, previewed at each style's own look (scaled so the
+   gallery row keeps one height). */
+const STYLE_LIST = [
+  { id: 'normal',   label: 'Normal',    size: 12, weight: 400, hint: 'Ctrl+Alt+0' },
+  { id: 'title',    label: 'Title',     size: 16, weight: 300 },
+  { id: 'subtitle', label: 'Subtitle',  size: 12, weight: 400, mute: true },
+  { id: 'h1',       label: 'Heading 1', size: 14, weight: 600, head: true, hint: 'Ctrl+Alt+1' },
+  { id: 'h2',       label: 'Heading 2', size: 13, weight: 600, head: true, hint: 'Ctrl+Alt+2' },
+  { id: 'h3',       label: 'Heading 3', size: 12, weight: 600, head: true, hint: 'Ctrl+Alt+3' },
+  { id: 'h4',       label: 'Heading 4', size: 12, weight: 600, italic: true, head: true },
+  { id: 'quote',    label: 'Quote',     size: 12, weight: 400, italic: true },
+]
+const HIGHLIGHTS = [
+  { name: 'Yellow', value: '#FFF176' }, { name: 'Green', value: '#B9F6CA' }, { name: 'Cyan', value: '#B3E5FC' },
+  { name: 'Pink', value: '#F8BBD0' }, { name: 'Orange', value: '#FFD180' }, { name: 'Grey', value: '#E0E0E0' },
 ]
 
 const COLOR_OPTIONS = [INK_SWATCH, ...SWATCHES]
@@ -248,6 +276,60 @@ function Pop({ style, children }) {
   )
 }
 
+const MIN_MARGIN = 0.25
+
+/** What the ribbon shows for the caret: font, size (pt), line spacing,
+ *  alignment, paragraph style and the pressed character formats. */
+function readCaret(root, r) {
+  const el = caretElement(root, r)
+  if (!el) return null
+  const cs = getComputedStyle(el)
+  const fam = cs.fontFamily.split(',').map(f => f.trim().replace(/^["']|["']$/g, ''))
+  const font = (DOC_FONTS.find(f => fam[0] === f.name) || DOC_FONTS.find(f => fam.some(x => x.toLowerCase().includes(f.name.toLowerCase()))) || DOC_FONTS[0]).name
+  const size = Math.round((parseFloat(cs.fontSize) / PT_TO_PX) * 2) / 2
+  const para = el.closest('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,pre') || el
+  const pcs = getComputedStyle(para)
+  const lh = parseFloat(pcs.lineHeight) / parseFloat(pcs.fontSize)
+  const spacing = LINE_SPACINGS.reduce((best, s) => (Math.abs(s.id - lh) < Math.abs(best - lh) ? s.id : best), LINE_SPACINGS[0].id)
+  const a = pcs.textAlign
+  const q = c => { try { return document.queryCommandState(c) } catch { return false } }
+  return {
+    font, size, spacing: Number.isFinite(lh) ? spacing : null,
+    align: a === 'start' || a === 'left' ? 'left' : a === 'end' ? 'right' : a,
+    block: para.tagName.toLowerCase(),
+    style: para.getAttribute?.('data-ds-style') || null,
+    bold: q('bold'), italic: q('italic'),
+    /* A tracked insertion is drawn underlined; that is markup, not a format. */
+    underline: q('underline') && (!el.closest('ins[data-ds-uid]') || !!el.closest('u')),
+    strike: q('strikeThrough') && (!el.closest('del[data-ds-uid]') || !!el.closest('s,strike')),
+  }
+}
+
+/* Hover to size, click to insert — Word's grid. */
+function TablePicker({ colors, onPick }) {
+  const [at, setAt] = useState({ r: 0, c: 0 })
+  const { border, accent, text2, base } = colors
+  return (
+    <div onMouseLeave={() => setAt({ r: 0, c: 0 })}>
+      <div style={{ fontSize: 12, color: text2, fontFamily: 'var(--ds-font-body)', padding: '0 2px 6px' }}>
+        {at.r ? `Table ${at.c} × ${at.r}` : 'Insert table'}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 16px)', gap: 3 }}>
+        {Array.from({ length: 48 }, (_, i) => {
+          const r = Math.floor(i / 8) + 1, c = (i % 8) + 1
+          const on = r <= at.r && c <= at.c
+          return (
+            <button key={i} type="button" aria-label={`${c} by ${r} table`}
+              onMouseEnter={() => setAt({ r, c })} onFocus={() => setAt({ r, c })}
+              {...pressProps(() => onPick(r, c))}
+              style={{ width: 16, height: 16, padding: 0, borderRadius: 4, cursor: 'pointer', border: `1px solid ${on ? accent : border}`, background: on ? `${accent}33` : base }} />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 /** The [data-ds-doc] element a range sits inside, or null. */
 function docRootOf(range) {
   const node = range?.commonAncestorContainer
@@ -267,8 +349,8 @@ function Group({ label, launcher, onLaunch, children }) {
       </div>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 4,
-        fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6,
-        textTransform: 'uppercase', color: 'var(--ds-text-3)',
+        fontSize: 11, fontFamily: 'var(--ds-font-body)',
+        color: 'var(--ds-text-3)',
       }}>
         <span>{label}</span>
         {launcher && (
@@ -281,10 +363,10 @@ function Group({ label, launcher, onLaunch, children }) {
             title={`${label} options`}
             aria-label={`${label} options`}
             style={{
-              width: 11, height: 11, padding: 0, border: 'none', background: 'none',
-              color: 'var(--ds-text-3)', cursor: 'pointer', lineHeight: 1, fontSize: 11,
+              width: 20, height: 18, margin: '-4px -4px -4px 0', padding: 0, border: 'none', background: 'none',
+              borderRadius: 4, color: 'var(--ds-text-3)', cursor: 'pointer', lineHeight: 1, fontSize: 11,
             }}>
-            ⌄
+            ↘
           </button>
         )}
       </div>
@@ -338,6 +420,16 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
      is only ever open for the few seconds between one mousedown and the
      next — recomputing at open time is precise enough for that window. */
   const [colHasSelection, setColHasSelection] = useState(false)
+  const toast = useToast()
+  const imageInputRef = useRef(null)
+  const [, bumpDoc] = useState(0)
+  useEffect(() => subscribeDoc(block?.id, () => bumpDoc(t => t + 1)), [block?.id])
+  const [lastHighlight, setLastHighlight] = useState(HIGHLIGHTS[0].value)
+  /* What the caret is sitting in: the font, size, spacing and pressed states
+     the ribbon shows. Word's font box shows the font UNDER THE CARET, not a
+     document setting; so does this now. */
+  const [caret, setCaret] = useState(null)
+  const [sizeDraft, setSizeDraft] = useState(null)
 
   /* Band overflow. The band scrolls rather than wraps (see its own comment),
      and 227px of the Home tab — the entire STYLES group — used to sit behind a
@@ -348,7 +440,20 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
   const tabRefs = useRef([])
   const scrollWrapRef = useRef(null)
   const [overflow, setOverflow] = useState('')
+  /* THE HOME TAB ADAPTS TO THE BLOCK'S WIDTH (25 Sep 2026).
+     At full width it needs 962px: Font 430, Paragraph 328, Styles 204. The
+     block spawns at 720, so the default Document showed Home with its right
+     third scrolled out of sight, which read as a clipped toolbar. Word's own
+     answer is to collapse groups as the window narrows, rightmost first:
+       · under 972px the Styles gallery becomes one "Styles" dropdown
+       · under 852px alignment and indent fold into one "Align" dropdown
+     Measured from the band's CONTAINER, whose width does not depend on what
+     is inside it, so a collapse can never feed back into the measurement. */
+  const [bandW, setBandW] = useState(9999)
+  const compact = bandW < 852 ? 2 : bandW < 972 ? 1 : 0
   const measureOverflow = () => {
+    const wrap = scrollWrapRef.current
+    if (wrap && Math.abs(wrap.clientWidth - bandW) > 1) setBandW(wrap.clientWidth)
     const el = bandRef.current
     if (!el) return
     const start = el.scrollLeft > 2
@@ -361,22 +466,33 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(measureOverflow)
     ro.observe(el)
+    if (scrollWrapRef.current) ro.observe(scrollWrapRef.current)
     return () => ro.disconnect()
   })
 
   /* The last selection range seen inside a document body. See the note on
      `exec` below for why this has to be remembered rather than read live. */
   const savedRange = useRef(null)
+  const blockId = block?.id
+  /* THIS block's document body. Several documents can be on one canvas, and
+     a command must never land in the wrong one (the page-break bug: it used
+     the first [data-ds-doc] on the page). */
+  const hostOf = () => (typeof document === 'undefined' ? null
+    : document.querySelector(`[data-block-id="${CSS.escape(blockId || '')}"] [data-ds-doc]`))
   useEffect(() => {
     const onSel = () => {
       const sel = window.getSelection()
       if (!sel?.rangeCount) return
       const r = sel.getRangeAt(0)
-      if (docRootOf(r)) savedRange.current = r.cloneRange()
+      const root = docRootOf(r)
+      if (!root || root !== hostOf()) return
+      savedRange.current = r.cloneRange()
+      setCaret(readCaret(root, r))
+      setSizeDraft(null)
     }
     document.addEventListener('selectionchange', onSel)
     return () => document.removeEventListener('selectionchange', onSel)
-  }, [])
+  }, [blockId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Which document body, if any, a range sits in. Module-level rather than a
      closure so both the listener above and `exec` below can use it. */
@@ -435,9 +551,102 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
 
   const exec = (cmd, value = null) => {
     restoreDocSelection()
-    return document.execCommand(cmd, false, value)
+    const ok = document.execCommand(cmd, false, value)
+    refresh()
+    return ok
   }
+  /* Commands the document runs itself (undo, find, comments, …). */
+  const ds = docApi(block.id)?.state?.() || {}
+  const doc = (cmd, arg) => { restoreDocSelection(); runDoc(block.id, cmd, arg); setMenu(null); refresh() }
+  const menuRow = (key, label, onPick, extra = {}) => (
+    <button key={key} type="button" {...pressProps(onPick, extra.disabled)} disabled={extra.disabled}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', background: 'transparent',
+        border: 'none', borderRadius: 'var(--ds-radius-sm)', color: extra.on ? accent : text2, cursor: extra.disabled ? 'default' : 'pointer',
+        opacity: extra.disabled ? 0.45 : 1, padding: '6px 10px', fontSize: 13, fontFamily: extra.font || 'var(--ds-font-body)', fontWeight: extra.on ? 600 : 400,
+      }}
+      onMouseEnter={e => { if (!extra.disabled) e.currentTarget.style.background = raised }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+      <span style={{ flex: 1 }}>{label}</span>
+      {extra.hint && <span style={{ fontFamily: 'var(--ds-font-mono)', fontSize: 11, color: text3 }}>{extra.hint}</span>}
+    </button>
+  )
+  const dropBtn = (id, props, content) => (
+    <div style={{ position: 'relative', flexShrink: 0 }}>
+      <RibbonBtn wide on={menu === id} {...props} onClick={() => setMenu(m => (m === id ? null : id))} />
+      {menu === id && content}
+    </div>
+  )
   const patch = p => onUpdateBlock?.(block.id, p)
+  /* Tell the document an edit happened (save, repaginate): the same input
+     event typing sends. */
+  const changed = host => host?.dispatchEvent(new Event('input', { bubbles: true }))
+  const refresh = () => {
+    const host = hostOf()
+    const r = rangeIn(host)
+    if (host && r) { savedRange.current = r.cloneRange(); setCaret(readCaret(host, r)) }
+  }
+  /* A character format goes on the selection when the caret is in this
+     document; with no caret here it sets the document's default. */
+  const inDoc = () => { restoreDocSelection(); return !!rangeIn(hostOf()) }
+  const applyChar = css => {
+    const host = hostOf()
+    if (!inDoc()) return false
+    applyInlineStyle(host, css)
+    changed(host); refresh()
+    return true
+  }
+  const applyPara = fn => {
+    const host = hostOf()
+    if (!inDoc()) return false
+    applyParagraphStyle(host, fn)
+    changed(host); refresh()
+    return true
+  }
+  const indent = dir => {
+    const host = hostOf()
+    if (!inDoc()) return
+    if (caretElement(host)?.closest?.('li')) { document.execCommand(dir > 0 ? 'indent' : 'outdent'); changed(host); return }
+    indentParagraphs(host, dir, metricsContentW())
+    changed(host); refresh()
+  }
+  const metricsContentW = () => {
+    const pg = pageInches(block.pageSize, block.orientation, block.pageCustom)
+    const m = block.margins || {}
+    return (pg.w - (Number(m.left ?? 1)) - (Number(m.right ?? 1))) * 96
+  }
+  /* Put the caret at the end of this document when there is none, so an
+     Insert command has somewhere to go instead of nowhere. */
+  const ensureCaret = () => {
+    const host = hostOf()
+    if (!host) return null
+    restoreDocSelection()
+    if (!rangeIn(host)) {
+      host.focus({ preventScroll: true })
+      const r = document.createRange(); r.selectNodeContents(host); r.collapse(false); setRange(r)
+    }
+    return host
+  }
+  const insertHtml = html => {
+    const host = ensureCaret()
+    if (!host) return
+    document.execCommand('insertHTML', false, html)
+    changed(host); refresh()
+  }
+  const onImageFile = async file => {
+    if (!file) return
+    try {
+      const { src, w } = await imageFileToDataUrl(file)
+      if (src.length > 2.5 * 1024 * 1024) { toast('That image is too large to place in a document, even after shrinking it.', { tone: 'warn' }); return }
+      const alt = file.name.replace(/\.[a-z0-9]+$/i, '').replace(/[<>"&]/g, '')
+      insertHtml(`<img src="${src}" alt="${alt}" width="${Math.min(w, 624)}"><p><br></p>`)
+    } catch (err) {
+      toast(err.message || 'Could not add that image.', { tone: 'warn' })
+    }
+  }
+  const shownFont = caret?.font || block.font || 'Inter'
+  const shownSize = caret?.size ?? block.fontSize ?? 11
+  const shownSpacing = caret?.spacing ?? block.lineSpacing ?? 1.5
 
   /* Real columns — Word/Notion-style text layout inline in the document's own
      flow, NOT the old floating "columns" container block (removed from
@@ -489,7 +698,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
   const presetLabel = presetId === 'custom'
     ? 'Custom'
     : MARGIN_PRESETS.find(p => p.id === presetId)?.label || 'Normal'
-  const page = pageInches(block.pageSize, block.orientation)
+  const page = pageInches(block.pageSize, block.orientation, block.pageCustom)
 
   /* The BOX. Where it goes is <Pop>'s problem — see its comment. */
   const popover = {
@@ -501,7 +710,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
   /* ── Home ── */
   const homeBand = (
     <>
-      <Group label="Font" launcher onLaunch={() => setMenu('font')}>
+      <Group label="Font" launcher onLaunch={() => doc('fontDialog')}>
         {/* A REAL COMBO, not a plain button: the current font's name in a field
             with a dropdown arrow, and each entry in the list rendered IN ITS OWN
             TYPEFACE — the way Word's font list has always worked, so picking a
@@ -518,7 +727,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
               fontFamily: 'var(--ds-font-body)', fontSize: 12, lineHeight: 1,
             }}>
             <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {block.font || 'Inter'}
+              {shownFont}
             </span>
             <Icon name="nav-chevron-down" size={12} style={{ flexShrink: 0, color: text3 }} />
           </button>
@@ -527,9 +736,15 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
               {DOC_FONTS.map(f => (
                 <button key={f.name} type="button"
                   {...pressProps(() => {
-                    exec('fontName', f.name)
-                    patch({ font: f.name })
                     setMenu(null)
+                    /* The document default is inherited, so choosing it
+                       CLEARS the span's own font instead of pinning a copy. */
+                    const isDefault = f.name === (block.font || 'Inter')
+                    /* The app's own fonts are CSS variables; a span names
+                       the font first so it reads as a choice, not as the
+                       theme value Chrome injects (see cleanupSpans). */
+                    const stack = f.stack.startsWith('var(') ? `'${f.name}', ${f.stack}` : f.stack
+                    if (!applyChar({ fontFamily: isDefault ? '' : stack })) patch({ font: f.name })
                   })}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
@@ -539,10 +754,18 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
                   }}
                   onMouseEnter={e => { e.currentTarget.style.background = raised; e.currentTarget.style.color = text }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = text2 }}>
-                  <span style={{ flex: 1 }}>{f.name}</span>
-                  <span style={{ fontSize: 11, fontFamily: 'var(--ds-font-mono)', color: text3 }}>{f.group}</span>
+                  <span style={{ flex: 1, fontWeight: shownFont === f.name ? 600 : 400 }}>{f.name}</span>
+                  <span style={{ fontSize: 11, fontFamily: 'var(--ds-font-mono)', color: text3 }}>{f.name === (block.font || 'Inter') ? 'default' : f.group}</span>
                 </button>
               ))}
+              <div style={{ height: 1, background: border, margin: '4px 0' }} />
+              <button type="button"
+                {...pressProps(() => { patch({ font: shownFont }); setMenu(null) })}
+                style={{ display: 'block', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderRadius: 'var(--ds-radius-sm)', color: text2, cursor: 'pointer', padding: '6px 10px', fontSize: 12, fontFamily: 'var(--ds-font-body)' }}
+                onMouseEnter={e => { e.currentTarget.style.background = raised }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                Make {shownFont} the document default
+              </button>
             </Pop>
           )}
         </div>
@@ -557,12 +780,23 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
           }}>
             <input
               type="number" min={6} max={200}
-              value={block.fontSize || 11}
-              onChange={e => {
-                const n = Number(e.target.value)
-                if (Number.isFinite(n) && n > 0) patch({ fontSize: Math.min(200, Math.max(6, n)) })
+              value={sizeDraft ?? shownSize}
+              onChange={e => setSizeDraft(e.target.value)}
+              /* Applied on Enter or when you leave the box — applying on every
+                 keystroke set 1 pt on the way to typing 14. */
+              onKeyDown={e => {
+                e.stopPropagation()
+                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+                if (e.key === 'Escape') { e.preventDefault(); setSizeDraft(null); e.currentTarget.blur() }
               }}
-              onKeyDown={e => e.stopPropagation()}
+              onBlur={() => {
+                if (sizeDraft == null) return
+                const n = Number(sizeDraft)
+                setSizeDraft(null)
+                if (!Number.isFinite(n) || n <= 0) return
+                const v = Math.min(200, Math.max(6, Math.round(n * 2) / 2))
+                if (!applyChar({ fontSize: v + 'pt' })) patch({ fontSize: v })
+              }}
               aria-label="Font size"
               style={{
                 width: 30, background: 'transparent', border: 'none', outline: 'none',
@@ -581,7 +815,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             <Pop style={{ ...popover, minWidth: 62 }}>
               {FONT_SIZES.map(n => (
                 <button key={n} type="button"
-                  {...pressProps(() => { patch({ fontSize: n }); setMenu(null) })}
+                  {...pressProps(() => { setMenu(null); if (!applyChar({ fontSize: n + 'pt' })) patch({ fontSize: n }) })}
                   style={{
                     display: 'block', width: '100%', textAlign: 'left', background: 'transparent',
                     border: 'none', borderRadius: 'var(--ds-radius-sm)', color: text2,
@@ -601,10 +835,10 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
         {/* Letterform glyphs, same reasoning as Notes' toolbar and unchanged by
             the ribbon decision: bold-as-a-bold-B beats a novel icon against
             thirty years of muscle memory. */}
-        <RibbonBtn title="Bold" onClick={() => exec('bold')}><b style={{ fontSize: 13 }}>B</b></RibbonBtn>
-        <RibbonBtn title="Italic" onClick={() => exec('italic')}><i style={{ fontSize: 13, fontFamily: 'var(--ds-font-body)' }}>I</i></RibbonBtn>
-        <RibbonBtn title="Underline" onClick={() => exec('underline')}><u style={{ fontSize: 13 }}>U</u></RibbonBtn>
-        <RibbonBtn title="Strikethrough" onClick={() => exec('strikeThrough')}><s style={{ fontSize: 13 }}>S</s></RibbonBtn>
+        <RibbonBtn title="Bold (Ctrl+B)" on={!!caret?.bold} onClick={() => exec('bold')}><b style={{ fontSize: 13 }}>B</b></RibbonBtn>
+        <RibbonBtn title="Italic (Ctrl+I)" on={!!caret?.italic} onClick={() => exec('italic')}><i style={{ fontSize: 13, fontFamily: 'var(--ds-font-body)' }}>I</i></RibbonBtn>
+        <RibbonBtn title="Underline (Ctrl+U)" on={!!caret?.underline} onClick={() => exec('underline')}><u style={{ fontSize: 13 }}>U</u></RibbonBtn>
+        <RibbonBtn title="Strikethrough" on={!!caret?.strike} onClick={() => exec('strikeThrough')}><s style={{ fontSize: 13 }}>S</s></RibbonBtn>
 
         {/* REAL sup/sub markup, not a Unicode paste. ² and ₂ exist; most letters
             and multi-digit numbers have no precomposed superscript at all, which
@@ -657,9 +891,44 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             </Pop>
           )}
         </div>
+
+        {/* Highlight: the same split-button grammar as the text colour. */}
+        <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+          <RibbonBtn title="Highlight" onClick={() => applyChar({ backgroundColor: lastHighlight })}>
+            <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+              <span style={{ fontSize: 12, lineHeight: 1 }}>ab</span>
+              <span style={{ width: 12, height: 3, borderRadius: 4, background: lastHighlight }} />
+            </span>
+          </RibbonBtn>
+          <button type="button" {...pressProps(() => setMenu(m => (m === 'hl' ? null : 'hl')))} title="Highlight colours" aria-label="Highlight colours"
+            style={{ width: 14, height: 26, border: 'none', background: 'none', color: text3, cursor: 'pointer', padding: 0, flexShrink: 0 }}>
+            <Icon name="nav-chevron-down" size={12} />
+          </button>
+          {menu === 'hl' && (
+            <Pop style={{ ...popover, minWidth: 0, padding: 9 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                {HIGHLIGHTS.map(h => (
+                  <button key={h.name} type="button" title={h.name} aria-label={`Highlight ${h.name}`}
+                    {...pressProps(() => { applyChar({ backgroundColor: h.value }); setLastHighlight(h.value); setMenu(null) })}
+                    style={{ width: 22, height: 18, borderRadius: 4, background: h.value, border: '1px solid var(--ds-border)', cursor: 'pointer', padding: 0 }} />
+                ))}
+              </div>
+              <div style={{ height: 1, background: border, margin: '8px 0 4px' }} />
+              {menuRow('nohl', 'No highlight', () => { applyChar({ backgroundColor: '' }); setMenu(null) })}
+            </Pop>
+          )}
+        </div>
+        {dropBtn('case', { title: 'Change case (Shift+F3)', label: 'Aa ▾' }, (
+          <Pop style={{ ...popover, minWidth: 190 }}>
+            {CASES.map(c => menuRow(c.id, c.label, () => doc('changeCase', c.id)))}
+          </Pop>
+        ))}
+        <RibbonBtn title="Clear formatting (Ctrl+Space)" onClick={() => doc('clearFormat')}>
+          <span style={{ fontSize: 13, position: 'relative' }}>A<span style={{ position: 'absolute', right: -5, bottom: -3, fontSize: 11, color: 'var(--ds-red)' }}>✕</span></span>
+        </RibbonBtn>
       </Group>
 
-      <Group label="Paragraph" launcher onLaunch={() => setMenu('spacing')}>
+      <Group label="Paragraph" launcher onLaunch={() => doc('paragraphDialog')}>
         {/* ALIGNMENT AS DRAWN GLYPHS, not four copies of one icon.
 
             There is no alignment icon in the 129-icon set, and the obvious
@@ -668,31 +937,86 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             thing. Three stacked bars whose lengths and offsets actually differ
             per alignment is the universal shape for this and reads correctly at
             13px, so it stands in until the real four are drawn. */}
-        <RibbonBtn title="Align left" onClick={() => exec('justifyLeft')}><AlignGlyph mode="left" /></RibbonBtn>
-        <RibbonBtn title="Align centre" onClick={() => exec('justifyCenter')}><AlignGlyph mode="center" /></RibbonBtn>
-        <RibbonBtn title="Align right" onClick={() => exec('justifyRight')}><AlignGlyph mode="right" /></RibbonBtn>
-        <RibbonBtn title="Justify" onClick={() => exec('justifyFull')}><AlignGlyph mode="justify" /></RibbonBtn>
+        {compact < 2 && <>
+        <RibbonBtn title="Align left (Ctrl+L)" on={caret?.align === 'left'} onClick={() => exec('justifyLeft')}><AlignGlyph mode="left" /></RibbonBtn>
+        <RibbonBtn title="Align centre (Ctrl+E)" on={caret?.align === 'center'} onClick={() => exec('justifyCenter')}><AlignGlyph mode="center" /></RibbonBtn>
+        <RibbonBtn title="Align right (Ctrl+R)" on={caret?.align === 'right'} onClick={() => exec('justifyRight')}><AlignGlyph mode="right" /></RibbonBtn>
+        <RibbonBtn title="Justify (Ctrl+J)" on={caret?.align === 'justify'} onClick={() => exec('justifyFull')}><AlignGlyph mode="justify" /></RibbonBtn>
+        </>}
+        {compact === 2 && (
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <RibbonBtn wide title="Alignment and indent" on={menu === 'align'}
+              onClick={() => setMenu(m => (m === 'align' ? null : 'align'))}>
+              <AlignGlyph mode="left" /><span aria-hidden="true" style={{ fontSize: 11 }}>▾</span>
+            </RibbonBtn>
+            {menu === 'align' && (
+              <Pop style={{ ...popover, minWidth: 170 }}>
+                {[
+                  ['justifyLeft', 'Align left', 'left'], ['justifyCenter', 'Align centre', 'center'],
+                  ['justifyRight', 'Align right', 'right'], ['justifyFull', 'Justify', 'justify'],
+                  ['outdent', 'Decrease indent', null, '⇤'], ['indent', 'Increase indent', null, '⇥'],
+                ].map(([cmd, label, mode, glyph]) => (
+                  <button key={cmd} type="button" {...pressProps(() => { setMenu(null); if (cmd === 'indent' || cmd === 'outdent') indent(cmd === 'indent' ? 1 : -1); else exec(cmd) })}
+                    style={{
+                      display: 'flex', alignItems: 'center', width: '100%', gap: 10, background: 'transparent', border: 'none',
+                      borderRadius: 'var(--ds-radius-sm)', color: text2, cursor: 'pointer', padding: '6px 10px',
+                      fontSize: 13, fontFamily: 'var(--ds-font-body)', textAlign: 'left',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = raised }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                    <span style={{ width: 16, display: 'inline-flex', justifyContent: 'center' }}>{mode ? <AlignGlyph mode={mode} /> : glyph}</span>
+                    {label}
+                  </button>
+                ))}
+              </Pop>
+            )}
+          </div>
+        )}
         <Sep />
-        <RibbonBtn title="Bullet list" icon="text-bullet-list" onClick={() => exec('insertUnorderedList')} />
-        <RibbonBtn title="Numbered list" icon="text-numbered-list" onClick={() => exec('insertOrderedList')} />
+        <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+          <RibbonBtn title="Bullet list (type - and a space)" icon="text-bullet-list" onClick={() => exec('insertUnorderedList')} />
+          <button type="button" {...pressProps(() => setMenu(m => (m === 'bullets' ? null : 'bullets')))} title="Bullet styles" aria-label="Bullet styles"
+            style={{ width: 12, height: 26, border: 'none', background: 'none', color: text3, cursor: 'pointer', padding: 0 }}><Icon name="nav-chevron-down" size={12} /></button>
+          {menu === 'bullets' && (
+            <Pop style={{ ...popover, minWidth: 200 }}>
+              {BULLET_STYLES.map(b => menuRow(b.id, `${b.label}  ${b.title}`, () => doc('listStyle', { ordered: false, style: b.id })))}
+            </Pop>
+          )}
+        </div>
+        <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+          <RibbonBtn title="Numbered list (type 1. and a space)" icon="text-numbered-list" onClick={() => exec('insertOrderedList')} />
+          <button type="button" {...pressProps(() => setMenu(m => (m === 'numbers' ? null : 'numbers')))} title="Numbering styles" aria-label="Numbering styles"
+            style={{ width: 12, height: 26, border: 'none', background: 'none', color: text3, cursor: 'pointer', padding: 0 }}><Icon name="nav-chevron-down" size={12} /></button>
+          {menu === 'numbers' && (
+            <Pop style={{ ...popover, minWidth: 220 }}>
+              {NUMBER_STYLES.map(b => menuRow(b.id, b.label, () => doc('listStyle', { ordered: true, style: b.id }), { hint: b.title }))}
+              <div style={{ padding: '6px 10px 2px', fontSize: 11, color: text3 }}>Tab nests a level: 1 → a → i</div>
+            </Pop>
+          )}
+        </div>
         <Sep />
-        <RibbonBtn title="Decrease indent" onClick={() => exec('outdent')}>
+        {compact < 2 && <>
+        <RibbonBtn title="Decrease indent (Shift+Tab)" onClick={() => indent(-1)}>
           <span style={{ fontSize: 13 }}>⇤</span>
         </RibbonBtn>
-        <RibbonBtn title="Increase indent" onClick={() => exec('indent')}>
+        <RibbonBtn title="Increase indent (Tab)" onClick={() => indent(1)}>
           <span style={{ fontSize: 13 }}>⇥</span>
         </RibbonBtn>
+        </>}
         <div style={{ position: 'relative', flexShrink: 0 }}>
-          <RibbonBtn wide title="Line spacing" label={`${block.lineSpacing || 1.5}×`}
+          <RibbonBtn wide title="Line spacing — the selected paragraphs" label={`${shownSpacing}×`}
             onClick={() => setMenu(m => (m === 'spacing' ? null : 'spacing'))} />
           {menu === 'spacing' && (
             <Pop style={{ ...popover, minWidth: 110 }}>
               {LINE_SPACINGS.map(sp => (
                 <button key={sp.id} type="button"
-                  {...pressProps(() => { patch({ lineSpacing: sp.id }); setMenu(null) })}
+                  {...pressProps(() => {
+                    setMenu(null)
+                    if (!applyPara(p => { p.style.lineHeight = String(sp.id) })) patch({ lineSpacing: sp.id })
+                  })}
                   style={{
                     display: 'flex', width: '100%', gap: 8, background: 'transparent', border: 'none',
-                    borderRadius: 'var(--ds-radius-sm)', color: (block.lineSpacing || 1.5) === sp.id ? accent : text2,
+                    borderRadius: 'var(--ds-radius-sm)', color: shownSpacing === sp.id ? accent : text2,
                     cursor: 'pointer', padding: '6px 10px', fontSize: 13, fontFamily: 'var(--ds-font-body)',
                   }}
                   onMouseEnter={e => { e.currentTarget.style.background = raised }}
@@ -701,39 +1025,57 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
                   <span style={{ fontFamily: 'var(--ds-font-mono)', fontSize: 11 }}>{sp.id}×</span>
                 </button>
               ))}
+              <div style={{ height: 1, background: border, margin: '4px 0' }} />
+              {menuRow('sb', 'Add space before (12 pt)', () => doc('spacing', { before: 12 }))}
+              {menuRow('sa0', 'Remove space after', () => doc('spacing', { after: 0 }))}
+              {menuRow('sa8', 'Space after 8 pt', () => doc('spacing', { after: 8 }))}
+              {menuRow('pd', 'Paragraph options…', () => doc('paragraphDialog'))}
             </Pop>
           )}
         </div>
       </Group>
 
-      {/* A GALLERY, not four identical buttons with different labels. Each style
-          is shown at its own weight and size, so picking one previews it — the
-          way Word's Styles gallery always has. Four buttons reading H1 H2 H3 ¶
-          in the same 11.5px type tell you the names and nothing about the
-          result. */}
+      {/* A GALLERY, not identical buttons: each style is previewed at its
+          own look, so picking one previews it — the way Word's gallery has
+          always worked. The active style is pressed. */}
       <Group label="Styles">
-        {[
-          { cmd: 'h1',  label: 'H1',     size: 15, weight: 700 },
-          { cmd: 'h2',  label: 'H2',     size: 13, weight: 700 },
-          { cmd: 'h3',  label: 'H3',     size: 12, weight: 600 },
-          { cmd: 'div', label: 'Normal', size: 11, weight: 400 },
-        ].map(st => (
-          <button key={st.cmd} type="button"
-            {...pressProps(() => exec('formatBlock', st.cmd))}
-            title={st.cmd === 'div' ? 'Normal paragraph' : `Heading ${st.cmd.slice(1)}`}
-            style={{
-              height: 26, padding: '0 8px', flexShrink: 0,
-              border: `1px solid ${border}`, borderRadius: 'var(--ds-radius-xs)',
-              background: raised, color: text, cursor: 'pointer',
-              fontFamily: 'var(--ds-font-head)',
-              fontSize: st.size, fontWeight: st.weight, lineHeight: 1,
-              transition: 'background var(--ds-transition), border-color var(--ds-transition)',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = accent }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = border }}>
-            {st.label}
-          </button>
-        ))}
+        {(() => {
+          const cur = !caret ? null
+            : caret.style === 'title' || caret.style === 'subtitle' ? caret.style
+            : /^h[1-4]$/.test(caret.block) ? caret.block : caret.block === 'blockquote' ? 'quote' : 'normal'
+          const tile = st => (
+            <button key={st.id} type="button" aria-pressed={cur === st.id}
+              {...pressProps(() => { doc('style', st.id); setMenu(null) })}
+              title={`${st.label}${st.hint ? ` (${st.hint})` : ''}`}
+              style={{
+                height: 26, padding: '0 8px', flexShrink: 0,
+                border: `1px solid ${cur === st.id ? accent : border}`, borderRadius: 'var(--ds-radius-xs)',
+                background: cur === st.id ? 'var(--ds-accent-dim)' : raised, cursor: 'pointer',
+                color: st.head ? '#1F3A5F' : st.mute ? text3 : text,
+                fontFamily: 'var(--ds-font-body)', fontSize: st.size, fontWeight: st.weight, fontStyle: st.italic ? 'italic' : 'normal', lineHeight: 1,
+              }}>
+              {st.label}
+            </button>
+          )
+          return compact === 0
+            ? <div style={{ display: 'flex', gap: 4 }}>{STYLE_LIST.slice(0, 6).map(tile)}{dropBtn('styles', { title: 'More styles', label: '▾' }, (
+              <Pop style={{ ...popover, minWidth: 200 }}>
+                {STYLE_LIST.map(st => menuRow(st.id, st.label, () => doc('style', st.id), { on: cur === st.id, hint: st.hint }))}
+              </Pop>
+            ))}</div>
+            : dropBtn('styles', { title: 'Paragraph styles', label: `${STYLE_LIST.find(x => x.id === cur)?.label || 'Styles'} ▾` }, (
+              <Pop style={{ ...popover, minWidth: 200 }}>
+                {STYLE_LIST.map(st => menuRow(st.id, st.label, () => doc('style', st.id), { on: cur === st.id, hint: st.hint }))}
+              </Pop>
+            ))
+        })()}
+      </Group>
+
+      <Group label="Editing">
+        <RibbonBtn wide title="Find (Ctrl+F)" icon="nav-search" label="Find" onClick={() => doc('find')} />
+        <RibbonBtn wide title="Replace (Ctrl+H)" label="Replace" onClick={() => doc('replace')} />
+        <RibbonBtn wide title="Format painter — click to copy the caret's format onto the next selection; double-click to keep it on"
+          label="Painter" on={!!ds.painter} onClick={e => doc('painter', e?.detail >= 2)} />
       </Group>
     </>
   )
@@ -742,8 +1084,34 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
   const insertBand = (
     <>
       <Group label="Insert">
-        <RibbonBtn wide title="Insert a table" icon="block-table" label="Table" onClick={() => onInsert?.('table')} />
-        <RibbonBtn wide title="Insert an image" icon="block-image" label="Image" onClick={() => onInsert?.('image')} />
+        {/* INSIDE the document now. These used to add a separate Table or
+            Image BLOCK beside the document on the canvas, which is not what
+            "Insert → Table" means anywhere else. */}
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <RibbonBtn wide title="Insert a table at the cursor" icon="block-table" label="Table" on={menu === 'table'}
+            onClick={() => setMenu(m => (m === 'table' ? null : 'table'))} />
+          {menu === 'table' && (
+            <Pop style={{ ...popover, minWidth: 0, padding: 8 }}>
+              <TablePicker colors={colors} onPick={(r, c) => {
+                setMenu(null)
+                insertHtml(tableHtml(r, c))
+                /* Into the first cell, ready to type — Word's behaviour. The
+                   insert leaves the caret in the paragraph after the table. */
+                const host = hostOf()
+                const after = caretElement(host)?.closest?.('p,div')
+                const t = after?.previousElementSibling
+                const cell = t?.tagName === 'TABLE' ? t.querySelector('th,td') : null
+                if (cell) { const rr = document.createRange(); rr.selectNodeContents(cell); rr.collapse(true); setRange(rr) }
+              }} />
+            </Pop>
+          )}
+        </div>
+        <RibbonBtn wide title="Insert a picture at the cursor" icon="block-image" label="Image"
+          onClick={() => { ensureCaret(); imageInputRef.current?.click() }} />
+        <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden
+          onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; onImageFile(f) }} />
+        <RibbonBtn wide title="Insert a link (Ctrl+K)" icon="share-link" label="Link"
+          onClick={() => { const host = ensureCaret(); host?.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })) }} />
         {/* Real text columns now, not the old Notion-style container block —
             that type is gone from blockRegistry.js. Stays in Insert rather
             than Layout for the same reason the old block did: Layout is
@@ -813,22 +1181,68 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
         </div>
       </Group>
       <Group label="Pages">
-        {/* A REAL EXPORT DIRECTIVE, unlike the automatic guide lines.
-
-            §4's guides are an arithmetic estimate and are explicitly not
-            guaranteed to match the export. This one is: a marker the user
-            places deliberately, honoured exactly at export, forcing a break
-            regardless of where the estimate would have put one. That is what
-            gives explicit control ("this section starts on a fresh page")
-            without reintroducing live reflow — it is a typed position in the
-            content, read once at export time. */}
-        <RibbonBtn wide title="Force a page break here — honoured exactly on export"
-          icon="text-divider" label="Page break" onClick={() => onInsert?.('pagebreak')} />
+        <RibbonBtn wide title="Start a new page here (Ctrl+Enter)"
+          icon="text-divider" label="Page break" onClick={() => doc('pagebreak')} />
+      </Group>
+      <Group label="Header and footer">
+        <RibbonBtn wide title="Edit the header (or double-click the top of a page)" label="Header" onClick={() => doc('hf', 'header')} />
+        <RibbonBtn wide title="Edit the footer (or double-click the bottom of a page)" label="Footer" onClick={() => doc('hf', 'footer')} />
+        {dropBtn('pagenum', { title: 'Page numbers', label: 'Page number ▾' }, (
+          <Pop style={{ ...popover, minWidth: 220 }}>
+            {[['Bottom, centre', { footer: { c: '{page}' } }], ['Bottom, right', { footer: { r: '{page}' } }],
+              ['Bottom: Page X of Y', { footer: { c: 'Page {page} of {pages}' } }], ['Top, right', { header: { r: '{page}' } }]].map(([l, v]) =>
+              menuRow(l, l, () => { patch({ hf: { ...(block.hf || {}), ...v } }); setMenu(null) }))}
+            {menuRow('nonum', 'Remove page numbers', () => {
+              const strip = o => (o ? Object.fromEntries(Object.entries(o).map(([k, t]) => [k, String(t || '').replace(/Page \{page\} of \{pages\}|\{page\}|\{pages\}/g, '').trim()])) : o)
+              patch({ hf: { ...(block.hf || {}), header: strip(block.hf?.header), footer: strip(block.hf?.footer || {}) } }); setMenu(null)
+            })}
+          </Pop>
+        ))}
+      </Group>
+      <Group label="Text">
+        {dropBtn('date', { title: 'Insert the date', label: 'Date ▾' }, (
+          <Pop style={{ ...popover, minWidth: 250 }}>
+            {dateFormats().map(d => menuRow(d, d, () => doc('insertText', d)))}
+          </Pop>
+        ))}
+        {dropBtn('symbol', { title: 'Insert a symbol', label: 'Ω Symbol ▾' }, (
+          <Pop style={{ ...popover, minWidth: 0, padding: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 26px)', gap: 2 }}>
+              {SYMBOLS.map(ch => (
+                <button key={ch} type="button" title={`U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`} {...pressProps(() => doc('insertText', ch))}
+                  style={{ width: 26, height: 26, border: '1px solid transparent', borderRadius: 4, background: 'none', cursor: 'pointer', fontSize: 14, color: text }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = accent }} onMouseLeave={e => { e.currentTarget.style.borderColor = 'transparent' }}>{ch}</button>
+              ))}
+            </div>
+          </Pop>
+        ))}
+        {dropBtn('eq', { title: 'Insert an equation line', label: '∑ Equation ▾' }, (
+          <Pop style={{ ...popover, minWidth: 0, padding: 8 }}>
+            {menuRow('neweq', 'New equation line', () => doc('equation'))}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 26px)', gap: 2, marginTop: 4 }}>
+              {MATH_SYMBOLS.map(ch => (
+                <button key={ch} type="button" {...pressProps(() => doc('insertText', ch))}
+                  style={{ width: 26, height: 26, border: '1px solid transparent', borderRadius: 4, background: 'none', cursor: 'pointer', fontSize: 14, color: text }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = accent }} onMouseLeave={e => { e.currentTarget.style.borderColor = 'transparent' }}>{ch}</button>
+              ))}
+            </div>
+          </Pop>
+        ))}
+        <RibbonBtn wide title="Horizontal line (or type --- and Enter)" label="Line" onClick={() => doc('hr')} />
+        <RibbonBtn wide title="Drop cap on this paragraph" label="Drop cap" onClick={() => doc('dropcap')} />
+      </Group>
+      <Group label="Comments">
+        <RibbonBtn wide title="New comment (Ctrl+Alt+M)" label="Comment" onClick={() => doc('comment')} />
       </Group>
     </>
   )
 
   /* ── Layout ── */
+  const sec = ds.section || null
+  const secIdx = sec?.index || 0
+  const secCount = sec?.count || 1
+  const secOrient = sec?.orient || block.orientation || 'portrait'
+  const setOrient = o => { if (docApi(block.id)) doc('orient', o); else patch({ orientation: o }) }
   const layoutBand = (
     <>
       <Group label="Page setup">
@@ -861,9 +1275,10 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
                 </button>
               ))}
               <div style={{ height: 1, background: border, margin: '4px 0' }} />
+              {menuRow('mirror', 'Mirror margins (facing pages)', () => { patch({ mirror: !block.mirror }); setMenu(null) }, { on: !!block.mirror, hint: block.mirror ? 'on' : '' })}
               <button type="button"
                 {...pressProps(() => {
-                  setMarginDialog({ ...margins })
+                  setMarginDialog({ ...margins, gutter: block.gutter || 0, mirror: !!block.mirror })
                   setMenu(null)
                 })}
                 style={{
@@ -879,12 +1294,14 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
           )}
         </div>
 
-        <RibbonBtn wide title="Portrait" label="Portrait"
-          on={(block.orientation || 'portrait') === 'portrait'}
-          onClick={() => patch({ orientation: 'portrait' })} />
-        <RibbonBtn wide title="Landscape" label="Landscape"
-          on={block.orientation === 'landscape'}
-          onClick={() => patch({ orientation: 'landscape' })} />
+        {/* Orientation is the CARET's section's (Layout → Breaks makes
+            sections); with one section that is the whole document. */}
+        <RibbonBtn wide title={secCount > 1 ? `Portrait — section ${secIdx + 1}` : 'Portrait'} label="Portrait"
+          on={secOrient === 'portrait'}
+          onClick={() => setOrient('portrait')} />
+        <RibbonBtn wide title={secCount > 1 ? `Landscape — section ${secIdx + 1}` : 'Landscape'} label="Landscape"
+          on={secOrient === 'landscape'}
+          onClick={() => setOrient('landscape')} />
 
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <RibbonBtn wide title="Page size" label={page.label}
@@ -911,30 +1328,144 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
                   </button>
                 )
               })}
+              <div style={{ height: 1, background: border, margin: '4px 0' }} />
+              {menuRow('custom', block.pageSize === 'custom' ? `Custom (${page.w}″ × ${page.h}″)…` : 'Custom size…', () => doc('pageSizeDialog'), { on: block.pageSize === 'custom' })}
             </Pop>
           )}
         </div>
       </Group>
-      <Group label="Export">
-        <RibbonBtn wide title="Export as a Word document" icon="format-word" label=".docx" onClick={() => onExport?.('docx')} />
-        <RibbonBtn wide title="Export as a PDF" icon="format-pdf" label=".pdf" onClick={() => onExport?.('pdf')} />
+      {/* Breaks: a page break, or a SECTION break — the next page starts a
+          section that can turn landscape or restart its page numbers
+          (lib/docsections.js). */}
+      <Group label="Breaks">
+        {dropBtn('breaks', { title: 'Page and section breaks', label: 'Breaks ▾' }, (
+          <Pop style={{ ...popover, minWidth: 250 }}>
+            {menuRow('pb', 'Page break', () => doc('pagebreak'), { hint: 'Ctrl+Enter' })}
+            <div style={{ height: 1, background: border, margin: '4px 0' }} />
+            {menuRow('sb', 'Section break (next page)', () => doc('sectionBreak'))}
+            {menuRow('sbl', 'Section break — landscape pages', () => doc('sectionBreak', { orient: 'landscape' }))}
+            {menuRow('sbp', 'Section break — back to portrait', () => doc('sectionBreak', { orient: 'portrait' }))}
+            {menuRow('sbr', 'Section break — restart numbering at 1', () => doc('sectionBreak', { restart: true, start: 1, numfmt: 'decimal' }))}
+          </Pop>
+        ))}
+        <RibbonBtn wide title={`Settings of the section the caret is in${secCount > 1 ? ` (section ${secIdx + 1} of ${secCount})` : ''} — orientation, page numbering`}
+          label={secCount > 1 ? `Section ${secIdx + 1}…` : 'Section…'} onClick={() => doc('sectionDialog')} />
+      </Group>
+      <Group label="Paragraph" launcher onLaunch={() => doc('paragraphDialog')}>
+        <RibbonBtn wide title="Space before the paragraph: 0 / 6 / 12 pt" label="Before ▾" on={menu === 'spb'} onClick={() => setMenu(m => (m === 'spb' ? null : 'spb'))} />
+        {menu === 'spb' && (
+          <Pop style={{ ...popover, minWidth: 140 }}>{[0, 6, 12, 18, 24].map(v => menuRow('b' + v, `${v} pt`, () => doc('spacing', { before: v })))}</Pop>
+        )}
+        <RibbonBtn wide title="Space after the paragraph: 0 / 8 / 12 pt" label="After ▾" on={menu === 'spa'} onClick={() => setMenu(m => (m === 'spa' ? null : 'spa'))} />
+        {menu === 'spa' && (
+          <Pop style={{ ...popover, minWidth: 140 }}>{[0, 6, 8, 12, 18].map(v => menuRow('a' + v, `${v} pt`, () => doc('spacing', { after: v })))}</Pop>
+        )}
+      </Group>
+      <Group label="Design">
+        <RibbonBtn wide title="Text across every page, like DRAFT" label={block.watermark ? `Watermark: ${block.watermark}` : 'Watermark…'} onClick={() => doc('watermark')} />
+        {[['white', 'White'], ['dark', 'Dark'], ['theme', 'Follow theme']].map(([id, label]) => (
+          <RibbonBtn key={id} wide title={id === 'white' ? 'White paper, in light and dark mode — like Word' : id === 'dark' ? 'Dark paper' : 'Paper follows the app theme'}
+            label={label} on={(block.pageColor || 'white') === id} onClick={() => patch({ pageColor: id })} />
+        ))}
       </Group>
     </>
   )
 
   /* ── View ── */
   const viewBand = (
-    <Group label="Show">
-      <RibbonBtn wide dot title="Ruler — drag its markers to change the margins"
-        label="Ruler" on={!!block.showRuler} onClick={() => patch({ showRuler: !block.showRuler })} />
-      <RibbonBtn wide dot title="Dashed page-boundary guides"
-        label="Page guides" on={block.showGuides !== false} onClick={() => patch({ showGuides: block.showGuides === false })} />
-      <RibbonBtn wide dot title="Word count in the status bar"
-        label="Word count" on={block.showWordCount !== false} onClick={() => patch({ showWordCount: block.showWordCount === false })} />
-    </Group>
+    <>
+      <Group label="Show">
+        <RibbonBtn wide dot title="Ruler — margins and the caret paragraph's indents" label="Ruler" on={!!block.showRuler} onClick={() => patch({ showRuler: !block.showRuler })} />
+        <RibbonBtn wide dot title="Navigation pane: the document's headings" label="Navigation" on={!!block.showNav} onClick={() => doc('nav')} />
+        <RibbonBtn wide dot title="Show paragraph marks and page breaks (Ctrl+Shift+8)" label="¶ Marks" on={!!block.showMarks} onClick={() => doc('marks')} />
+        <RibbonBtn wide dot title="Word count in the status bar" label="Word count" on={block.showWordCount !== false} onClick={() => patch({ showWordCount: block.showWordCount === false })} />
+      </Group>
+      <Group label="Zoom">
+        {[['fit', 'Fit width'], ['page', 'Whole page'], [1, '100%']].map(([z, l]) => (
+          <RibbonBtn key={String(z)} wide label={l} title={l} on={(block.zoom || 'fit') === z} onClick={() => doc('zoom', z)} />
+        ))}
+      </Group>
+    </>
   )
 
-  const band = tab === 'home' ? homeBand : tab === 'insert' ? insertBand : tab === 'layout' ? layoutBand : viewBand
+  const fileBand = (
+    <>
+      <Group label="Export">
+        <RibbonBtn wide title="Export as a Word document" icon="format-word" label="Word (.docx)" onClick={() => onExport?.('docx')} />
+        <RibbonBtn wide title="Export as a PDF, page for page as on screen" icon="format-pdf" label="PDF" onClick={() => onExport?.('pdf')} />
+        <RibbonBtn wide title="Print — the same pages as the PDF" label="Print" onClick={() => onExport?.('pdf')} />
+      </Group>
+      <Group label="Versions">
+        <RibbonBtn wide title="Keep a copy of the document as it is now" icon="history-version" label="Save version" onClick={() => { doc('saveVersion'); toast('Version saved') }} />
+        <RibbonBtn wide title="Earlier versions of this document, kept in this browser" label="Version history…" onClick={() => doc('versions')} />
+      </Group>
+      <Group label="Info">
+        <RibbonBtn wide title="Words, characters, paragraphs, pages" label="Word count…" onClick={() => doc('stats')} />
+      </Group>
+    </>
+  )
+
+  const refsBand = (
+    <>
+      <Group label="Table of contents">
+        <RibbonBtn wide title="Insert a table of contents built from the headings; it keeps itself up to date" label="Table of contents" onClick={() => doc('toc')} />
+      </Group>
+      <Group label="Footnotes">
+        <RibbonBtn wide title="Insert a footnote (Ctrl+Alt+F)" label="Insert footnote" onClick={() => doc('footnote')} />
+      </Group>
+      <Group label="Citations and bibliography">
+        <RibbonBtn wide title="Insert a citation from your sources" label="Insert citation" onClick={() => doc('sources')} />
+        <RibbonBtn wide title="Add, edit and remove sources" label="Manage sources" onClick={() => doc('sources')} />
+        {dropBtn('citestyle', { title: 'Citation style', label: `Style: ${CITE_STYLES.find(c => c.id === (block.citeStyle || 'apa'))?.label} ▾` }, (
+          <Pop style={{ ...popover, minWidth: 150 }}>
+            {CITE_STYLES.map(c => menuRow(c.id, c.label, () => { patch({ citeStyle: c.id }); setMenu(null) }, { on: (block.citeStyle || 'apa') === c.id }))}
+          </Pop>
+        ))}
+        <RibbonBtn wide title="Insert a bibliography of every source; it keeps itself up to date" label="Bibliography" onClick={() => doc('bibliography')} />
+      </Group>
+      <Group label="Captions">
+        <RibbonBtn wide title="Click a picture first, then Caption in its toolbar; or insert a table caption here" label="Table caption"
+          onClick={() => doc('insertHtml', '<p data-ds-caption="1">Table 1. </p>')} />
+      </Group>
+    </>
+  )
+
+  const reviewBand = (
+    <>
+      <Group label="Comments">
+        <RibbonBtn wide title="New comment (Ctrl+Alt+M)" label="New comment" onClick={() => doc('comment')} />
+        <RibbonBtn title="Previous comment" onClick={() => doc('prevComment')}>↑</RibbonBtn>
+        <RibbonBtn title="Next comment" onClick={() => doc('nextComment')}>↓</RibbonBtn>
+        <RibbonBtn wide dot title="Show resolved comments" label="Resolved" on={!!block.showResolved} onClick={() => doc('showResolved')} />
+      </Group>
+      <Group label="Tracking">
+        <RibbonBtn wide dot title="Track changes (Ctrl+Shift+E): your edits are marked for review" label="Track changes" on={!!block.trackChanges} onClick={() => doc('track')} />
+        <RibbonBtn wide dot title="Show insertions and deletions; off shows the final text" label="Show markup" on={block.showMarkup !== false} onClick={() => doc('markup')} />
+      </Group>
+      <Group label="Changes">
+        {dropBtn('accept', { title: 'Accept the change at the caret, then go to the next', label: '✓ Accept ▾' }, (
+          <Pop style={{ ...popover, minWidth: 190 }}>
+            {menuRow('a1', 'Accept and move to next', () => doc('accept', 'one'))}
+            {menuRow('aa', 'Accept all changes', () => doc('accept', 'all'))}
+          </Pop>
+        ))}
+        {dropBtn('reject', { title: 'Reject the change at the caret, then go to the next', label: '✕ Reject ▾' }, (
+          <Pop style={{ ...popover, minWidth: 190 }}>
+            {menuRow('r1', 'Reject and move to next', () => doc('reject', 'one'))}
+            {menuRow('ra', 'Reject all changes', () => doc('reject', 'all'))}
+          </Pop>
+        ))}
+        <RibbonBtn title="Previous change" onClick={() => doc('prevChange')}>↑</RibbonBtn>
+        <RibbonBtn title="Next change" onClick={() => doc('nextChange')}>↓</RibbonBtn>
+      </Group>
+      <Group label="Proofing">
+        <RibbonBtn wide title="Word count" label="Word count…" onClick={() => doc('stats')} />
+        <RibbonBtn wide title="Version history" icon="history-version" label="Versions…" onClick={() => doc('versions')} />
+      </Group>
+    </>
+  )
+
+  const band = { file: fileBand, home: homeBand, insert: insertBand, layout: layoutBand, refs: refsBand, review: reviewBand, view: viewBand }[tab] || homeBand
 
   return (
     <div
@@ -952,31 +1483,6 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
         position: 'relative', zIndex: 2,
       }}>
 
-      {/* ── QUICK ACCESS TOOLBAR ──
-          A thin row above the tabs, exactly where Word puts it. Small, and one
-          of the most recognisable pieces of Word's real chrome — and Undo/Redo
-          have to live somewhere regardless, so it costs almost nothing. */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 2,
-        padding: '4px 8px', borderBottom: `1px solid ${border}`,
-        background: raised,
-      }}>
-        <RibbonBtn title="Save" icon="action-check" onClick={() => onExport?.('save')} />
-        <RibbonBtn title="Undo" icon="draw-undo" onClick={() => exec('undo')} />
-        <RibbonBtn title="Redo" onClick={() => exec('redo')}>
-          <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}>
-            <Icon name="draw-undo" size={14} />
-          </span>
-        </RibbonBtn>
-        <span style={{ flex: 1 }} />
-        <span style={{
-          fontSize: 11, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.5,
-          color: text3, textTransform: 'uppercase',
-        }}>
-          {page.label} · {block.orientation === 'landscape' ? 'Landscape' : 'Portrait'}
-        </span>
-      </div>
-
       {/* ── TABS ──
           A real tablist, which is a promise about the keyboard as much as a
           label for a screen reader: the arrow keys move between tabs, Home and
@@ -993,8 +1499,18 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
           canvas's toolbar mode (NotebookCanvas.js) reads arrows as spatial
           moves between island buttons, and both handlers acting on one press
           would move focus twice. ── */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, padding: '4px 8px 0' }}>
+        {/* Quick access, where Word puts it: beside the tabs, not a row of
+            its own — one strip less between the title and the page. */}
+        <div style={{ display: 'flex', gap: 2, paddingBottom: 2 }}>
+          <RibbonBtn title="Undo (Ctrl+Z)" icon="draw-undo" disabled={ds.canUndo === false} onClick={() => doc('undo')} />
+          <RibbonBtn title="Redo (Ctrl+Y)" disabled={ds.canRedo === false} onClick={() => doc('redo')}>
+            <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><Icon name="draw-undo" size={14} /></span>
+          </RibbonBtn>
+        </div>
+        <span aria-hidden="true" style={{ width: 1, height: 18, background: border, marginBottom: 5 }} />
       <div role="tablist" aria-label="Ribbon" style={{
-        display: 'flex', gap: 2, padding: '4px 8px 0',
+        display: 'flex', gap: 2, flex: 1, minWidth: 0, overflowX: 'auto', scrollbarWidth: 'none',
       }}>
         {TABS.map((t, i) => {
           const on = tab === t.id
@@ -1037,6 +1553,11 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
           )
         })}
       </div>
+        <button type="button" {...pressProps(() => { setTab('layout'); setMenu(null) })} title="Page setup — Layout tab"
+          style={{ height: 24, padding: '0 8px', marginBottom: 2, border: 'none', borderRadius: 6, background: 'none', color: text3, cursor: 'pointer', fontSize: 11, fontFamily: 'var(--ds-font-body)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+          {page.label} · {secOrient === 'landscape' ? 'Landscape' : 'Portrait'}{secCount > 1 ? ` · Section ${secIdx + 1} of ${secCount}` : ''}
+        </button>
+      </div>
 
       {/* ── BAND — the selected tab's groups, as a horizontal strip with the
              group captions along the bottom. Word's layout grammar, in this
@@ -1075,7 +1596,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
           block={block}
           colors={colors}
           onCancel={() => setMarginDialog(null)}
-          onOk={() => { patch({ margins: { ...marginDialog } }); setMarginDialog(null) }}
+          onOk={(values, extra) => { patch({ margins: values, ...(extra || {}) }); setMarginDialog(null) }}
         />,
         document.body,
       )}
@@ -1087,7 +1608,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
 
 function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
   const { surface, raised, border, text, text2, text3, accent } = colors
-  const page = pageInches(block.pageSize, block.orientation)
+  const page = pageInches(block.pageSize, block.orientation, block.pageCustom)
 
   /* aria-modal="true" is a claim about focus, and it was the only part of this
      dialog that wasn't true. Focus stayed on the ribbon button behind the
@@ -1126,11 +1647,34 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  const set = (k, v) => setDraft(d => ({ ...d, [k]: normalizeMargin(v, d[k]) }))
+  /* The fields hold what you TYPE, validated as you go. They used to be
+     normalised on every keystroke, so clearing a field to retype it wrote 0,
+     and 20″ on an A4 page was accepted and then silently squashed. */
+  const set = (k, v) => setDraft(d => ({ ...d, [k]: v }))
   const bump = (k, dir) => setDraft(d => ({
     ...d,
-    [k]: Math.max(0, normalizeMargin((Number(d[k]) || 0) + dir * MARGIN_STEP, d[k])),
+    [k]: Math.max(MIN_MARGIN, normalizeMargin((Number(d[k]) || 0) + dir * MARGIN_STEP, 1)),
   }))
+  const num = k => (String(draft[k]).trim() === '' ? NaN : Number(draft[k]))
+  const bad = {}
+  let problem = ''
+  for (const k of ['top', 'bottom', 'left', 'right']) {
+    const v = num(k)
+    if (!Number.isFinite(v)) { bad[k] = true; problem = problem || 'Enter a number for every side.' }
+    else if (v < MIN_MARGIN) { bad[k] = true; problem = problem || `The smallest margin is ${MIN_MARGIN}″.` }
+  }
+  /* The gutter: extra room on the binding side (the left, or with mirror
+     margins the inside of each spread). */
+  const gutterN = String(draft.gutter ?? '').trim() === '' ? 0 : Number(draft.gutter)
+  const gutterOk = Number.isFinite(gutterN) && gutterN >= 0 && gutterN <= 2
+  if (!gutterOk) { bad.gutter = true; problem = problem || 'The gutter is 0–2″.' }
+  if (!problem && num('left') + num('right') + gutterN > page.w - 1) { bad.left = bad.right = true; problem = `Left and right leave less than 1″ for text on a ${page.w}″ page.` }
+  if (!problem && num('top') + num('bottom') > page.h - 1) { bad.top = bad.bottom = true; problem = `Top and bottom leave less than 1″ for text on a ${page.h}″ page.` }
+  const ok = () => {
+    if (problem) return
+    onOk({ top: normalizeMargin(num('top')), bottom: normalizeMargin(num('bottom')), left: normalizeMargin(num('left')), right: normalizeMargin(num('right')) },
+      { gutter: gutterOk ? Math.round(gutterN * 100) / 100 : 0, mirror: !!draft.mirror })
+  }
 
   /* The preview is the PAGE's real aspect ratio with the draft margins drawn
      inside it, so a value that leaves no room for text looks like a page with
@@ -1150,7 +1694,7 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
         onMouseDown={e => e.stopPropagation()}
         style={{
           position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-          zIndex: Z.dialog, width: 372,
+          zIndex: Z.dialog, width: 400, maxWidth: 'calc(100vw - 32px)',
           background: surface, border: `1px solid ${border}`,
           borderRadius: 'var(--ds-radius-lg)', boxShadow: 'var(--ds-shadow-lg)',
           fontFamily: 'var(--ds-font-body)', overflow: 'hidden',
@@ -1163,22 +1707,23 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
         <div style={{ display: 'flex', gap: 16, padding: 14 }}>
           <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {['top', 'bottom', 'left', 'right'].map(k => (
-              <label key={k} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label key={k} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
                 <span style={{ fontSize: 11, textTransform: 'capitalize', color: text3, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.5 }}>
-                  {k}
+                  {draft.mirror && k === 'left' ? 'inside' : draft.mirror && k === 'right' ? 'outside' : k}
                 </span>
                 <span style={{
                   display: 'flex', alignItems: 'center', height: 28,
-                  border: `1px solid ${border}`, borderRadius: 'var(--ds-radius-sm)',
+                  border: `1px solid ${bad[k] ? 'var(--ds-red)' : border}`, borderRadius: 'var(--ds-radius-sm)',
                   background: raised, overflow: 'hidden',
                 }}>
                   <input
-                    type="number" step={MARGIN_STEP} min={0}
+                    type="number" step={MARGIN_STEP} min={MIN_MARGIN}
+                    aria-invalid={!!bad[k]}
                     value={draft[k]}
                     onChange={e => set(k, e.target.value)}
                     onKeyDown={e => {
                       e.stopPropagation()
-                      if (e.key === 'Enter') { e.preventDefault(); onOk() }
+                      if (e.key === 'Enter') { e.preventDefault(); ok() }
                     }}
                     aria-label={`${k} margin, inches`}
                     style={{
@@ -1200,6 +1745,18 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
                 </span>
               </label>
             ))}
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+              <span style={{ fontSize: 11, color: text3, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.5 }}>Gutter</span>
+              <input type="number" step={MARGIN_STEP} min={0} max={2} value={draft.gutter ?? 0} aria-invalid={!!bad.gutter}
+                aria-label="Gutter, inches"
+                onChange={e => set('gutter', e.target.value)}
+                onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); ok() } }}
+                style={{ height: 28, border: `1px solid ${bad.gutter ? 'var(--ds-red)' : border}`, borderRadius: 'var(--ds-radius-sm)', background: raised, color: text, fontFamily: 'var(--ds-font-mono)', fontSize: 13, padding: '0 8px', outline: 'none', minWidth: 0 }} />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'end', height: 28, fontSize: 12, color: text2, cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!draft.mirror} onChange={e => setDraft(d => ({ ...d, mirror: e.target.checked }))} />
+              Mirror margins
+            </label>
           </div>
 
           <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
@@ -1209,8 +1766,8 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
             }}>
               <div style={{
                 position: 'absolute',
-                top: pct(draft.top, page.h), bottom: pct(draft.bottom, page.h),
-                left: pct(draft.left, page.w), right: pct(draft.right, page.w),
+                top: pct(num('top') || 0, page.h), bottom: pct(num('bottom') || 0, page.h),
+                left: pct((num('left') || 0) + (gutterOk ? gutterN : 0), page.w), right: pct(num('right') || 0, page.w),
                 border: `1px dashed ${accent}`,
                 background: `${accent}0f`,
               }} />
@@ -1219,9 +1776,10 @@ function MarginDialog({ draft, setDraft, block, colors, onCancel, onOk }) {
           </div>
         </div>
 
+        <div role="alert" style={{ minHeight: problem ? 'auto' : 0, padding: problem ? '0 14px 10px' : 0, fontSize: 12, color: 'var(--ds-red)' }}>{problem}</div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: `1px solid ${border}` }}>
           <button type="button" className="ds-btn" {...pressProps(() => onCancel())}>Cancel</button>
-          <button type="button" className="ds-btn ds-btn-primary" {...pressProps(() => onOk())}>OK</button>
+          <button type="button" className="ds-btn ds-btn-primary" disabled={!!problem} style={{ opacity: problem ? 0.5 : 1 }} {...pressProps(() => ok(), !!problem)}>OK</button>
         </div>
       </div>
     </>

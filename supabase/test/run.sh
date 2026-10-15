@@ -78,4 +78,12 @@ echo "→ 03_chat_checks.sql — can the people you shared with actually talk"
 "${PSQL[@]}" -f "$HERE/03_chat_checks.sql" 2>&1 | sed 's/^psql:[^ ]*: //' | grep -E "^NOTICE:|ERROR" | sed 's/^NOTICE:  //' || true
 
 echo
+echo "→ 04_people_checks.sql — conversations belong to their members; old apps cannot overwrite new"
+"${PSQL[@]}" -f "$HERE/04_people_checks.sql" 2>&1 | sed 's/^psql:[^ ]*: //' | grep -E "^NOTICE:|ERROR" | sed 's/^NOTICE:  //' || true
+
+echo
+echo "→ 05_agent_checks.sql — agents are private and only the server spends credits"
+"${PSQL[@]}" -f "$HERE/05_agent_checks.sql" 2>&1 | sed 's/^psql:[^ ]*: //' | grep -E "^NOTICE:|ERROR" | sed 's/^NOTICE:  //' || true
+
+echo
 echo "✓ done"

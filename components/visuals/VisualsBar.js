@@ -95,7 +95,7 @@ export default function VisualsBar({ tool, penOn, linkOn, onTool, onClose, color
   const tipBox = tip?.el?.getBoundingClientRect?.()
   return (
     <>
-      <div role="toolbar" aria-label="Visuals" data-kbd-zone data-visuals-bar
+      <div role="toolbar" aria-label="Visuals" data-kbd-zone data-visuals-bar data-ds-island="bottom"
         onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
         style={{
           position: 'absolute', left: '50%', bottom: 20, transform: 'translateX(-50%)', zIndex: Z.chrome,

@@ -33,6 +33,7 @@ export default function ResizeHandle({ onResizeStart, border, accent, show }) {
       {DIRS.map(([dir, cursor, pos]) => (
         <div
           key={dir}
+          data-ds-resize={dir}
           onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onResizeStart(e, dir) }}
           style={{ position: 'absolute', ...pos, cursor, zIndex: 25 }}
         />
@@ -40,7 +41,7 @@ export default function ResizeHandle({ onResizeStart, border, accent, show }) {
 
       {/* Corner grip, drawn only on the bottom-right so the block still reads
           as resizable at a glance without eight visible dots. */}
-      <div style={{
+      <div data-ds-resize="grip" style={{
         position: 'absolute', right: 1, bottom: 1, pointerEvents: 'none',
         color: show ? accent : border,
         opacity: show ? 0.95 : 0.5,

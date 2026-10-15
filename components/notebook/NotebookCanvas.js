@@ -20,6 +20,14 @@ import DatabaseBlock from './DatabaseBlock'
 import CountdownBlock from './CountdownBlock'
 import PipelineBlock from '../builder/PipelineBlock'
 import RecordBlock from '../builder/RecordBlock'
+import FlashcardsBlock from './FlashcardsBlock'
+import HtmlBlock from './HtmlBlock'
+import { findFreeSpot } from '../../lib/placement.js'
+import AgentBlock from './AgentBlock'
+import AgentChatBlock from './AgentChatBlock'
+/* Pure: lib/agent/session.js never imports the network layer. The app hands
+   it a host (model calls, storage) through the agentHost prop. */
+import { setChatOpen as setAgentChatOpen, getChat as getAgentChat, requestSection as requestAgentSection } from '../../lib/agent/session.js'
 import CommandPalette from '../builder/CommandPalette'
 import { starterPipelineDb, firstStageProp, firstValueProp } from '../../lib/builder'
 import ExportPanel from '../tools/ExportPanel'
@@ -37,11 +45,17 @@ import { useToast } from '../ui/Toast'
 import BlockErrorBoundary from './BlockErrorBoundary'
 import {
   ADD_ITEMS, TYPE_BY_KEY, getType as getBlockType, isContainer, railFor,
-  blockMinDims, blockFootprint, displayModeOf, ICON_FOOTPRINT, COMPACT_FOOTPRINT,
+  blockMinDims, clampToMin, blockFootprint, displayModeOf, ICON_FOOTPRINT, COMPACT_FOOTPRINT,
   blockDims as registryDims, blockHasContent as registryHasContent,
   clonepatch, cloneArgs,
 } from './blockRegistry'
 import ShapeLayer from './ShapeLayer'
+import { FocusCtx, FocusExit, focusShortcutLabel } from './FocusExit'
+import { activeTabId } from '../../lib/sheettabs'
+import {
+  canFocus, focusFrame, focusCamera, withFocusFrame, screenRect, flipTransform,
+  patchForFocus, backdropRect, createEscHold, ENTER_MS, LEAVE_MS,
+} from '../../lib/focusmode'
 import {
   pickShape, hitTolerance, resizeShape, snapAngle, normaliseAngle,
   centreOf, shapeBounds, isLinear, createInk, inkPath, inkPoints,
@@ -166,7 +180,7 @@ function Ports({ show, blockId, surface, accent, onStartLink }) {
   ]
   return (<>
     {sides.map(([side, pos]) => (
-      <div key={side} style={p(pos)} {...hov} title="Drag to connect"
+      <div key={side} data-ds-port={side} style={p(pos)} {...hov} title="Drag to connect"
         onMouseDown={e => onStartLink(e, blockId, side)} />
     ))}
   </>)
@@ -247,7 +261,7 @@ export default function NotebookCanvas({
   onShareBlockWithPerson,
   /* (block, 'docx'|'pdf'|'save') — the Document ribbon's export actions. */
   onExportDocument,
-  onUpdateBlock,
+  onUpdateBlock: onUpdateBlockProp,
   /* The chat block's three writes. Props rather than imports — see the note
      where the threads are deliberately NOT loaded. */
   onChatSend, onChatEdit, onChatUnsend, onChatShareBlock,
@@ -282,6 +296,10 @@ export default function NotebookCanvas({
   /* Appends already-built blocks and shapes to the active sheet. Returns how
      many landed, so paste can report itself. */
   onPasteBlocks,
+  /* Agents (27 Sep 2026). Model calls and storage, owned by AppPage because
+     they reach the network — see lib/agent/session.js. null when signed out,
+     and the agent blocks say so rather than failing. */
+  agentHost = null,
 }) {
   const { surface, raised, border, borderDim, text, text2, text3, accent, accentText, accentDim, red, base, green, amber } = colors
   const toast = useToast()
@@ -356,6 +374,18 @@ export default function NotebookCanvas({
   const suppressNextBgClickRef = useRef(false)
   const [nbZoom, setNbZoom] = useState(1)
   const nbZoomRef = useRef(1)
+  /* ── FULL SCREEN FOR ONE BLOCK (lib/focusmode.js) ──────────────────────
+     A viewing mode. `focus` holds the block id and the camera to go back
+     to; the enlarged size exists only in liveOf(), never in storage.
+     focusRef mirrors it for listeners and carries the phase
+     ('enter' → 'on' → 'leave') and the frame the block is drawn at. */
+  const [focus, setFocus] = useState(null)            // { id, prev: { pan, zoom } } | null
+  const focusRef = useRef(null)
+  const [focusHold, setFocusHold] = useState('idle')  // Escape hold: 'idle' | 'holding' | 'hint'
+  const [focusVeil, setFocusVeil] = useState(false)   // the backdrop fading out after leaving
+  const focusAnimRef = useRef(null)
+  const focusFromRef = useRef(null)
+  const focusApiRef = useRef({})
   const [snapLines, setSnapLines] = useState([])
   // Container size in CSS px, so guides can be drawn across the entire visible
   // workspace instead of just spanning the two blocks being aligned.
@@ -662,6 +692,9 @@ const drawPanelRef = useRef(null)
        swallow it first. */
     function onKey(e) {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+        /* Inside a Document, Ctrl+K is Word's "insert link"; the palette is
+           one Escape away. */
+        if (e.target?.closest?.('[data-ds-doc]')) return
         e.preventDefault(); e.stopPropagation()
         setPaletteOpen(o => !o)
       }
@@ -722,7 +755,10 @@ const drawPanelRef = useRef(null)
      avoid even allocating; the React compiler cannot preserve a memo with a
      conditional return, and losing compilation of the surrounding code is a far
      worse trade than one array allocation per sheet change. */
-  const blocks = useMemo(() => (activeSheet?.blocks || EMPTY_BLOCKS).filter(b => !b.floating), [activeSheet?.blocks])
+  /* Agents are private: an agent or agent-chat block owned by somebody else
+     is not rendered at all, for anybody but its owner. */
+  const agentUserId = agentHost?.userId || null
+  const blocks = useMemo(() => (activeSheet?.blocks || EMPTY_BLOCKS).filter(b => !b.floating && !((b.type === 'agent' || b.type === 'agentchat') && b.ownerId && b.ownerId !== agentUserId)), [activeSheet?.blocks, agentUserId])
 
   /* THREADS ARE NOT LOADED HERE, AND THAT IS THE SECOND TIME THIS LESSON HAS
      BEEN LEARNED IN THIS CODEBASE.
@@ -752,7 +788,31 @@ const drawPanelRef = useRef(null)
      renders geometry — the block itself, the wires attached to it, the
      measurement badge — has to read through here or it spends the whole
      gesture drawing the size the block used to be. */
-  const liveOf = b => (b && resizing && resizing.id === b.id ? { ...b, ...resizing } : b)
+  /* clampToMin: a block stored under its type's comfortable minimum (older
+     data, a sync from an older client) renders at the minimum. See
+     blockRegistry's minDims. */
+  const liveOf = b => {
+    const c = clampToMin(b && resizing && resizing.id === b.id ? { ...b, ...resizing } : b)
+    /* Full screen draws the block at the window's size. Render only: the
+       stored w/h are untouched, and onUpdateBlock below maps any size edit
+       the block makes while enlarged back onto its stored size. */
+    return focus && c && c.id === focus.id ? withFocusFrame(c, focusFrame(viewSize)) : c
+  }
+  const blocksNowRef = useRef(blocks)
+  useEffect(() => { blocksNowRef.current = blocks }, [blocks])
+  /* Every block write from this canvas goes through here. Outside full
+     screen it IS the prop. Inside, a w/h a block computes from the size it
+     is drawn at (Kanban's "+ lane" writes drawn width + a lane) is read as a
+     delta against the frame and applied to the stored size — otherwise a
+     viewing mode would resize the block to the window. */
+  const onUpdateBlock = useCallback((id, patch) => {
+    const f = focusRef.current
+    if (f && f.id === id && f.frame) {
+      const stored = blocksNowRef.current.find(b => b.id === id)
+      if (stored) patch = patchForFocus(patch, registryDims(clampToMin(stored)), f.frame)
+    }
+    return onUpdateBlockProp(id, patch)
+  }, [onUpdateBlockProp])
 
   /* ── Workspace link index ───────────────────────────────────────────────
      One walk of every block in every notebook per canvas render, feeding
@@ -870,6 +930,9 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
     return () => window.removeEventListener('mouseup', onUp)
   }, [])
   function handleBlockContextMenu(e, blockId) {
+    /* In full screen the block's own menus (or the browser's) answer a
+       right-click; the canvas menu's Duplicate / Delete do not belong there. */
+    if (focusRef.current) return
     e.preventDefault(); e.stopPropagation()
     if (!selectedIds.has(blockId)) setSelectedIds(new Set([blockId]))
     setCtxMenu({ x: e.clientX, y: e.clientY })
@@ -1293,8 +1356,17 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
   }
 function addBlockAnimated(type, x, y) {
     if (type === 'pipeline') { addPipeline(x, y); return }
-    onAddBlock(type, x, y)
+    /* A block YOU just asked for takes the keyboard, so you can start typing
+       without a second click (and without the letters falling through to
+       the canvas's one-key shortcuts). Only local adds: a block arriving
+       from sync must never steal the caret. */
+    enterNewRef.current = true
+    /* An agent block is stamped with its owner the moment it exists, so it is
+       never, even for one sync, an ownerless block somebody else could claim. */
+    onAddBlock(type, x, y, null, null, null, null,
+      type === 'agent' ? { ownerId: latestRef.current.agentHost?.userId || null } : undefined)
   }
+  const enterNewRef = useRef(false)
 
   /* ── Builder Phase 1: Pipeline, Record, palette ─────────────────────── */
 
@@ -1305,6 +1377,24 @@ function addBlockAnimated(type, x, y) {
       x: (viewSize.w / 2 - panRef.current.x) / z - w / 2,
       y: (Math.max(96, viewSize.h * 0.14) - panRef.current.y) / z,
     }
+  }
+
+  /* A block nobody pointed a spot for (Add menu, palette, keyboard). It goes
+     where the caller wanted unless something is already there, then to the
+     nearest free spot — see lib/placement.js. Three adds in a row used to
+     stack exactly on top of each other. If the only free room is off screen,
+     the view follows the new block. */
+  function addBlockFree(type, x, y) {
+    const { w, h } = blockDims({ type })
+    const z = nbZoomRef.current
+    const view = {
+      x: (ROW_LEFT - panRef.current.x) / z, y: (TOP_ROW_H - panRef.current.y) / z,
+      w: (viewSize.w - ROW_LEFT) / z, h: (viewSize.h - TOP_ROW_H) / z,
+    }
+    const rects = blocks.map(b => ({ x: b.x, y: b.y, ...blockFootprint(b) }))
+    const spot = findFreeSpot(rects, { x, y, w, h }, { gap: BLOCK_GAP, view })
+    if (!spot.inView) centerOnBlock({ type, x: spot.x, y: spot.y })
+    addBlockAnimated(type, spot.x, spot.y)
   }
 
   /* A Pipeline always points at a database. The newest one on the sheet with
@@ -1352,10 +1442,20 @@ function addBlockAnimated(type, x, y) {
   const seenBlockIds = useRef(null)
   useEffect(() => {
     const ids = new Set(blocks.map(b => b.id))
-    if (seenBlockIds.current === null) { seenBlockIds.current = ids; return }
+    if (seenBlockIds.current === null) {
+      seenBlockIds.current = ids
+      /* The first block on an empty sheet arrives with no ledger to diff. */
+      if (enterNewRef.current && blocks.length === 1) { enterNewRef.current = false; enterFresh(blocks[0]) }
+      return
+    }
     const fresh = [...ids].filter(id => !seenBlockIds.current.has(id))
     seenBlockIds.current = ids
     if (fresh.length === 0) return
+    if (enterNewRef.current) {
+      enterNewRef.current = false
+      const justAdded = fresh.length === 1 ? blocks.find(b => b.id === fresh[0]) : null
+      if (justAdded) enterFresh(justAdded)   // children have mounted: effects run child-first
+    }
     setAnimatingBlockId(fresh[fresh.length - 1])
     const t = setTimeout(() => setAnimatingBlockId(null), 400)
     return () => clearTimeout(t)
@@ -1555,6 +1655,189 @@ function addBlockAnimated(type, x, y) {
   }
   useEffect(() => () => stopPanAnim(), [])
 
+  /* ── Full screen: in and out ───────────────────────────────────────────
+     In: remember the camera, move it to zoom 1 with the block at the inset,
+     draw the block at the window's size (liveOf), cover everything else with
+     the veil, and FLIP the block from where it was on screen. Out: FLIP it
+     back to where it will be under the remembered camera, then restore the
+     camera and let the veil fade. Nothing is written to the block. */
+  const blockWrapEl = id => containerRef.current?.querySelector(`[data-ds-block-wrap="${CSS.escape(id)}"]`) || null
+  const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+
+  function enterFocus(id) {
+    if (focusRef.current) return
+    const b = blocks.find(x => x.id === id)
+    if (!b) return
+    if (!canFocus(b)) { toast('Sections and columns hold other blocks, so they cannot go full screen. Open a block inside instead.'); return }
+    const el = blockWrapEl(id)
+    focusFromRef.current = el ? el.getBoundingClientRect() : null
+    stopPanAnim()
+    const prev = { pan: { ...panRef.current }, zoom: nbZoomRef.current }
+    const cam = focusCamera(b)
+    panRef.current = { ...cam.pan }
+    nbZoomRef.current = cam.zoom
+    focusRef.current = { id, prev, frame: focusFrame(viewSize), phase: 'enter' }
+    setPan({ ...cam.pan })
+    setNbZoom(cam.zoom)
+    setFocus({ id, prev })
+    setFocusVeil(false)
+    setSelectedIds(new Set([id]))
+    setSelectedShapeIds(new Set())
+    setSelectedConnId(null)
+    setCtxMenu(null)
+    setPaletteOpen(false)
+    setAddMenuOpen(false)
+    document.documentElement.dataset.dsFocus = 'on'
+  }
+
+  function exitFocus({ instant = false } = {}) {
+    const f = focusRef.current
+    if (!f || f.phase === 'leave') return
+    focusApiRef.current.hold?.cancel()
+    delete document.documentElement.dataset.dsFocus
+    const finish = () => {
+      panRef.current = { ...f.prev.pan }
+      nbZoomRef.current = f.prev.zoom
+      focusRef.current = null
+      setPan({ ...f.prev.pan })
+      setNbZoom(f.prev.zoom)
+      setFocus(null)
+      setFocusVeil(true)
+    }
+    const b = blocks.find(x => x.id === f.id)
+    const el = blockWrapEl(f.id)
+    if (instant || !b || !el || !containerRef.current || reducedMotion() || typeof el.animate !== 'function') {
+      focusAnimRef.current?.cancel(); focusAnimRef.current = null
+      finish()
+      return
+    }
+    f.phase = 'leave'
+    const origin = containerRef.current.getBoundingClientRect()
+    const target = screenRect(b, registryDims(clampToMin(b)), f.prev, origin)
+    const now = el.getBoundingClientRect()
+    focusAnimRef.current?.cancel()
+    const anim = el.animate(
+      [{ transform: 'none', transformOrigin: '0 0' }, { transform: flipTransform(target, now), transformOrigin: '0 0' }],
+      { duration: LEAVE_MS, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' })
+    focusAnimRef.current = anim
+    /* Once, from whichever comes first. The finish EVENT is delivered with
+       rendering, and a hidden tab does not render — leave full screen and
+       switch tabs, and onfinish would wait until you came back, holding the
+       canvas in a half-left state (camera pinned, Exit disabled). The timer
+       is the backstop, as it is for the block drag. */
+    let done = false
+    const once = () => { if (done) return; done = true; finish() }
+    anim.onfinish = once
+    anim.oncancel = () => { if (focusRef.current === f) once() }
+    setTimeout(once, LEAVE_MS + 120)
+  }
+
+  /* The FLIP in: measured after React has drawn the block at its new size,
+     before the browser paints it there. */
+  useLayoutEffect(() => {
+    const f = focusRef.current
+    if (!focus) {
+      /* Left: the block now sits at its canvas rect for real, so the
+         held last frame of the leave animation has to go in the same paint. */
+      focusAnimRef.current?.cancel(); focusAnimRef.current = null
+      return
+    }
+    if (!f || f.phase !== 'enter') return
+    f.phase = 'on'
+    const el = blockWrapEl(focus.id), from = focusFromRef.current
+    /* Full screen means "I am working in this block now": the keyboard goes
+       straight into it, so arrows navigate a sheet and letters type into a
+       document without a click first. If focus is already inside (you were
+       typing when you pressed Ctrl+Shift+F), it stays exactly where it was. */
+    if (el && !el.contains(document.activeElement)) focusInto(blocks.find(x => x.id === focus.id))
+    if (!el || !from || reducedMotion() || typeof el.animate !== 'function') return
+    const to = el.getBoundingClientRect()
+    focusAnimRef.current = el.animate(
+      [{ transform: flipTransform(from, to), transformOrigin: '0 0' }, { transform: 'none', transformOrigin: '0 0' }],
+      { duration: ENTER_MS, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' })
+  }, [focus]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Keep the block framed: the window resizing changes the frame, and a
+     collaborator moving the block changes where the camera must sit. */
+  useEffect(() => {
+    const f = focusRef.current
+    if (!f) return
+    f.frame = focusFrame(viewSize)
+    const b = blocks.find(x => x.id === f.id)
+    if (!b) { exitFocus({ instant: true }); return }   // deleted, undone, or the sheet changed
+    if (f.phase === 'leave') return
+    const cam = focusCamera(b)
+    if (cam.pan.x !== panRef.current.x || cam.pan.y !== panRef.current.y || nbZoomRef.current !== 1) {
+      panRef.current = { ...cam.pan }; nbZoomRef.current = 1
+      setPan({ ...cam.pan }); setNbZoom(1)
+    }
+  }, [blocks, viewSize, focus]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* The veil fades out after leaving, then goes. A timer, not the
+     animationend event: that event is delivered with rendering, and a veil
+     stranded over the canvas in a background tab would swallow every click
+     when you came back. */
+  useEffect(() => {
+    if (!focusVeil || focus) return
+    const t = setTimeout(() => setFocusVeil(false), 220)
+    return () => clearTimeout(t)
+  }, [focusVeil, focus])
+
+  /* Never leave the islands hidden behind us. */
+  useEffect(() => () => { delete document.documentElement.dataset.dsFocus }, [])
+
+  /* Latest closures for the listeners below, which are attached once. */
+  useEffect(() => {
+    focusApiRef.current.enter = enterFocus
+    focusApiRef.current.exit = exitFocus
+    focusApiRef.current.shortcutTarget = () => {
+      const inside = document.activeElement?.closest?.('[data-ds-block-wrap]')
+      if (inside && containerRef.current?.contains(inside)) return inside.getAttribute('data-ds-block-wrap')
+      return selectedIds.size === 1 ? [...selectedIds][0] : null
+    }
+  })
+
+  /* The keyboard ways in and out.
+     Ctrl/⌘+Shift+F toggles, from anywhere — capture phase, so an editor
+     inside the block cannot swallow it.
+     Escape is the careful one (lib/focusmode.js createEscHold): the block's
+     own content gets first refusal (React's handlers run before this
+     document listener, and a press they used is marked), a tap only shows a
+     hint, and only a 0.6 s hold leaves. */
+  useEffect(() => {
+    const hold = createEscHold({
+      onExit: () => focusApiRef.current.exit?.(),
+      onChange: setFocusHold,
+    })
+    focusApiRef.current.hold = hold
+    function onShortcut(e) {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || e.code !== 'KeyF') return
+      e.preventDefault(); e.stopPropagation()
+      if (focusRef.current) { focusApiRef.current.exit?.(); return }
+      const id = focusApiRef.current.shortcutTarget?.()
+      if (id) focusApiRef.current.enter?.(id)
+      else toast(`Select a block, then press ${focusShortcutLabel()} to open it full screen.`)
+    }
+    function onDown(e) {
+      const f = focusRef.current
+      if (!f || f.phase !== 'on') return
+      hold.down(e)
+    }
+    function onUp(e) { if (focusRef.current) hold.up(e) }
+    function onBlur() { hold.cancel() }
+    window.addEventListener('keydown', onShortcut, true)
+    document.addEventListener('keydown', onDown)
+    document.addEventListener('keyup', onUp)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      hold.cancel()
+      window.removeEventListener('keydown', onShortcut, true)
+      document.removeEventListener('keydown', onDown)
+      document.removeEventListener('keyup', onUp)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   function selectAndReveal(b) {
     if (!b) return
     setSelectedIds(new Set([b.id]))
@@ -1610,6 +1893,53 @@ function addBlockAnimated(type, x, y) {
     }
   }
 
+  /** Focus a just-added block's writing surface — only a real text surface
+   *  (contenteditable, textarea, text input); a grid or a button keeps the
+   *  canvas's keys. */
+  function enterFresh(b) {
+    /* Selected too, so its toolbar (a Document's ribbon) is there while you
+       type into it. */
+    setSelectedIds(new Set([b.id]))
+    const host = containerRef.current?.querySelector(`[data-block-id="${CSS.escape(b.id)}"]`)
+    const def = getBlockType(b.type)
+    const el = host && def.focusSelector ? host.querySelector(def.focusSelector) : null
+    if (!el) return
+    const typeable = el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|)$/.test(el.type))
+    if (!typeable || document.activeElement === el) return
+    el.focus({ preventScroll: true })
+    if (el.isContentEditable) {
+      const r = document.createRange(); r.selectNodeContents(el); r.collapse(!def.caretToEnd)
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r)
+    }
+  }
+
+  /** enterBlock for full screen: no scrolling (the camera is already set),
+   *  and a caret at the START of a writing surface — the top of what you
+   *  see — unless the type asks for the end. Blocks with nothing to type
+   *  into take focus on their wrapper, so the keyboard at least leaves the
+   *  canvas behind. */
+  function focusInto(b) {
+    if (!b) return
+    const host = containerRef.current?.querySelector(`[data-block-id="${CSS.escape(b.id)}"]`)
+    if (!host) return
+    const def = getBlockType(b.type)
+    const found = def.focusSelector ? host.querySelector(def.focusSelector) : null
+    /* A BUTTON is not somewhere to type. Kanban's first focusable is a
+       "Delete lane" ×, and handing it focus would put a destructive action
+       one Enter away. Only text surfaces and grids are auto-focused. */
+    const el = found && found.tagName !== 'BUTTON' ? found : null
+    if (!el) {
+      if (!host.hasAttribute('tabindex')) host.setAttribute('tabindex', '-1')
+      host.focus({ preventScroll: true })
+      return
+    }
+    el.focus({ preventScroll: true })
+    if (el.isContentEditable) {
+      const r = document.createRange(); r.selectNodeContents(el); r.collapse(!def.caretToEnd)
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r)
+    }
+  }
+
   /** Create a block by keyboard: below the selection, or in view if there's none. */
   function createByKeyboard(type) {
     if (getBlockType(type).createOpensPicker) { onPickImage?.(); return }
@@ -1623,11 +1953,16 @@ function addBlockAnimated(type, x, y) {
       x = (ROW_LEFT + 60 - panRef.current.x) / z
       y = (TOP_ROW_H + 60 - panRef.current.y) / z
     }
-    addBlockAnimated(type, x, y)
+    addBlockFree(type, x, y)
   }
 
   useEffect(() => {
     function onKey(e) {
+      /* Full screen owns the keyboard: no canvas shortcut may act on the
+         blocks hidden behind the backdrop (Delete, paste, add-block letters,
+         arrow nudges, undo of canvas edits). Escape and Ctrl+Shift+F are
+         handled by the full-screen listeners below. */
+      if (focusRef.current) return
       /* Never act on a key that belongs to something inside a block. Without
          this, pressing Delete with a table block selected while the cursor
          sits in a cell would run BOTH SheetGrid's clearSelection AND this
@@ -1996,7 +2331,12 @@ function addBlockAnimated(type, x, y) {
     if (performance.now() < bgClickGuardRef.current) return
 
     if (suppressNextBgClickRef.current) {
+      const why = suppressNextBgClickRef.current
       suppressNextBgClickRef.current = false
+      /* The click that ended an edit lets go of the block too. It used to be
+         swallowed whole, so leaving a Document or a note took two clicks on
+         empty canvas: one to stop typing, one to deselect. Still no new note. */
+      if (why === 'edit') { setSelectedIds(new Set()); setSelectedConnId(null) }
       return
     }
 
@@ -2005,14 +2345,23 @@ function addBlockAnimated(type, x, y) {
       if (document.activeElement && document.activeElement !== document.body) {
         document.activeElement.blur()
       }
-      suppressNextBgClickRef.current = true
+      suppressNextBgClickRef.current = false
+      setSelectedIds(new Set()); setSelectedConnId(null)
       return
     }
 
-    setSelectedConnId(null)
+    /* A click that lets go of a selection is only that. It used to deselect
+       AND drop a new empty note where you clicked, so clicking away from a
+       table to "get out of it" left a stray note behind every time. The
+       next click on empty canvas writes, as before. */
+    if (selectedIds.size || selectedShapeIds.size || selectedConnId) {
+      setSelectedConnId(null)
+      setSelectedIds(new Set())
+      setSelectedShapeIds(new Set())
+      return
+    }
 
     const { x, y } = toCanvas(e.clientX, e.clientY)
-    setSelectedIds(new Set())
     addBlockAnimated('text', x - 140, y - 20)
   }
 
@@ -2022,6 +2371,7 @@ function addBlockAnimated(type, x, y) {
     // reached from BlockHandle's onMouseDown, which the container's own
     // guard never sees — startBlockDrag stops propagation before it.
     if (panOwnsPointer()) return
+    if (focusRef.current) return   // full screen is a view; the block does not move
     e.stopPropagation()
     e.preventDefault()
 
@@ -2029,6 +2379,10 @@ function addBlockAnimated(type, x, y) {
     const startMY = e.clientY
     const origX = block.x
     const origY = block.y
+    /* The camera at the moment of the press. Edge auto-pan moves the camera
+       mid-drag, so the block's world position is "where the pointer is NOW
+       in the world", not "how far the mouse has travelled on screen". */
+    const startPan = { ...panRef.current }
     /* Measured once, here, and used for every frame of this drag. See
        measureBlocks() for why the registry numbers cannot be trusted. */
     const measured = measureBlocks()
@@ -2077,21 +2431,34 @@ function addBlockAnimated(type, x, y) {
        the block keeps its position under the cursor because the drag maths
        reads panRef every frame. Speed ramps with how deep into the margin you
        are, so a nudge creeps and a shove flies. */
-    const EDGE = 90, EDGE_MAX = 26
+    /* Tuned down: 90px / 26px-per-frame meant brushing the top islands
+       (which sit inside that margin) flung the canvas at ~1500px/s.
+       Now: a slimmer margin, a quadratic ramp so the outer part of it only
+       creeps, and a dwell — the pointer has to stay in the margin for
+       EDGE_DWELL ms before anything moves, so passing near an edge or over
+       an island on the way somewhere does nothing. */
+    const EDGE = 64, EDGE_MAX = 18, EDGE_DWELL = 280
     const lastPointer = { current: { x: startMX, y: startMY } }
     let edgeRaf = null
+    let edgeSince = 0     // when the pointer entered the margin; 0 = not in it
 
     function edgeTick() {
       const el = containerRef.current
       if (!el || !dragging) { edgeRaf = null; return }
       const r = el.getBoundingClientRect()
       const p = lastPointer.current
-      const push = (dist) => Math.min(1, Math.max(0, (EDGE - dist) / EDGE))
+      const push = (dist) => { const t = Math.min(1, Math.max(0, (EDGE - dist) / EDGE)); return t * t }
       let dx = 0, dy = 0
       if (p.x - r.left < EDGE) dx = push(p.x - r.left) * EDGE_MAX
       else if (r.right - p.x < EDGE) dx = -push(r.right - p.x) * EDGE_MAX
       if (p.y - r.top < EDGE) dy = push(p.y - r.top) * EDGE_MAX
       else if (r.bottom - p.y < EDGE) dy = -push(r.bottom - p.y) * EDGE_MAX
+
+      if (dx || dy) {
+        const now = performance.now()
+        if (!edgeSince) edgeSince = now
+        if (now - edgeSince < EDGE_DWELL) { dx = 0; dy = 0 }
+      } else edgeSince = 0
 
       if (dx || dy) {
         panRef.current = { x: panRef.current.x + dx, y: panRef.current.y + dy }
@@ -2347,8 +2714,15 @@ function addBlockAnimated(type, x, y) {
       }
       lastPointer.current = { x: ev.clientX, y: ev.clientY }
       const z = nbZoomRef.current
-      let nx = origX + (ev.clientX - startMX) / z
-      let ny = origY + (ev.clientY - startMY) / z
+      /* THE DESYNC FIX. This used to be origX + mouse travel / z, which
+         ignores every pixel the edge auto-pan scrolled. edgeTick shifted the
+         target to compensate, and then the very next mousemove overwrote
+         that compensation — so the block snapped back toward where the
+         drag began while the camera kept moving, slid out from under the
+         cursor, and landed wherever the last frame left it. Subtracting the
+         camera's own travel keeps the block under the pointer, always. */
+      let nx = origX + (ev.clientX - startMX - (panRef.current.x - startPan.x)) / z
+      let ny = origY + (ev.clientY - startMY - (panRef.current.y - startPan.y)) / z
 
       // Alt suspends snapping for as long as it's held — the standard escape
       // hatch, so you never have to reach for the toolbar mid-drag.
@@ -2738,7 +3112,7 @@ function addBlockAnimated(type, x, y) {
 
   function startPan(e) {
     if (e.button !== 2) return
-    if (selectionLockRef.current) return   // frozen while a block is selected
+    if (selectionLockRef.current || focusRef.current) return   // frozen while a block is selected
     e.preventDefault()
     const onMove = panFrom(e.clientX, e.clientY)
     function onUp() {
@@ -2775,6 +3149,7 @@ function addBlockAnimated(type, x, y) {
      silently refuse. Right-drag keeps the lock because a right-drag is one
      twitch away from a right-click. */
   function startPointerPan(e) {
+    if (focusRef.current) return   // the camera is pinned in full screen
     const id = e.pointerId
     const el = containerRef.current
     const onMove = panFrom(e.clientX, e.clientY)
@@ -2863,6 +3238,7 @@ function addBlockAnimated(type, x, y) {
      while you resize it. */
   function startResize(e, block, dir = 'se') {
     if (panOwnsPointer()) return   // Space over a resize handle still pans
+    if (focusRef.current) return   // nor is it resized
     e.stopPropagation()
     e.preventDefault()
 
@@ -2948,8 +3324,11 @@ function addBlockAnimated(type, x, y) {
   function resetBlockSize(block) {
     if (!block) return
     const natural = {
-      table: { w: 520, h: 260 }, kanban: { w: 720, h: 280 },
+      table: { w: 520, h: 260 }, kanban: { w: 880, h: 360 },
       section: { w: 500, h: 350 }, image: { w: 360, h: 260 }, text: { w: 320, h: 150 },
+      /* A document's natural size fits an A4 page at 100%; the generic
+         320×150 was below its own minimum. */
+      document: { w: 880, h: 700 }, html: { w: 880, h: 560 },
     }[block.type] || { w: 320, h: 150 }
     // An image knows its own aspect ratio, so honour it.
     if (block.type === 'image' && block.natW && block.natH) {
@@ -3107,6 +3486,24 @@ function addBlockAnimated(type, x, y) {
     return false
   }
 
+  /* The canvas viewport never scrolls: pan is the camera, not scrollTop.
+     But it is overflow:hidden, and a browser WILL scroll an overflow:hidden
+     box to reveal a caret or a focused element (a long note opened full
+     screen with the caret at the end did exactly that). The offset is then
+     invisible and unrecoverable — no scrollbar, the wheel pans — and it
+     hides the top of the screen, title bar and Exit included. Snap it back
+     the moment it happens. */
+  useEffect(() => {
+    const els = [containerRef.current, outerRef.current].filter(Boolean)
+    const reset = e => {
+      const el = e.currentTarget
+      if (el.scrollTop !== 0) el.scrollTop = 0
+      if (el.scrollLeft !== 0) el.scrollLeft = 0
+    }
+    els.forEach(el => el.addEventListener('scroll', reset, { passive: true }))
+    return () => els.forEach(el => el.removeEventListener('scroll', reset))
+  }, [])
+
 // Scroll-wheel pans the notebook canvas
   // Scroll-wheel: pan + Ctrl+scroll: zoom (rAF-throttled)
   useEffect(() => {
@@ -3142,7 +3539,7 @@ function addBlockAnimated(type, x, y) {
       // you're working on must not drift, and a stray trackpad gesture must
       // not throw the block off screen. Deselect (Esc, or click the
       // background) to move the canvas again.
-      if (selectionLockRef.current) return
+      if (selectionLockRef.current || focusRef.current) return
       stopPanAnim()   // a manual gesture always wins over an in-flight camera move
       if (zoomGesture) {
         const rect = el.getBoundingClientRect()
@@ -3262,8 +3659,33 @@ function addBlockAnimated(type, x, y) {
       notebookId: nb?.id, sheetId: activeSheet?.id,
       onChatSend, onChatEdit, onChatUnsend, onChatShareBlock,
       onResolveSharedBlock, onResolveRefThumb, onShareBlockWithPerson,
+      /* The agent's view of this sheet. Read through the ref so a running
+         agent always sees the blocks as they are NOW, not as they were when
+         its chat block last rendered. */
+      blocks, onAddBlock, onDeleteBlocks, agentHost,
     }
   })
+
+  /* What an agent may touch: the blocks of THIS sheet, through the same
+     add/update/delete the rest of the canvas uses — so every change an agent
+     makes lands on the undo stack like any other edit. One identity for the
+     canvas's lifetime; everything is read from latestRef at call time. */
+  const agentSheet = useMemo(() => ({
+    blocks: () => latestRef.current.blocks || [],
+    update: (id, patch) => latestRef.current.onUpdateBlock?.(id, patch),
+    add: (type, { x = 0, y = 0, w = null, h = null, headers = null, rows = null, patch = null } = {}) =>
+      latestRef.current.onAddBlock?.(type, x, y, headers, rows, w, h, patch),
+    remove: async id => !!(await latestRef.current.onDeleteBlocks?.([id])),
+  }), [])
+  const revealBlock = useCallback(id => {
+    const L = latestRef.current
+    if (id) L.onTeleport?.({ notebookId: L.notebookId, sheetId: L.sheetId, blockId: id })
+  }, [])
+  const openAgentSettings = useCallback((agentId, section) => {
+    requestAgentSection(agentId, section)
+    const b = (latestRef.current.blocks || []).find(x => x.type === 'agent' && x.agentId === agentId)
+    if (b) revealBlock(b.id)
+  }, [revealBlock])
 
   /* One object per (notebook, sheet), not one per render — an inline object
      literal is a new identity every time and would defeat CalendarBlock's memo
@@ -3278,7 +3700,7 @@ function addBlockAnimated(type, x, y) {
   const onBlockEditStart = useCallback(() => { editingRef.current = true }, [])
   const onBlockEditEnd = useCallback(() => {
     editingRef.current = false
-    suppressNextBgClickRef.current = true
+    suppressNextBgClickRef.current = 'edit'   // see handleBgClick
   }, [])
 
   const cbCacheRef = useRef(new Map())
@@ -3726,7 +4148,7 @@ function addBlockAnimated(type, x, y) {
      the topic editor own their keys. */
   useEffect(() => {
     function onKey(e) {
-      if (shapeEdit) return
+      if (shapeEdit || focusRef.current) return
       const t = e.target
       const onCanvas = t === containerRef.current || t === document.body
       if (!onCanvas || e.defaultPrevented) return
@@ -3946,7 +4368,17 @@ function addBlockAnimated(type, x, y) {
     return d
   }
 
+  const focusStored = focus ? blocks.find(b => b.id === focus.id) : null
+  const focusCtx = {
+    focusId: focus?.id || null,
+    hold: focusHold,
+    storedDims: focusStored ? registryDims(clampToMin(focusStored)) : null,
+    canFocus,
+    enter: enterFocus,
+    exit: () => exitFocus(),
+  }
   return (
+    <FocusCtx.Provider value={focusCtx}>
     <div ref={outerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', background: canvasBg.bg }}>
     {/* ── Floating Island ── */}
       {/* Title island — notebook identity plus the view controls.
@@ -3962,7 +4394,7 @@ function addBlockAnimated(type, x, y) {
           in the space left over after the title island, which drifted right as
           the notebook name got longer. Padding lives inside the outer cells, so
           it clears the sidebar and profile island without shifting the centre. */}
-      <div ref={topRowRef} data-kbd-zone style={{ position: 'absolute', top: 16, left: 0, right: 0, zIndex: Z.chrome, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'start', pointerEvents: 'none' }}>
+      <div ref={topRowRef} data-kbd-zone data-ds-island="top" style={{ position: 'absolute', top: 16, left: 0, right: 0, zIndex: Z.chrome, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'start', pointerEvents: 'none' }}>
       {/* PADDING, not a transform. Translating the column would drag its right
           edge left with it, and this column has `overflow: hidden` — a long
           notebook name would start clipping at exactly the moment the sidebar
@@ -3976,13 +4408,17 @@ function addBlockAnimated(type, x, y) {
           <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onBlur={() => { onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
         ) : (
           <span onDoubleClick={() => setRenamingNb(true)} title={nb.name}
-            style={{ fontFamily: 'var(--ds-font-head)', fontSize: 16, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, flex: '1 1 auto', minWidth: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
+            style={{ fontFamily: 'var(--ds-font-head)', fontSize: 16, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, flex: '0 1 auto', minWidth: 48, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
         )}
         {activeSheet && !renamingSheet && (
           <span onDoubleClick={() => { setSheetLabel(activeSheet.name); setRenamingSheet(true) }}
             title={`${activeSheet.name || 'Sheet 1'} · ${blocks.length} blocks`}
-            style={{ fontSize: 12, color: text3, cursor: 'text', marginRight: 6, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            · {activeSheet.name || 'Sheet 1'} · {blocks.length} block{blocks.length !== 1 ? 's' : ''}
+            /* Gives way long before the project name does (flex-shrink 100
+               against 1): at 1568px wide the island read "My …" because the
+               name and this line shrank equally. The block count lives in
+               the tooltip — nobody navigates by it. */
+            style={{ fontSize: 12, color: text3, cursor: 'text', marginRight: 6, flex: '0 100 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            · {activeSheet.name || 'Sheet 1'}
           </span>
         )}
         {renamingSheet && (
@@ -4004,10 +4440,12 @@ function addBlockAnimated(type, x, y) {
           </span>
         )}
 
+        {/* Icon only: the words cost ~80px of an island that has to fit the
+           project name next to the centred toolbar. The tooltip names it. */}
         <button onClick={togglePresentation} className="ds-tbtn" style={{ flexShrink: 0, marginLeft: 6 }}
-          title={isPresentation ? 'Leave full screen' : 'Full screen'}>
+          title={isPresentation ? 'Leave full screen' : 'Full screen'} aria-label={isPresentation ? 'Leave full screen' : 'Full screen'}>
           <Icon name={isPresentation ? 'view-fullscreen-exit' : 'view-fullscreen-enter'} size={14} />
-          {isPresentation ? 'Exit' : 'Full Screen'}
+          {isPresentation ? 'Exit' : null}
         </button>
       </div>
 
@@ -4019,10 +4457,18 @@ function addBlockAnimated(type, x, y) {
           databases={blocks.filter(b => b.type === 'database').map(b => ({ id: b.id, label: b.name || b.db?.name || 'Untitled database', name: b.name, db: b.db }))}
           onClose={() => setPaletteOpen(false)}
           onOpenRecord={(sourceId, rowId) => openRecord(sourceId, rowId, null)}
-          commands={[
+          commands={focus ? [
+            { id: 'focus-exit', label: 'Exit full screen', icon: 'view-fullscreen-exit', hint: focusShortcutLabel(), keywords: 'fullscreen focus leave', run: () => exitFocus() },
+            { id: 'keys', label: 'Keyboard shortcuts', icon: 'status-info', hint: '?', keywords: 'help keys', run: () => setShortcutsOpen(true) },
+          ] : [
+            ...(soleSelected && canFocus(soleSelected) ? [{
+              id: 'focus-enter', label: `Full screen: ${soleSelected.name || getBlockType(soleSelected.type)?.label || 'block'}`,
+              icon: 'view-fullscreen-enter', hint: focusShortcutLabel(), keywords: 'fullscreen focus maximise expand zen',
+              run: () => enterFocus(soleSelected.id),
+            }] : []),
             ...ADD_ITEMS.filter(i => !getBlockType(i.type).createOpensPicker).map(i => ({
-              id: 'add-' + i.type, label: `Add ${i.label.toLowerCase()}`, icon: i.icon, keywords: i.keywords,
-              run: () => { const p = viewSpot(600); addBlockAnimated(i.type, p.x, p.y) },
+              id: 'add-' + i.type, label: `Add ${i.label.split(' ').map(w => (/^[A-Z]{2,}$/.test(w) ? w : w.toLowerCase())).join(' ')}`, icon: i.icon, keywords: i.keywords,
+              run: () => { const p = viewSpot(blockDims({ type: i.type }).w); addBlockFree(i.type, p.x, p.y) },
             })),
             { id: 'snap', label: snapEnabled ? 'Turn snap off' : 'Turn snap on', icon: 'tool-snap', keywords: 'grid align magnet', run: toggleSnap },
             { id: 'draw', label: drawMode ? 'Stop drawing' : 'Draw on the canvas', icon: 'tool-draw', keywords: 'pen ink', run: () => setDrawMode(v => !v) },
@@ -4062,7 +4508,7 @@ function addBlockAnimated(type, x, y) {
                still leaves the whole block in view. */
             const cx = (viewSize.w / 2 - panRef.current.x) / z
             const topY = (Math.max(96, viewSize.h * 0.14) - panRef.current.y) / z
-            addBlockAnimated(type, cx - 300 + Math.random() * 40, topY + Math.random() * 30)
+            addBlockFree(type, cx - blockDims({ type }).w / 2, topY)
           }}
         />
       )}
@@ -4075,16 +4521,27 @@ function addBlockAnimated(type, x, y) {
             plain ds-tbtn treatment, the same as its neighbours (no accent, no ring; decided 24 Sep). Mind map left the island for Builder → Visuals:
             it is a mode you enter on purpose, not a button you need every minute.
 
-            Agent is a placeholder and says so. It is disabled rather than hidden,
-            so the slot exists and the row does not re-flow when it ships. It is
-            also skipped by islandButtons(), which filters out [disabled]. No
-            icon until the agent glyph is drawn (24 Sep 2026): a stand-in
-            implied a feature it is not. */}
-        <button disabled aria-disabled="true" className="ds-tbtn"
-          title="Agent · coming soon"
-          style={{ opacity: 0.55, cursor: 'default' }}>
-          Agent
-        </button>
+            Agent shipped (1 Oct 2026): it takes you to your agent on this
+            sheet, or adds one where there is room. Still no icon until the
+            agent glyph is drawn. Without a host (the browser harness) it
+            stays the disabled placeholder it was. */}
+        {agentHost ? (
+          <button className="ds-tbtn" title="Your agent on this sheet"
+            onClick={() => {
+              const mine = blocks.find(b => b.type === 'agent')
+              if (mine) { setSelectedIds(new Set([mine.id])); revealBlock(mine.id); return }
+              const p = viewSpot(blockDims({ type: 'agent' }).w)
+              addBlockFree('agent', p.x, p.y)
+            }}>
+            Agent
+          </button>
+        ) : (
+          <button disabled aria-disabled="true" className="ds-tbtn"
+            title="Agent · coming soon"
+            style={{ opacity: 0.55, cursor: 'default' }}>
+            Agent
+          </button>
+        )}
 
         <div style={{ width: 1, height: 22, background: border, margin: '0 4px' }} />
 
@@ -4426,6 +4883,9 @@ function addBlockAnimated(type, x, y) {
           {[
             // Sizing acts on one block; with a multi-selection there's no
             // sensible single target, so these drop out.
+            ...(soleSelected && canFocus(soleSelected) ? [
+              { label: 'Full screen', icon: 'view-fullscreen-enter', color: text2, action: () => { setCtxMenu(null); enterFocus(soleSelected.id) } },
+            ] : []),
             ...(soleSelected ? [
               { label: 'Fit to screen', icon: 'size-fit-screen', color: text2, action: () => fitBlockToScreen(soleSelected) },
               { label: 'Reset size', icon: 'size-reset', color: text2, action: () => resetBlockSize(soleSelected) },
@@ -4464,6 +4924,10 @@ function addBlockAnimated(type, x, y) {
         @keyframes dsBlockAppear {
           0% { opacity: 0; transform: scale(0.92) translateY(6px); }
           100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        @keyframes dsFocusVeilOut {
+          from { opacity: 1; }
+          to   { opacity: 0; }
         }
         @keyframes dsBlockDelete {
           0% { opacity: 1; transform: scale(1); }
@@ -4553,6 +5017,14 @@ function addBlockAnimated(type, x, y) {
         onDragOver={e => e.preventDefault()}
         onDrop={e => {
           e.preventDefault()
+          /* Nothing lands on the canvas behind a full-screen block: it would
+             be created somewhere you cannot see. Blocks that take drops
+             themselves stop propagation before this. */
+          if (focusRef.current) {
+            e.stopPropagation()
+            toast('Leave full screen to add files to the canvas.')
+            return
+          }
           /* A file off the desktop beats the internal column drag: only one of
              the two can be in flight, and dataTransfer.files is only non-empty
              for the former. stopPropagation stops the window-level fallback in
@@ -5076,12 +5548,32 @@ function addBlockAnimated(type, x, y) {
               value={sh.text} initialChar={shapeEdit.initialChar} big={sh.kind === 'text'} sticky={sh.kind === 'sticky'} onDone={finishShapeEdit} />
           })()}
 
+          {(focus || focusVeil) && (() => {
+            /* The veil: everything that is not the full-screen block. Solid
+               canvas colour rather than a dim, so the page reads as "only this
+               block now", and it swallows every pointer event so nothing
+               behind it can be selected, dragged, panned or clicked into. */
+            const r = backdropRect(viewSize, { pan, zoom: nbZoom })
+            const stop = e => { e.stopPropagation(); e.preventDefault() }
+            return (
+              <div data-ds-focus-veil=""
+                onMouseDown={stop} onPointerDown={e => e.stopPropagation()} onClick={stop}
+                onDoubleClick={stop} onContextMenu={stop}
+                style={{
+                  position: 'absolute', left: r.left, top: r.top, width: r.width, height: r.height,
+                  zIndex: Z.focusVeil, background: canvasBg.bg,
+                  animation: focus ? 'none' : 'dsFocusVeilOut 0.18s ease forwards',
+                }} />
+            )
+          })()}
+
           {blocks.map((stored, bi) => {
             /* Shadowed once, here, so every `block.w` / `block.x` / blockDims()
                below this line follows a resize live without eighteen separate
                call sites having to remember to. */
             const block = liveOf(stored)
-            const isSelected = selectedIds.has(block.id)
+            const isFocused = focus?.id === block.id
+            const isSelected = selectedIds.has(block.id) || isFocused
             const isHovered = hoveredBlockId === block.id
             const isDeleting = deletingBlockId === block.id
             const isNew = animatingBlockId === block.id
@@ -5089,6 +5581,8 @@ function addBlockAnimated(type, x, y) {
             return (
             <div key={block.id}
               data-block-id={block.id}
+              data-ds-block-wrap={block.id}
+              data-ds-focused={isFocused ? '' : undefined}
               data-ds-arrived={arrivedId === block.id ? 'true' : undefined}
               onMouseEnter={() => setHoveredBlockId(block.id)}
               onMouseLeave={() => setHoveredBlockId(null)}
@@ -5134,7 +5628,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 const escalated = !!remote && isSelected
                 return {
                   position: 'absolute', left: block.x, top: block.y,
-                  zIndex: isContainer(block)
+                  zIndex: isFocused ? Z.focusBlock : isContainer(block)
                     ? (isSelected ? 3 : 1)
                     : (isDragging ? 40 : isSelected ? 20 : isHovered ? 15 : 10),
                   transition: isDeleting
@@ -5275,7 +5769,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     <DocumentBlock
                       block={block}
                       colors={colors}
-                      zoom={nbZoom}
+                      dark={dark}
                       onUpdateBlock={onUpdateBlock}
                       onSave={blockCb(block.id, 'docSave', () => html =>
                         latestRef.current.onUpdateBlock(block.id, { content: html }))}
@@ -5293,6 +5787,10 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
               {block.type === 'text' && (
                 <div style={{
                   width: block.w || 320, minHeight: block.h || 150,
+                  /* Full screen pins the note to the frame; the editor scrolls
+                     inside it (maxHeight below), so the title bar and Exit
+                     stay on screen however long the note is. */
+                  ...(isFocused ? { height: block.h } : null),
                   background: isSelected ? `linear-gradient(135deg, ${raised}, ${surface})` : surface,
                   border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 'var(--ds-radius-sm)', overflow: 'hidden', position: 'relative',
@@ -5304,7 +5802,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease',
                 }}>
                   {/* Accent bar */}
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: 'var(--ds-radius-sm) var(--ds-radius-sm) 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: 'var(--ds-radius-sm) var(--ds-radius-sm) 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -5330,6 +5828,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     text={text}
                     colors={colors}
                     minHeight={Math.max(80, (block.h || 150) - 30)}
+                    /* 30 = BlockHandle bar, 3 = the 1.5px border top and bottom. */
+                    maxHeight={isFocused ? Math.max(80, block.h - 33) : undefined}
                     notebooks={notebooks}
                     linkShape={linkShape}
                     onFollowLink={onTeleport}
@@ -5364,7 +5864,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 8px ${dark ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.06)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -5383,6 +5883,9 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onGoToSource={goToPdfSource}
                   />
                   <SheetGrid
+                    /* One mount per sheet: selection, scroll and the grid's
+                       undo history belong to the sheet on screen. */
+                    key={activeTabId(block)}
                     block={block}
                     colors={colors}
                     maxHeight={Math.max(120, (block.h || 260) - 30)}
@@ -5420,7 +5923,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 8px ${dark ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.06)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -5589,7 +6092,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : 'var(--ds-shadow-sm), var(--ds-shadow-md)',
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -5654,7 +6157,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     if (e.target.closest('button,a,input')) return
                     startBlockDrag(e, block)
                   }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
                   <FileBlock block={block} colors={colors} dark={dark} onUpdateBlock={onUpdateBlock} />
                   <ResizeHandle border={border} accent={accent} show={isSelected}
                     onResizeStart={(e, dir) => startResize(e, block, dir)} />
@@ -5681,7 +6184,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     if (e.target.closest('input,textarea,button')) return
                     startBlockDrag(e, block)
                   }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
                   <TaskBlock
                     block={block}
                     blocks={blocks}
@@ -5711,7 +6214,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -5845,7 +6348,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -5897,7 +6400,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -5932,6 +6435,173 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                 </div>
               )}
 
+              {block.type === 'flashcards' && (
+                <div style={{
+                  width: block.w || 560, height: block.h || 520,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="flashcards"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <FlashcardsBlock block={block} colors={colors} editingRef={editingRef}
+                      onUpdateBlock={patch => onUpdateBlock(block.id, patch)} />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* AGENT — settings, chats, sub-agents. Private to its owner;
+                  the blocks memo above drops it for everybody else. */}
+              {block.type === 'agent' && (
+                <div style={{
+                  width: block.w || 720, height: block.h || 760,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={null}
+                    presence={null}
+                    label="agent"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <AgentBlock block={block} colors={colors} host={agentHost} sheet={agentSheet}
+                      onReveal={revealBlock}
+                      onUpdateBlock={blockCb(block.id, 'agentUpdate', () => patch => latestRef.current.onUpdateBlock?.(block.id, patch))} />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                </div>
+              )}
+
+              {/* AGENT CHAT — one conversation, as its own block. Closing it
+                  keeps the chat in the agent's history; nothing is lost. */}
+              {block.type === 'agentchat' && (
+                <div style={{
+                  width: block.w || 440, height: block.h || 640,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={null}
+                    presence={null}
+                    label="agent chat"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => {
+                      const ch = getAgentChat(block.chatId)
+                      if (ch && agentHost) setAgentChatOpen(agentHost, ch, false, null)
+                      deleteBlock(block)
+                    }}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <AgentChatBlock block={block} colors={colors} host={agentHost} sheet={agentSheet}
+                      onReveal={revealBlock} onOpenAgentSettings={openAgentSettings}
+                      onUpdateBlock={blockCb(block.id, 'agentChatUpdate', () => patch => latestRef.current.onUpdateBlock?.(block.id, patch))} />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                </div>
+              )}
+
+              {block.type === 'html' && (
+                <div style={{
+                  width: block.w || 880, height: block.h || 560,
+                  display: 'flex', flexDirection: 'column',
+                  background: surface,
+                  border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
+                  borderRadius: 10, overflow: 'hidden', position: 'relative',
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${accentDim}, 0 8px 30px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)'}`
+                    : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                  transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+                }}>
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="html"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                    onGoToSource={goToPdfSource}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <HtmlBlock block={block} colors={colors} editingRef={editingRef}
+                      active={isSelected && selectedIds.size <= 1}
+                      onUpdateBlock={patch => onUpdateBlock(block.id, patch)} />
+                  </div>
+                  <ResizeHandle border={border} accent={accent} show={isSelected}
+                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
+                </div>
+              )}
+
               {block.type === 'record' && (
                 <div style={{
                   width: block.w || 400, height: block.h || 520,
@@ -5944,7 +6614,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 10px ${dark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -6003,7 +6673,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 8px ${dark ? 'rgba(0,0,0,0.28)' : 'rgba(0,0,0,0.05)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
                   {/* The real BlockHandle, not a bespoke title bar: rename,
                       delete, attribution, presence and backlinks all behave
                       exactly as they do on a calendar or a chat block, and
@@ -6276,7 +6946,8 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
               )}
               {block.type === 'kanban' && (
                 <div style={{
-                  width: block.w || 720, minHeight: block.h || 280,
+                  width: blockDims(block).w, height: blockDims(block).h,
+                  display: 'flex', flexDirection: 'column',
                   background: isSelected ? `linear-gradient(135deg, ${raised}, ${surface})` : surface,
                   border: `1.5px solid ${isSelected ? accent : isHovered ? border : borderDim}`,
                   borderRadius: 10, overflow: 'hidden', position: 'relative',
@@ -6287,7 +6958,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     : `0 2px 8px ${dark ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.06)'}`,
                   transition: 'box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease',
                 }}>
-                  <div style={{ height: isSelected ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
+                  <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease', borderRadius: '10px 10px 0 0' }} />
                   <BlockHandle
                     notebookId={nb.id}
                     block={block}
@@ -6305,7 +6976,7 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onTeleport={onTeleport}
                     onGoToSource={goToPdfSource}
                   />
-                  <div style={{ overflow: 'auto', maxHeight: Math.max(140, (block.h || 280) - 30) }}>
+                  <div style={{ flex: 1, minHeight: 0 }}>
                     <KanbanBlock
                       block={block}
                       onUpdateBlock={onUpdateBlock}
@@ -6339,8 +7010,13 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
             </div>
           </div>
         )}
+        {/* File and task blocks have no title bar to hold the way out. */}
+        {focusStored && (focusStored.type === 'file' || focusStored.type === 'task') && (
+          <FocusExit colors={colors} floating />
+        )}
       </div>
     </div>
+    </FocusCtx.Provider>
   )
 }
 

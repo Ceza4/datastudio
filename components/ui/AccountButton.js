@@ -6,7 +6,7 @@ import {
   signOut, signOutEverywhere, listFactors, beginMfaEnrolment,
   confirmMfaEnrolment, disableMfa, updatePassword, changeEmail, AUTH,
 } from '../../lib/auth'
-import { clearState } from '../../lib/persistence'
+import { clearState, formatBytes } from '../../lib/persistence'
 import { idbClear, STORE_IMAGES, STORE_PDFS, STORE_FILES, STORE_TEMPLATES } from '../../lib/idb'
 
 /*
@@ -41,12 +41,7 @@ import { idbClear, STORE_IMAGES, STORE_PDFS, STORE_FILES, STORE_TEMPLATES } from
   where the difference gets explained.
   -------------------------------------------------------------------------- */
 
-const bytes = n => {
-  if (!Number.isFinite(n) || n <= 0) return '0 MB'
-  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`
-  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`
-  return `${(n / 1024 ** 3).toFixed(n < 10 * 1024 ** 3 ? 1 : 0)} GB`
-}
+const bytes = formatBytes   // one storage format everywhere (lib/persistence.js)
 
 function Meter({ label, used, limit, colors }) {
   /* A limit of zero is not "100% full", it is "this tier has no cloud". A bar

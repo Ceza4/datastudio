@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { serverClient, adminClient, hasServiceRole } from '../../../../lib/supabase/server'
 import { rateLimit } from '../../../../lib/ratelimit'
-import { refuseCrossSite } from '../../_guard'
+import { refuseCrossSite, refuseUnfinishedSignIn } from '../../_guard'
 
 /*
   POST /api/account/export
@@ -59,6 +59,8 @@ export async function POST(request) {
   const { data: auth } = await supabase.auth.getUser()
   const user = auth?.user
   if (!user) return NextResponse.json({ error: 'Not signed in.' }, { status: 401 })
+  const aal = await refuseUnfinishedSignIn(supabase)
+  if (aal) return aal
 
   /* By account, after authentication — same reasoning as the delete route: an
      IP-keyed pre-auth limiter punishes everyone behind one address and can be

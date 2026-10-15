@@ -19,7 +19,7 @@
 
 import {
   BLOCK_TYPES, BLOCK_TYPE_IDS, ADD_ITEMS, TYPE_BY_KEY,
-  createBlock, blockDims, blockHasContent, clonepatch, cloneArgs, getType, isKnownType,
+  createBlock, blockDims, blockHasContent, clonepatch, cloneArgs, getType, isKnownType, minDimsOf,
 } from '../components/notebook/blockRegistry.js'
 
 /* The five types that existed at b39e05b. This file's ONLY job is proving the
@@ -161,7 +161,18 @@ ok(patched.name === 'X', 'patch overrides a default')
 console.log('\n blockDims — fallbacks, which are NOT the create defaults')
 for (const type of [...LEGACY_TYPES, 'bogus']) {
   for (const b of [{ type }, { type, w: 111 }, { type, h: 222 }, { type, w: 111, h: 222 }]) {
-    const diff = deepEq(blockDims(b), OLD_blockDims(b))
+    /* TWO DELIBERATE DIVERGENCES since 25 Sep 2026, applied to the legacy
+       answer rather than hidden by loosening the comparison:
+         · a kanban with no stored size falls back to 880×360 (was 720×280),
+           so the three starter lanes are visible at the new 260px width
+         · a stored size under a type's comfortable minimum (minDims)
+           renders at the minimum
+       Neither changes what is PERSISTED, which is what this file guards. */
+    const legacy = OLD_blockDims(b)
+    if (type === 'kanban') { if (!b.w) legacy.w = 880; if (!b.h) legacy.h = 360 }
+    const floor = type === 'bogus' ? null : minDimsOf(b)
+    if (floor && type !== 'bogus') { legacy.w = Math.max(legacy.w, floor.w); legacy.h = Math.max(legacy.h, floor.h) }
+    const diff = deepEq(blockDims(b), legacy)
     ok(!diff, `dims ${type}${b.w ? ' w' : ''}${b.h ? ' h' : ''}`, diff)
   }
 }

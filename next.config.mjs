@@ -21,7 +21,10 @@
 const nextConfig = {
   async headers() {
     return [{
-      source: '/:path*',
+      /* Every path except the HTML prototype shell, which DataStudio frames
+         itself (sandboxed). Its framing rule is the frame-ancestors 'self' in
+         its own CSP, set in proxy.js. */
+      source: '/:path((?!sandbox/html-preview$).*)',
       headers: [
         { key: 'X-Content-Type-Options', value: 'nosniff' },
         /* HSTS. Deliberately without `preload`: preloading is submitted to a
@@ -35,6 +38,12 @@ const nextConfig = {
            asks is a page that cannot be tricked into asking. */
         { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()' },
         { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+      ],
+    }, {
+      source: '/sandbox/html-preview',
+      headers: [
+        { key: 'X-Content-Type-Options', value: 'nosniff' },
+        { key: 'Referrer-Policy', value: 'no-referrer' },
       ],
     }]
   },

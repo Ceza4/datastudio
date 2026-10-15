@@ -41,6 +41,17 @@ const INSIDE_CANVAS = [
   'components/notebook/DatabaseBlock.js',
   'components/notebook/TaskBlock.js',
   'components/notebook/KanbanBlock.js',
+  'components/notebook/FlashcardsBlock.js',
+  'components/notebook/HtmlBlock.js',
+  'components/notebook/SheetTabs.js',
+  'components/notebook/FocusExit.js',
+  'components/notebook/doc/DocRuler.js',
+  'components/notebook/doc/DocRail.js',
+  'components/notebook/doc/DocLayers.js',
+  'components/notebook/doc/DocMenus.js',
+  'components/notebook/doc/DocPanels.js',
+  'components/notebook/doc/DocUi.js',
+  'components/notebook/doc/DocDialogs.js',
   'components/notebook/ImageBlock.js',
   'components/notebook/PdfBlock.js',
   'components/notebook/PdfAnnotationLayer.js',
@@ -53,10 +64,18 @@ const INSIDE_CANVAS = [
 /* Allowed to read a bounding rect without scale correction, with the reason.
    Anything not listed must go through lib/canvasgeom.js. */
 const RECT_ALLOWED = {
+  'components/notebook/doc/DocRuler.js':
+    'Converts pointer x to inches by dividing by the bar\'s own measured width over the page width in inches, so the scale cancels out.',
+  'components/notebook/doc/DocMenus.js':
+    'PageJump and ZoomMenu measure their own button to place a PORTALLED menu in screen space.',
   'components/notebook/TextBlockContent.js':
     'measures a Range for the slash menu, which is portalled and positioned in screen space',
   'components/notebook/DatabaseBlock.js':
     'anchorOf() measures a header/cell to place a PORTALLED menu, which lives in screen space too — the scaled rect is the correct one there. It does no pointer maths at all: the board reorders by HTML drag-and-drop, which reports targets rather than coordinates.',
+  'components/notebook/SheetTabs.js':
+    'Measures the dragged tab only to place its PORTALLED ghost in screen space and to fly it into its slot. Which slot it lands in is decided with localPointFromEvent against offsetLeft/offsetWidth.',
+  'components/notebook/KanbanBlock.js':
+    'CardMenu measures the pill or ••• button to place a PORTALLED menu in screen space, the same case as DatabaseBlock. Cards move by HTML drag-and-drop; there is no pointer maths.',
 }
 
 let problems = 0

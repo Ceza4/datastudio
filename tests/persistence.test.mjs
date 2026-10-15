@@ -133,12 +133,15 @@ console.log('\n  forward compatibility')
 /* ── formatBytes, the one pure helper that was already here ─────────────── */
 console.log('\n  formatBytes')
 {
-  eq(P.formatBytes(0), '0 KB', 'zero')
-  eq(P.formatBytes(-5), '0 KB', 'negative is clamped rather than rendered')
-  eq(P.formatBytes(NaN), '0 KB', 'NaN does not leak into the meter')
-  eq(P.formatBytes(1), '1 KB', 'sub-kilobyte rounds up to 1 rather than showing 0')
+  // Storage is shown in MB/GB only — no KB (decided 2 Oct 2026).
+  eq(P.formatBytes(0), '0 MB', 'zero')
+  eq(P.formatBytes(-5), '0 MB', 'negative is clamped rather than rendered')
+  eq(P.formatBytes(NaN), '0 MB', 'NaN does not leak into the meter')
+  eq(P.formatBytes(1), '< 0.1 MB', 'tiny sizes read as < 0.1 MB rather than 0')
   eq(P.formatBytes(1024 * 1024), '1.0 MB', 'exactly 1MB')
-  eq(P.formatBytes(1024 * 1024 * 1024 * 3), '3.00 GB', 'gigabytes')
+  eq(P.formatBytes(250 * 1024 * 1024), '250 MB', 'hundreds of MB are whole numbers')
+  eq(P.formatBytes(1024 * 1024 * 1024 * 3), '3.0 GB', 'gigabytes')
+  eq(P.formatBytes(1024 * 1024 * 1024 * 50), '50 GB', 'tens of GB are whole numbers')
 }
 
 console.log(`\n ${pass} passed, ${fail} failed\n`)

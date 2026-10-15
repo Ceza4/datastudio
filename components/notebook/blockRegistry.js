@@ -47,6 +47,9 @@
    the bundler is fine either way, so the stricter form is the one that works
    in both. */
 import { createDatabase } from '../../lib/database.js'
+import { kanbanMinDims } from '../../lib/kanban.js'
+import { allSheets } from '../../lib/sheettabs.js'
+import { STARTER_HTML } from '../../lib/htmlblock.js'
 
 /** Strip HTML and see if anything's left. Shared by text-ish types. */
 const hasText = html => (html || '').replace(/<[^>]*>/g, '').trim().length > 0
@@ -106,7 +109,9 @@ export const BLOCK_TYPES = {
     /* Menu metadata. Both menus read these; nothing hand-maintains a
        second copy — see ADD_MENU_GROUPS. */
     menuGroup: 'data',
-    desc: 'A spreadsheet grid with formulas',
+    /* Not "with formulas": there is no formula engine yet, and a menu that
+       promises one gets an =SUM typed in and shown back as text. */
+    desc: 'A spreadsheet grid with Excel’s keys',
     keywords: 'table grid spreadsheet sheet rows columns cells formula csv excel data',
     key: 't',
     resizable: 'both',
@@ -124,7 +129,11 @@ export const BLOCK_TYPES = {
       rows: rows || Array(8).fill(null).map(() => ['']),
     }),
     dims: { w: 520, h: 260 },
-    hasContent: b => !!b.rows?.some(row => row.some(c => c && String(c).trim())),
+    /* Comfortable-minimum audit, 25 Sep 2026: at 200x100 a sheet showed one
+       column and three rows under its toolbar. */
+    minDims: { w: 280, h: 160 },
+    /* Every sheet counts, not just the one on screen (lib/sheettabs.js). */
+    hasContent: b => allSheets(b).some(sh => !!sh.rows?.some(row => Array.isArray(row) && row.some(c => c && String(c).trim()))),
     /* headers and rows are passed positionally by addNotebookBlock rather than
        through the patch, so they're handled separately — see cloneArgs below. */
     cloneFields: [],
@@ -152,7 +161,14 @@ export const BLOCK_TYPES = {
         { id: `lane_${now}_3`, name: 'Lane 3', cards: [] },
       ],
     }),
-    dims: { w: 720, h: 280 },
+    /* 880x360 so the three starter lanes are all in view at 260px each. */
+    dims: { w: 880, h: 360 },
+    /* Two whole lanes and a card with its pills, never less (25 Sep 2026).
+       Below this the board was the cramped, borderless state that got
+       reported. */
+    /* A FUNCTION of the lane count (lib/kanban.js): every lane at least
+       220px, so the board never needs a sideways scrollbar. */
+    minDims: b => kanbanMinDims(b?.lanes?.length),
     hasContent: b => !!b.lanes?.some(l => l.cards?.length > 0),
     cloneFields: ['lanes'],
   },
@@ -176,6 +192,8 @@ export const BLOCK_TYPES = {
       name: 'Section', sectionColor: '#5B5FE8',
     }),
     dims: { w: 500, h: 350 },
+    /* Room for the name, the colour dots and one block's drop target. */
+    minDims: { w: 280, h: 160 },
     /* A section's content is its children, which live in the sibling list —
        so unlike every other type this one needs the whole block array. */
     hasContent: (b, all = []) => all.some(x => x.parentSectionId === b.id),
@@ -222,7 +240,7 @@ export const BLOCK_TYPES = {
     icon: 'format-word',
     order: 13,
     menuGroup: 'write',
-    desc: 'Long-form writing, with page guides',
+    desc: 'Long-form writing on real pages',
     keywords: 'document doc word writing report paper long-form pages ribbon manuscript thesis article',
     /* 'd' is free and is nowhere near anything destructive. */
     key: 'd',
@@ -266,7 +284,11 @@ export const BLOCK_TYPES = {
     /* A Document is wide by necessity: a page at A4 with 1" margins is ~6.5"
        of text, and the ribbon needs room for four tab bands. Below this it
        stops being a writing surface. */
-    minDims: { w: 560, h: 380 },
+    /* 720 (was 560), 25 Sep 2026: the ribbon's Home tab collapses Styles and
+       Alignment into dropdowns as the block narrows, and 720 is where the
+       collapsed Home tab fits whole. Below it the toolbar was scrolled out of
+       sight, which read as clipped. */
+    minDims: { w: 720, h: 420 },
     hasContent: b => !!(b.content && b.content.replace(/<[^>]*>/g, '').trim()),
     cloneFields: [
       'content', 'pageSize', 'orientation', 'margins', 'marginPreset',
@@ -461,7 +483,9 @@ export const BLOCK_TYPES = {
        STATED AS A RECOMMENDATION, NOT A MEASUREMENT: nobody has yet looked at a
        7-column grid at 300px on a real screen. If it turns out to want more, this
        is the one number to change. */
-    minDims: { w: 480, h: 300 },
+    /* 520x380 (was 480x300) after the 25 Sep audit: at 300px tall the
+       month grid cut its third week in half. */
+    minDims: { w: 520, h: 380 },
     /* Only events typed directly in count as content. Everything else is a
        view of data that lives elsewhere and isn't lost with the block. */
     hasContent: b => (b.events?.length || 0) > 0,
@@ -519,6 +543,8 @@ export const BLOCK_TYPES = {
       db: createDatabase({ name: 'Untitled' }),
     }),
     dims: { w: 620, h: 380 },
+    /* The view tabs, Sort, Filter and a few rows, whole (25 Sep 2026). */
+    minDims: { w: 440, h: 240 },
     /* A database you have put something INTO. One property (the title it is
        born with) and no rows is the block you just made by mis-clicking, and
        asking about that is the tax components/ui/Toast.js argues against. */
@@ -576,6 +602,8 @@ export const BLOCK_TYPES = {
       id, type: 'chat', x, y, w: w || 340, h: h || 380, name: '',
     }),
     dims: { w: 340, h: 380 },
+    /* A readable thread above the composer (25 Sep 2026). */
+    minDims: { w: 300, h: 320 },
     /* A chat block is never "empty" in the sense the delete confirmation
        cares about: the thing worth losing is on the server, and this function
        cannot see it without a round trip. Answering `true` unconditionally
@@ -745,6 +773,112 @@ export const BLOCK_TYPES = {
     hasContent: () => false,
     cloneFields: ['sourceId', 'rowId', 'pipelineId'],
   },
+
+  /* Flashcards with SM-2 spaced repetition (25 Sep 2026). The model and the
+     scheduler are in lib/flashcards.js; attachments ride the files store,
+     which is why the page's asset keep-set looks inside `cards`. */
+  flashcards: {
+    label: 'Flashcards',
+    icon: 'block-flashcards',
+    order: 16,
+    menuGroup: 'organize',
+    desc: 'Cards you study with spaced repetition',
+    keywords: 'flashcards cards study learn memorize anki spaced repetition review quiz exam deck',
+    key: null,
+    resizable: 'both',
+    rail: null,
+    exportAs: ['*'],
+    focusSelector: 'textarea,button',
+    create: ({ id, x, y, w, h }) => ({
+      id, type: 'flashcards', x, y, w: w || 560, h: h || 520,
+      name: 'Flashcards', cards: [], newPerDay: 20,
+    }),
+    dims: { w: 560, h: 520 },
+    /* The composer's two fields side by side, the four grade buttons whole. */
+    minDims: { w: 420, h: 360 },
+    hasContent: b => (b.cards?.length || 0) > 0,
+    /* Deep-copied (clonepatch), so studying the copy never moves the
+       original's schedule. */
+    cloneFields: ['cards', 'newPerDay'],
+  },
+
+  /* HTML PROTOTYPE — paste a page, see it run, sandboxed (lib/htmlblock.js). */
+  html: {
+    label: 'HTML prototype',
+    icon: 'format-html',
+    order: 17,
+    menuGroup: 'media',
+    desc: 'Paste HTML and run it in a sandbox',
+    keywords: 'html prototype code preview web page sandbox iframe claude artifact mockup javascript css',
+    key: null,
+    resizable: 'both',
+    rail: null,
+    exportAs: ['*'],
+    focusSelector: 'textarea',
+    create: ({ id, x, y, w, h }) => ({
+      id, type: 'html', x, y, w: w || 880, h: h || 560,
+      name: 'HTML prototype', html: STARTER_HTML, view: { mode: 'split', vp: 'fill', split: 45 },
+    }),
+    dims: { w: 880, h: 560 },
+    /* Toolbar whole, a readable code column and a preview beside it. */
+    minDims: { w: 520, h: 320 },
+    hasContent: b => !!(b.html && b.html.trim() && b.html !== STARTER_HTML),
+    cloneFields: ['html', 'view'],
+  },
+
+  /* AGENTS (27 Sep 2026). The block holds only ids — { agentId, ownerId }.
+     The agent's settings and chats live in the owner's private rows
+     (migration 0012), which is how "nobody else can see the AI" holds even
+     on a sheet everybody can edit. See components/notebook/AgentBlock.js. */
+  agent: {
+    label: 'Agent',
+    /* Placeholder glyph until an agent icon is drawn (npm run icons). */
+    icon: 'tool-simulate',
+    order: 18,
+    menuGroup: 'ai',
+    desc: 'An AI agent that works in this sheet',
+    keywords: 'agent ai assistant claude chat gpt research write automate bot helper copilot',
+    key: null,
+    resizable: 'both',
+    rail: null,
+    /* Never exported: an agent is a tool you use on the sheet, not part of it. */
+    exportAs: [],
+    focusSelector: null,
+    create: ({ id, x, y, w, h }) => ({
+      id, type: 'agent', x, y, w: w || 720, h: h || 760, name: '', agentId: null, ownerId: null,
+    }),
+    dims: { w: 720, h: 760 },
+    minDims: { w: 560, h: 460 },
+    /* Always asks before deleting: the block is the way back to the agent. */
+    hasContent: () => true,
+    /* A duplicate is a NEW agent, never a second view of this one. */
+    cloneFields: [],
+  },
+
+  agentchat: {
+    label: 'Agent chat',
+    icon: 'tool-simulate',
+    order: 19,
+    menuGroup: 'ai',
+    desc: 'One conversation with an agent',
+    keywords: 'agent chat conversation ai',
+    /* Opened from an agent block, never from the Add menu. */
+    hiddenFromAddMenu: true,
+    key: null,
+    resizable: 'both',
+    rail: null,
+    exportAs: [],
+    focusSelector: '[data-chat-composer]',
+    create: ({ id, x, y, w, h }) => ({
+      id, type: 'agentchat', x, y, w: w || 440, h: h || 640, name: '', chatId: null, agentId: null, ownerId: null,
+    }),
+    dims: { w: 440, h: 640 },
+    minDims: { w: 340, h: 360 },
+    /* Closing a chat block loses nothing — the chat stays in the agent's
+       history — so it never asks. */
+    hasContent: () => false,
+    cloneFields: [],
+  },
 }
 
 /* ── derived lookups ──────────────────────────────────────────────────── */
@@ -777,6 +911,7 @@ export const ADD_MENU_GROUPS = Object.freeze([
   { id: 'data',        label: 'Data' },
   { id: 'media',       label: 'Media' },
   { id: 'collaborate', label: 'Collaborate' },
+  { id: 'ai',          label: 'AI' },
 ])
 
 /* Carries keywords, desc and menuGroup through now, not just type/label/icon.
@@ -821,6 +956,27 @@ export function matchesAddQuery(item, query) {
   return `${item.label} ${item.keywords}`.toLowerCase().includes(q)
 }
 
+/* How well an item answers a query, higher first. Search used to keep the
+   menu's own order, so "document" listed PDF (whose keywords say
+   "document") above Document itself; Enter took PDF and a file picker
+   opened instead of a block. The name you typed beats a keyword. */
+export function addQueryScore(item, query) {
+  const q = (query || '').toLowerCase().trim()
+  const label = String(item.label || '').toLowerCase()
+  if (label === q) return 4
+  if (label.startsWith(q)) return 3
+  if (label.split(/\s+/).some(w => w.startsWith(q))) return 2
+  if (String(item.keywords || '').toLowerCase().split(/\s+/).some(w => w.startsWith(q))) return 1
+  return 0
+}
+export function searchAddItems(items, query) {
+  return items
+    .filter(i => matchesAddQuery(i, query))
+    .map((item, idx) => ({ item, idx, s: addQueryScore(item, query) }))
+    .sort((a, b) => b.s - a.s || a.idx - b.idx)
+    .map(r => r.item)
+}
+
 /** Single keypress → type, for keyboard mode. */
 export const TYPE_BY_KEY = Object.fromEntries(
   BLOCK_TYPE_IDS.filter(t => BLOCK_TYPES[t].key).map(t => [BLOCK_TYPES[t].key, t])
@@ -844,9 +1000,57 @@ export function createBlock(type, { id, x, y, w, h, headers, rows, patch, now = 
 }
 
 /** Rendered size, falling back to the per-type defaults. */
+/** A type's floor for THIS block: minDims may be a fixed {w,h} or, for types
+ *  whose floor depends on their content (Kanban: its lane count), a
+ *  function of the block. */
+export function minDimsOf(b) {
+  const m = getType(b?.type)?.minDims
+  return typeof m === 'function' ? m(b) : m || null
+}
+
 export function blockDims(b) {
   const def = getType(b?.type)
-  return { w: b?.w || def.dims.w, h: b?.h || def.dims.h }
+  const min = minDimsOf(b)
+  const w = b?.w || def.dims.w, h = b?.h || def.dims.h
+  /* A stored size under the type's floor (saved before the floor existed,
+     or synced from an older client) is RENDERED at the floor. The stored
+     value is corrected on load by growBlocksToMin. */
+  return min ? { w: Math.max(w, min.w), h: Math.max(h, min.h) } : { w, h }
+}
+
+/** The block with w/h raised to its type's floor. Same object when nothing
+ *  changes, so memoised consumers see no difference. */
+export function clampToMin(b) {
+  const min = b && minDimsOf(b)
+  if (!min) return b
+  const w = b.w && b.w < min.w ? min.w : b.w
+  const h = b.h && b.h < min.h ? min.h : b.h
+  return w === b.w && h === b.h ? b : { ...b, w, h }
+}
+
+/** Grow every stored block under its floor, across a notebook list. Runs on
+ *  load. Same identity at every level when nothing changes, so an unaffected
+ *  workspace is not marked dirty and written back on every boot (the same
+ *  rule migrateInk follows). */
+export function growBlocksToMin(notebooks) {
+  if (!Array.isArray(notebooks)) return notebooks
+  let any = false
+  const out = notebooks.map(n => {
+    if (!Array.isArray(n?.sheets)) return n
+    let nChanged = false
+    const sheets = n.sheets.map(sh => {
+      if (!Array.isArray(sh?.blocks)) return sh
+      let sChanged = false
+      const blocks = sh.blocks.map(b => { const c = clampToMin(b); if (c !== b) sChanged = true; return c })
+      if (!sChanged) return sh
+      nChanged = true
+      return { ...sh, blocks }
+    })
+    if (!nChanged) return n
+    any = true
+    return { ...n, sheets }
+  })
+  return any ? out : notebooks
 }
 
 /* ── EFFECTIVE FOOTPRINT ──────────────────────────────────────────────────
@@ -900,7 +1104,7 @@ export function blockFootprint(b) {
    floor in as the fallback rather than this file duplicating those numbers —
    MIN_W/MIN_H are a canvas policy, not a registry fact. */
 export function blockMinDims(b, fallback = { w: 200, h: 100 }) {
-  const min = getType(b?.type).minDims
+  const min = minDimsOf(b)
   return {
     w: Math.max(fallback.w, min?.w || 0),
     h: Math.max(fallback.h, min?.h || 0),

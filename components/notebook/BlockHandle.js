@@ -4,6 +4,7 @@ import { attributionLabel, personHue } from '../../lib/attribution'
 import { presenceLabel } from '../../lib/presence'
 import Icon from '../ui/Icon'
 import { Z } from '../../lib/theme'
+import { useFocusMode, FocusEnter, FocusExit } from './FocusExit'
 
 /* Shared fallback for a handle rendered outside the canvas, which has nobody
    to build the index. Frozen because it is handed to every such handle at
@@ -50,6 +51,11 @@ export default function BlockHandle({
 }) {
   const { raised, border, text2, text3, red, accent, accentText, accentDim, surface } = colors
   const [showBacklinks, setShowBacklinks] = useState(false)
+  /* Full screen (lib/focusmode.js). While this block fills the window its
+     title bar trades the delete button for the way out: deleting the block
+     you are looking at full screen is not a gesture anyone means. */
+  const { focusId } = useFocusMode()
+  const focused = focusId === block.id
 
   return (
     <div
@@ -65,7 +71,7 @@ export default function BlockHandle({
         height: 30,
         background: raised,
         borderBottom: `1px solid ${border}`,
-        cursor: 'grab',
+        cursor: focused ? 'default' : 'grab',
         userSelect: 'none',
       }}
     >
@@ -331,7 +337,9 @@ export default function BlockHandle({
         </div>
       )}
 
-      <button
+      {focused ? <FocusExit colors={colors} /> : <FocusEnter block={block} colors={colors} />}
+
+      {!focused && <button
         onClick={e => {
           e.stopPropagation()
           onDelete()
@@ -350,7 +358,7 @@ export default function BlockHandle({
         onMouseLeave={e => (e.currentTarget.style.color = text3)}
       >
         <Icon name="action-delete" size={12} />
-      </button>
+      </button>}
     </div>
   )
 }

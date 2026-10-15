@@ -33,6 +33,7 @@
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { COOKIE_OPTIONS } from './lib/cookies.js'
+import { PREVIEW_PATH, previewCsp } from './lib/htmlblock.js'
 
 /* Routes that require a session. Everything else — the landing wall, /login,
    /signup, the auth callback — is deliberately open.
@@ -298,6 +299,13 @@ export default async function proxy(request) {
     return handoff(response, NextResponse.redirect(to))
   }
 
+  /* The HTML prototype shell carries its own, looser CSP (lib/htmlblock.js)
+     so prototypes can load libraries from a CDN. It is only ever run inside
+     a sandboxed frame with an opaque origin, and it holds no data. */
+  if (lower === PREVIEW_PATH) {
+    response.headers.set('Content-Security-Policy', previewCsp())
+    return response
+  }
   response.headers.set('Content-Security-Policy', buildCsp())
   return response
 }

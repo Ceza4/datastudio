@@ -68,6 +68,16 @@
      words — and it was being used for words in about fifteen places. */
   --ds-accent-text: #147154;
   --ds-accent-dim: #D0F0E4;
+  /* Notes highlighter (lib/highlight.js). Translucent, so the text keeps its
+     own colour and any text colour on top of a highlight still reads. Stored
+     notes carry the Document ribbon's pastel hex; these are what it is
+     PAINTED as on the canvas. `-mark` is the solid swatch for the toolbar. */
+  --ds-hl-yellow: rgba(250, 204, 21, 0.36);  --ds-hl-yellow-mark: #E3B505;
+  --ds-hl-green:  rgba(34, 197, 94, 0.24);   --ds-hl-green-mark:  #22A55A;
+  --ds-hl-cyan:   rgba(14, 165, 233, 0.22);  --ds-hl-cyan-mark:   #1A9AD6;
+  --ds-hl-pink:   rgba(236, 72, 153, 0.20);  --ds-hl-pink-mark:   #D9488F;
+  --ds-hl-orange: rgba(249, 115, 22, 0.24);
+  --ds-hl-grey:   rgba(120, 113, 108, 0.20);
   --ds-green:      #2A8331;
   --ds-red:        #C0392B;
   --ds-amber:      #8A6410;
@@ -90,7 +100,15 @@
   --ds-font-body:  var(--font-inter, 'Inter'), system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   /* share-link, inlined for .ds-teleport::before (a CSS mask can't import JS) */
   --ds-teleport-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none' stroke='%23000' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M28 36a10 10 0 0 0 15 1l8-8a10 10 0 0 0-14-14l-5 4'/%3E%3Cpath d='M36 28a10 10 0 0 0-15-1l-8 8a10 10 0 0 0 14 14l5-4'/%3E%3C/svg%3E");
-  --ds-font-mono:  var(--font-dm-mono, 'DM Mono'), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  /* FIGURES AND LABELS ARE INTER (2 Oct 2026). --ds-font-mono used to be
+     DM Mono, and every number in the chrome — storage, zoom, sizes, badges,
+     counters — wore its slashed zero, a different voice from the Inter
+     around it. It is now the same Inter, with tabular figures (rule below)
+     so columns and ticking counters still line up. The name stays so the
+     ~150 call sites keep working; real CODE moved to --ds-font-code. */
+  --ds-font-mono:  var(--font-inter, 'Inter'), system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  /* Code only: note code blocks, inline code, the HTML block editor. */
+  --ds-font-code:  var(--font-dm-mono, 'DM Mono'), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
   /* ── Type scale ──
      Six steps, every one a whole pixel, floor 11px.
@@ -181,6 +199,12 @@
   --ds-accent:     #5B5FE8;
   --ds-accent-text: #7D81ED;  /* 4.55:1 */
   --ds-accent-dim: #1E2057;
+  --ds-hl-yellow: rgba(250, 204, 21, 0.28);  --ds-hl-yellow-mark: #FACC15;
+  --ds-hl-green:  rgba(74, 222, 128, 0.22);  --ds-hl-green-mark:  #4ADE80;
+  --ds-hl-cyan:   rgba(56, 189, 248, 0.24);  --ds-hl-cyan-mark:   #38BDF8;
+  --ds-hl-pink:   rgba(244, 114, 182, 0.24); --ds-hl-pink-mark:   #F472B6;
+  --ds-hl-orange: rgba(251, 146, 60, 0.26);
+  --ds-hl-grey:   rgba(168, 162, 158, 0.22);
   --ds-green:      #4ADE80;
   --ds-red:        #F87171;
   --ds-amber:      #E8B85B;
@@ -259,9 +283,19 @@ h1, h2, h3, h4 {
 /* Block title rename fields: they replace the title in place, and a 2px
    accent ring around a title read as a stray green box. */
 [data-ds-rename]:focus-visible,
+[data-ds-code-editor]:focus-visible,
 .ds-searchrow input:focus-visible,
 .ds-searchrow input:focus {
   outline: none !important;
+}
+
+/* A document's header and footer fields sit ON the page: the field
+   underlines itself instead of wearing the app's focus ring. */
+[data-ds-hf-edit] input:focus,
+[data-ds-hf-edit] input:focus-visible {
+  outline: none !important;
+  box-shadow: inset 0 -2px 0 var(--ds-accent) !important;
+  border-radius: 0 !important;
 }
 
 ::placeholder { color: var(--ds-text-3); opacity: 1; }
@@ -946,3 +980,55 @@ html, body {
   background: var(--ds-accent);
   width: 2px;
 }
+
+/* ── FULL SCREEN FOR ONE BLOCK ─────────────────────────────────────────────
+   lib/focusmode.js. NotebookCanvas sets data-ds-focus on <html> while a block
+   fills the window, and every island steps out of the way in the direction
+   it lives: the top row up, the sidebar left, the rails right, the bottom
+   bars down. `translate` rather than `transform`, because several islands
+   already use transform for their own placement (the Visuals bar centres
+   itself with translateX(-50%), the rails with translateY(-50%)) and the two
+   properties compose instead of one replacing the other. */
+[data-ds-island], [data-island-rail] {
+  transition: translate .34s cubic-bezier(.4, 0, .2, 1), opacity .26s ease, transform .3s cubic-bezier(.4, 0, .2, 1) !important;
+}
+:root[data-ds-focus] [data-ds-island],
+:root[data-ds-focus] [data-island-rail] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+:root[data-ds-focus] [data-ds-island='top']    { translate: 0 calc(-100% - 24px); }
+:root[data-ds-focus] [data-ds-island='left']   { translate: calc(-100% - 24px) 0; transition-delay: .03s !important; }
+:root[data-ds-focus] [data-ds-island='bottom'] { translate: 0 calc(100% + 24px); transition-delay: .02s !important; }
+:root[data-ds-focus] [data-island-rail]        { translate: calc(100% + 24px) 0; transition-delay: .05s !important; }
+/* The enlarged block's resize grips and connection ports: full screen is a
+   view, so there is nothing to resize or wire from. */
+[data-ds-focused] [data-ds-resize], [data-ds-focused] [data-ds-port] { display: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  [data-ds-island], [data-island-rail] { transition: opacity .12s linear !important; }
+}
+/* A text block stretched across the window would set 200-character lines.
+   In full screen its text keeps a comfortable measure, centred, and the
+   rest of the frame is breathing room. */
+[data-ds-focused] [data-ds-textblock] {
+  /* The editor itself stays full width — it is the scroller, and a centred
+     760px scroller put its scrollbar in the middle of the screen. The
+     measure comes from side padding instead, so the text column is centred
+     and the scrollbar sits at the block's edge. */
+  padding-left: max(14px, calc((100% - 760px) / 2)) !important;
+  padding-right: max(14px, calc((100% - 760px) / 2)) !important;
+  padding-top: 24px !important;
+}
+
+/* A block that takes focus in full screen with nothing inside to type into
+   receives it on its wrapper; its own chrome already shows it is active. */
+[data-ds-block-wrap]:focus-visible { outline: none !important; }
+
+/* Tabular figures wherever the figure font is used — inline styles included
+   (React writes them into the style attribute). Same width for every digit,
+   so a countdown does not jitter and numbers in a column align. */
+.mono, [style*="--ds-font-mono"] { font-variant-numeric: tabular-nums; }
+/* A Document's own text keeps DM Mono when the user picked it from the font
+   list (lib/pagesetup.js stores var(--ds-font-mono)); only the app chrome
+   moved to Inter. */
+[data-ds-doc] { --ds-font-mono: var(--ds-font-code); }

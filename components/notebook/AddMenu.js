@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
 import { Z } from '../../lib/theme'
-import { ADD_ITEMS, ADD_ITEMS_BY_GROUP, matchesAddQuery } from './blockRegistry'
+import { ADD_ITEMS, ADD_ITEMS_BY_GROUP, searchAddItems } from './blockRegistry'
 
 /*
   components/notebook/AddMenu.js
@@ -67,7 +67,7 @@ export default function AddMenu({ anchorRect, colors, onPick, onClose }) {
      unambiguous and Enter can never insert a different row from the one
      highlighted. */
   const flat = useMemo(
-    () => (searching ? ADD_ITEMS.filter(i => matchesAddQuery(i, query)) : ADD_ITEMS_BY_GROUP.flatMap(g => g.items)),
+    () => (searching ? searchAddItems(ADD_ITEMS, query) : ADD_ITEMS_BY_GROUP.flatMap(g => g.items)),
     [query, searching]
   )
 
@@ -249,7 +249,7 @@ export default function AddMenu({ anchorRect, colors, onPick, onClose }) {
         <input
           ref={inputRef}
           value={query}
-          onChange={e => setQuery(e.target.value)}
+          onChange={e => { setQuery(e.target.value); setActive(0) /* results are ranked now: the best match is on top */ }}
           onKeyDown={onKeyDown}
           placeholder="Search blocks…"
           aria-label="Search blocks"

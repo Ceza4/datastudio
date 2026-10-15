@@ -1,13 +1,15 @@
 'use client'
 import Icon from '../ui/Icon'
 import { useToast } from '../ui/Toast'
-import { useCallback, useRef, useState, memo } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, memo } from 'react'
+import { createPortal } from 'react-dom'
 
 /* The shared swatch set. This was a fourth private palette — one of four
    arrays doing the same job with eleven values between them and nothing in
    common — and its first entry was the DARK accent, so a card created in light
    mode came up indigo on a green-accented canvas. */
-import { SWATCHES } from '../../lib/theme'
+import { SWATCHES, Z, stablePick } from '../../lib/theme'
+import { LANE_MIN, LANE_GAP, BOARD_PAD, ADD_LANE_W, kanbanMinDims } from '../../lib/kanban'
 const CARD_COLORS = SWATCHES.map(s => s.value)
 
 /** Every id in the app is `prefix_time_random`; these two were `prefix_time`. */
@@ -148,9 +150,11 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
   }
 
   function addLane() {
-    onUpdateBlock(block.id, {
-      lanes: [...lanes, { id: newLocalId('lane'), name: `Lane ${lanes.length + 1}`, cards: [] }]
-    })
+    const next = [...lanes, { id: newLocalId('lane'), name: `Lane ${lanes.length + 1}`, cards: [] }]
+    /* The block grows to fit the new lane rather than the board starting to
+       scroll sideways: every lane keeps at least LANE_MIN. */
+    const need = kanbanMinDims(next.length).w
+    onUpdateBlock(block.id, { lanes: next, ...((block.w || 0) < need ? { w: need } : {}) })
     /* Next frame: the new lane does not exist in the DOM yet on this one, so
        scrollWidth is still the old width and the scroll would land short. */
     requestAnimationFrame(() => {
@@ -190,15 +194,29 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
         }
         [data-ds-kanban-lanes]::-webkit-scrollbar-thumb:hover { background: var(--ds-accent); }
         [data-ds-kanban-lanes] { scrollbar-width: thin; scroll-behavior: smooth; }
+        [data-kanban-lane-body] { scrollbar-width: thin; }
+        [data-kanban-lane-body]::-webkit-scrollbar { width: 6px; }
+        [data-kanban-lane-body]::-webkit-scrollbar-thumb { background: var(--ds-border); border-radius: 3px; }
         /* Matches .import-btn:hover's convention already in globals.css rather
            than inventing a second "lift the fill slightly" number. */
         .kanban-add-card:hover { opacity: 0.88; }
+        /* Cards (25 Sep 2026): a real border that answers the pointer, and
+           the empty metadata pills only on hover or focus, so a quiet card
+           stays quiet but adding an assignee is one click away. */
+        .kanban-card { transition: border-color var(--ds-transition), box-shadow var(--ds-transition); }
+        .kanban-card:hover { border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-border)) !important; }
+        .kanban-card .kb-ghost, .kanban-card .kb-more { opacity: 0; transition: opacity var(--ds-transition); }
+        .kanban-card:hover .kb-ghost, .kanban-card:focus-within .kb-ghost,
+        .kanban-card:hover .kb-more, .kanban-card:focus-within .kb-more, .kanban-card .kb-more[aria-expanded="true"] { opacity: 1; }
       `}</style>
 
       <div
         ref={laneRowRef}
         data-ds-kanban-lanes
-        style={{ display: 'flex', gap: 8, padding: 10, alignItems: 'flex-start', overflowX: 'auto', maxWidth: '100%' }}
+        /* Fills the block: lanes share its width and take its full height,
+           so resizing the block resizes every lane. No sideways scrolling;
+           the block's minimum width (lib/kanban.js) always fits the lanes. */
+        style={{ display: 'flex', gap: LANE_GAP, padding: BOARD_PAD, alignItems: 'stretch', overflow: 'hidden', height: '100%', boxSizing: 'border-box' }}
       >
         {lanes.map(lane => (
           <div
@@ -221,16 +239,20 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
               }
             }}
             style={{
-              width: 200,
+              /* 260, not 200 (25 Sep 2026): a card needs room for its title on
+                 two lines and a row of metadata pills without wrapping every
+                 word. 200 is where the "cramped board" report came from. */
+              flex: '1 1 0', minWidth: LANE_MIN,
+              display: 'flex', flexDirection: 'column', minHeight: 0,
               /* var(--ds-surface), not a per-theme literal. See the header note
                  — #DDD9CF was a private colour matching no token, so the light
                  theme's lane background belonged to no one. */
               background: laneIsDragTarget(lane.id) ? accentDim : 'var(--ds-surface)',
-              borderRadius: 8,
-              padding: 8,
+              borderRadius: 10,
+              padding: 10,
               border: laneIsDragTarget(lane.id) ? `1px solid ${accent}` : `1px solid ${border}`,
               transition: 'background var(--ds-transition), border-color var(--ds-transition)',
-              flexShrink: 0
+              boxSizing: 'border-box',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
@@ -279,162 +301,18 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
               </button>
             </div>
 
+            <div data-kanban-lane-body style={{ flex: '0 1 auto', minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
             {lane.cards.map(card => (
-              <div
-                key={card.id}
-                /* THE CLASS THAT MAKES globals.css's DEAD RULE LIVE.
-                   `.kanban-card:hover .card-del` has been in the stylesheet all
-                   along with nothing to match. */
-                className="kanban-card"
-                draggable
-                onDragStart={e => {
-                  e.stopPropagation()
-                  setCardDrag({ cardId: card.id, fromLaneId: lane.id, blockId: block.id })
-                }}
-                onDragEnd={() => {
-                  setCardDrag(null)
-                  setCardDragOver(null)
-                }}
-                onMouseDown={e => e.stopPropagation()}
-                style={{
-                  background: surface,
-                  borderRadius: 6,
-                  padding: '8px 10px',
-                  marginBottom: 6,
-                  /* A 3px coloured left edge ONLY when a colour is actually set.
-                     With `color: null` now the default, the old unconditional
-                     `3px solid ${card.color}` would render `3px solid null` —
-                     an invalid declaration the browser drops, leaving a card
-                     with three borders and a gap where the fourth should be.
-                     Unset cards get the same 1px all-round border every other
-                     surface in the app has. */
-                  border: card.color ? undefined : `1px solid ${border}`,
-                  borderTop: card.color ? `1px solid ${border}` : undefined,
-                  borderRight: card.color ? `1px solid ${border}` : undefined,
-                  borderBottom: card.color ? `1px solid ${border}` : undefined,
-                  borderLeft: card.color ? `3px solid ${card.color}` : undefined,
-                  cursor: 'grab',
-                  position: 'relative'
-                }}
-              >
-                <div style={{ fontSize: 13, color: text, fontFamily: 'var(--ds-font-body)', lineHeight: 1.4, paddingRight: 16 }}>
-                  {card.title}
-                </div>
-
-                {card.tag && (
-                  <div style={{
-                    fontSize: 11,
-                    /* An uncoloured card's tag falls back to text3 rather than
-                       rendering `color: null` (inherit) on a `null22`
-                       background, which is a dropped declaration and a
-                       transparent pill. */
-                    color: card.color || text3,
-                    fontWeight: 700,
-                    background: card.color ? card.color + '22' : raised,
-                    borderRadius: 4, padding: '2px 6px', display: 'inline-block', marginTop: 4,
-                  }}>
-                    {card.tag}
-                  </div>
-                )}
-
-                <button
-                  className="card-del"
-                  onClick={e => {
-                    e.stopPropagation()
-                    deleteCard(lane.id, card.id)
-                  }}
-                  style={{
-                    position: 'absolute', top: 5, right: 5,
-                    background: 'none', border: 'none', color: text3,
-                    cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: '2px 4px',
-                    /* Hover-revealed. The !important in globals.css's rule is
-                       what beats this inline 0 — which is exactly why the rule
-                       was written with one. */
-                    opacity: 0,
-                    transition: 'opacity var(--ds-transition)',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.color = red}
-                  onMouseLeave={e => e.currentTarget.style.color = text3}
-                  aria-label="Delete card"
-                >
-                  <Icon name="action-delete" size={12} />
-                </button>
-
-                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }} role="group" aria-label="Card colour">
-                  {/* "No colour", FIRST. A dashed ring, which is the app's
-                      existing convention for an unset state (the + card and
-                      + lane affordances are both dashed). */}
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    aria-label="No colour"
-                    title="No colour"
-                    onClick={e => { e.stopPropagation(); updateCard(lane.id, card.id, { color: null }) }}
-                    onKeyDown={e => {
-                      if (e.key !== 'Enter' && e.key !== ' ') return
-                      e.preventDefault(); e.stopPropagation()
-                      updateCard(lane.id, card.id, { color: null })
-                    }}
-                    style={{
-                      width: 10, height: 10, borderRadius: '50%',
-                      background: 'transparent',
-                      cursor: 'pointer',
-                      border: card.color ? `1px dashed ${text3}` : `2px solid ${text}`,
-                      flexShrink: 0,
-                    }}
-                  />
-                  {CARD_COLORS.map(c => (
-                    <div
-                      key={c}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Card colour ${c}`}
-                      onClick={e => {
-                        e.stopPropagation()
-                        updateCard(lane.id, card.id, { color: c })
-                      }}
-                      onKeyDown={e => {
-                        if (e.key !== 'Enter' && e.key !== ' ') return
-                        e.preventDefault(); e.stopPropagation()
-                        updateCard(lane.id, card.id, { color: c })
-                      }}
-                      style={{
-                        width: 10,
-                        height: 10,
-                        borderRadius: '50%',
-                        background: c,
-                        cursor: 'pointer',
-                        border: card.color === c ? `2px solid ${text}` : '1px solid transparent',
-                        flexShrink: 0
-                      }}
-                    />
-                  ))}
-                </div>
-
-                <input
-                  value={card.tag}
-                  onChange={e => updateCard(lane.id, card.id, { tag: e.target.value })}
-                  onMouseDown={e => e.stopPropagation()}
-                  onClick={e => e.stopPropagation()}
-                  onFocus={() => { editingRef.current = true }}
-                  onBlur={() => { editingRef.current = false }}
-                  placeholder="tag..."
-                  style={{
-                    width: '100%',
-                    marginTop: 5,
-                    background: 'transparent',
-                    border: 'none',
-                    borderTop: `1px solid ${border}33`,
-                    color: text3,
-                    fontFamily: 'var(--ds-font-body)',
-                    fontSize: 11,
-                    outline: 'none',
-                    padding: '3px 0',
-                    fontStyle: card.tag ? 'normal' : 'italic'
-                  }}
-                />
-              </div>
+              <KanbanCard key={card.id} card={card} colors={colors} editingRef={editingRef}
+                onUpdate={patch => updateCard(lane.id, card.id, patch)}
+                onDelete={() => deleteCard(lane.id, card.id)}
+                onDragStart={() => setCardDrag({ cardId: card.id, fromLaneId: lane.id, blockId: block.id })}
+                onDragEnd={() => { setCardDrag(null); setCardDragOver(null) }} />
             ))}
+            </div>
+            {/* The composer / "+ card" stays pinned under the scrolling cards,
+                so adding one never means scrolling to the bottom of a lane. */}
+            <div style={{ flexShrink: 0, paddingTop: lane.cards.length ? 2 : 0 }}>
 
             {addingCard[lane.id] ? (
               /* SEAMLESS INLINE COMPOSER, not a boxed panel with Add/Cancel.
@@ -538,6 +416,7 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
                 + card
               </button>
             )}
+            </div>
           </div>
         ))}
 
@@ -546,7 +425,7 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
           onMouseDown={e => e.stopPropagation()}
           aria-label="Add lane"
           style={{
-            width: 36,
+            width: ADD_LANE_W,
             minHeight: 60,
             background: 'none',
             border: `1px dashed ${border}`,
@@ -574,6 +453,260 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
         </button>
       </div>
     </>
+  )
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────
+   25 Sep 2026. A card was a line of text over a row of eight colour dots and
+   an italic "tag…" input, all visible all the time: flat, borderless and
+   tiny. Now it is a bordered paper card with real padding, a title you can
+   edit (double-click), and metadata as PILLS: priority, assignee and tag.
+   Colour and delete moved behind the card's ••• menu, where a rarely used
+   control belongs.
+
+   New optional fields on a card, all nullable, so every existing board
+   renders unchanged: `priority` ('urgent' | 'high' | 'medium' | 'low') and
+   `assignee` (a name). `tag` and `color` keep their meaning. */
+
+export const PRIORITIES = [
+  { id: 'urgent', label: 'Urgent', color: 'var(--ds-red)' },
+  { id: 'high',   label: 'High',   color: 'var(--ds-amber)' },
+  { id: 'medium', label: 'Medium', color: 'var(--ds-code-num)' },
+  { id: 'low',    label: 'Low',    color: 'var(--ds-text-3)' },
+]
+const priorityOf = id => PRIORITIES.find(p => p.id === id) || null
+const initials = name => String(name || '').trim().split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase() || '?'
+
+function Pill({ color, children, ghost, onClick, title, expanded }) {
+  return (
+    <button type="button" title={title} aria-label={title} aria-expanded={expanded}
+      className={ghost ? 'kb-ghost' : undefined}
+      onMouseDown={e => e.stopPropagation()}
+      onClick={e => { e.stopPropagation(); onClick?.(e) }}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5, height: 22, maxWidth: '100%',
+        padding: ghost ? '0 7px' : '0 8px', borderRadius: '999px', cursor: 'pointer', flexShrink: 0,
+        fontFamily: 'var(--ds-font-body)', fontSize: 11, fontWeight: 600, lineHeight: 1,
+        border: ghost ? '1px dashed var(--ds-border)' : '1px solid transparent',
+        background: ghost ? 'transparent' : `color-mix(in srgb, ${color || 'var(--ds-text-2)'} 14%, transparent)`,
+        color: ghost ? 'var(--ds-text-3)' : (color || 'var(--ds-text-2)'),
+      }}>
+      {children}
+    </button>
+  )
+}
+
+/* A menu that escapes the lane row's overflow clipping: portalled to <body>
+   and placed from its anchor's screen rect, the same way the Document
+   ribbon's Pop is. Inside the canvas transform a fixed element would be
+   positioned against the transform, not the viewport. */
+function CardMenu({ anchor, onClose, children, width = 200 }) {
+  const [box, setBox] = useState(null)
+  const ref = useRef(null)
+  useLayoutEffect(() => {
+    if (!anchor) return
+    const r = anchor.getBoundingClientRect()
+    const below = window.innerHeight - r.bottom
+    setBox({ left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)), top: below > 240 ? r.bottom + 4 : undefined, bottom: below > 240 ? undefined : window.innerHeight - r.top + 4 })
+    const away = e => { if (ref.current && !ref.current.contains(e.target) && !anchor.contains(e.target)) onClose() }
+    const esc = e => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    document.addEventListener('mousedown', away, true)
+    document.addEventListener('keydown', esc, true)
+    return () => { document.removeEventListener('mousedown', away, true); document.removeEventListener('keydown', esc, true) }
+  }, [anchor])
+  if (!box || typeof document === 'undefined') return null
+  return createPortal(
+    <div ref={ref} role="menu" onMouseDown={e => e.stopPropagation()} style={{
+      position: 'fixed', zIndex: Z.popover, left: box.left, top: box.top, bottom: box.bottom, width,
+      background: 'var(--ds-surface)', border: '1px solid var(--ds-border)', borderRadius: 10,
+      boxShadow: 'var(--ds-shadow-lg)', padding: 6, fontFamily: 'var(--ds-font-body)',
+    }}>{children}</div>,
+    document.body,
+  )
+}
+
+function MenuItem({ children, onClick, danger, active }) {
+  return (
+    <button type="button" role="menuitem" onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%', height: 30, padding: '0 8px',
+        border: 'none', borderRadius: 6, cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ds-font-body)', fontSize: 13,
+        background: active ? 'var(--ds-accent-dim)' : 'transparent', color: danger ? 'var(--ds-red)' : 'var(--ds-text)',
+      }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--ds-raised)' }}
+      onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}>
+      {children}
+    </button>
+  )
+}
+
+function InlineInput({ value, placeholder, onDone, editingRef, width = 120, label }) {
+  const [v, setV] = useState(value || '')
+  const done = useRef(false)
+  const finish = commit => { if (done.current) return; done.current = true; editingRef.current = false; onDone(commit ? v.trim() : null) }
+  return (
+    <input autoFocus value={v} placeholder={placeholder} aria-label={label}
+      onChange={e => setV(e.target.value)}
+      onFocus={() => { editingRef.current = true }}
+      onBlur={() => finish(true)}
+      onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); finish(true) } if (e.key === 'Escape') { e.preventDefault(); finish(false) } }}
+      onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+      style={{
+        width, height: 22, boxSizing: 'border-box', padding: '0 8px', borderRadius: '999px',
+        border: '1px solid var(--ds-accent)', outline: 'none', background: 'var(--ds-paper)', color: 'var(--ds-text)',
+        fontFamily: 'var(--ds-font-body)', fontSize: 11, fontWeight: 600,
+      }} />
+  )
+}
+
+function KanbanCard({ card, colors, editingRef, onUpdate, onDelete, onDragStart, onDragEnd }) {
+  const { text, text3, border } = colors
+  const [menu, setMenu] = useState(null)       // { kind: 'more' | 'priority', anchor }
+  const [editing, setEditing] = useState(null)  // 'title' | 'assignee' | 'tag'
+  const [title, setTitle] = useState(card.title)
+  const pr = priorityOf(card.priority)
+  /* The anchor is read NOW, not inside the updater: React clears
+     currentTarget once the handler returns, and an updater can run later. */
+  const open = (kind, e) => { const el = e.currentTarget; setMenu(m => (m?.kind === kind ? null : { kind, anchor: el })) }
+
+  const commitTitle = () => {
+    editingRef.current = false
+    setEditing(null)
+    const t = title.trim()
+    if (t && t !== card.title) onUpdate({ title: t })
+    else setTitle(card.title)
+  }
+
+  return (
+    <div
+      className="kanban-card"
+      data-kanban-card={card.id}
+      draggable={!editing}
+      onDragStart={e => { e.stopPropagation(); onDragStart() }}
+      onDragEnd={onDragEnd}
+      onMouseDown={e => e.stopPropagation()}
+      onDoubleClick={e => { e.stopPropagation(); if (!editing) { setTitle(card.title); setEditing('title') } }}
+      style={{
+        position: 'relative', marginBottom: 8, padding: '12px 14px', cursor: editing ? 'default' : 'grab',
+        background: 'var(--ds-paper)', border: `1px solid ${border}`, borderRadius: 8,
+        boxShadow: 'var(--ds-shadow-sm)', overflow: 'hidden',
+      }}>
+      {/* The card's colour as a 3px band along the top: visible at a glance
+          down a lane, and it does not eat the card's text width the way a
+          thick left border did. */}
+      {card.color && <div aria-hidden="true" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 3, background: card.color }} />}
+
+      {editing === 'title' ? (
+        <textarea autoFocus value={title} aria-label="Card title" rows={3}
+          /* Grows with what you type, so a long title is never edited
+             through a two-line slot. */
+          ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
+          onChange={e => { setTitle(e.target.value); const el = e.currentTarget; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' }}
+          onFocus={e => { editingRef.current = true; e.target.select() }}
+          onBlur={commitTitle}
+          onKeyDown={e => {
+            e.stopPropagation()
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur() }
+            if (e.key === 'Escape') { e.preventDefault(); setTitle(card.title); e.currentTarget.blur() }
+          }}
+          onMouseDown={e => e.stopPropagation()}
+          style={{
+            /* Same metrics as the rendered title, plus a visible field: a
+               tinted box bleeding 8px past the text so the words do not jump
+               when editing starts. */
+            display: 'block', width: 'calc(100% + 16px)', boxSizing: 'border-box', resize: 'none',
+            margin: '-6px -8px', padding: '6px 8px', minHeight: 'calc(3em + 12px)', overflow: 'hidden',
+            border: '1px solid var(--ds-accent)', borderRadius: 6, outline: 'none', background: 'var(--ds-surface)', color: text,
+            fontFamily: 'var(--ds-font-body)', fontSize: 14, fontWeight: 500, lineHeight: 1.5,
+          }} />
+      ) : (
+        /* 14px on two lines' worth of room (3em) at minimum: a title is the
+           card, so it gets the space, and a short one does not leave the
+           card looking like a sliver. */
+        <div title="Double-click to edit" style={{ fontSize: 14, fontWeight: 500, color: text, lineHeight: 1.5, minHeight: '3em', paddingRight: 22, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
+          {card.title}
+        </div>
+      )}
+
+      {/* A card with no details yet keeps its empty pills on ONE line (they
+          fit a 220px lane without their "+"; the dashed outline already says
+          "add"), so an empty card is one row taller than its title, not two. */}
+      <div style={{ display: 'flex', flexWrap: pr || card.assignee || card.tag ? 'wrap' : 'nowrap', overflow: 'hidden', gap: 6, marginTop: 12, minHeight: 22 }}>
+        {pr ? (
+          <Pill color={pr.color} title={`Priority: ${pr.label}`} expanded={menu?.kind === 'priority'} onClick={e => open('priority', e)}>
+            <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: pr.color }} />{pr.label}
+          </Pill>
+        ) : (
+          <Pill ghost title="Set priority" expanded={menu?.kind === 'priority'} onClick={e => open('priority', e)}>Priority</Pill>
+        )}
+
+        {editing === 'assignee' ? (
+          <InlineInput value={card.assignee} placeholder="Name" label="Assignee" editingRef={editingRef}
+            onDone={v => { setEditing(null); if (v !== null && v !== (card.assignee || '')) onUpdate({ assignee: v || null }) }} />
+        ) : card.assignee ? (
+          <Pill title={`Assigned to ${card.assignee} (click to change)`} onClick={() => setEditing('assignee')}>
+            <span aria-hidden="true" style={{
+              width: 16, height: 16, marginLeft: -5, borderRadius: 8, display: 'grid', placeItems: 'center',
+              background: stablePick(card.assignee, SWATCHES).value, color: '#fff', fontSize: 11, fontWeight: 700, lineHeight: 1,
+            }}>{initials(card.assignee).slice(0, 1)}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 110 }}>{card.assignee}</span>
+          </Pill>
+        ) : (
+          <Pill ghost title="Assign someone" onClick={() => setEditing('assignee')}>Assign</Pill>
+        )}
+
+        {editing === 'tag' ? (
+          <InlineInput value={card.tag} placeholder="Tag" label="Tag" width={100} editingRef={editingRef}
+            onDone={v => { setEditing(null); if (v !== null && v !== (card.tag || '')) onUpdate({ tag: v }) }} />
+        ) : card.tag ? (
+          <Pill color={card.color || undefined} title={`Tag: ${card.tag} (click to change)`} onClick={() => setEditing('tag')}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 110 }}>#{card.tag}</span>
+          </Pill>
+        ) : (
+          <Pill ghost title="Add a tag" onClick={() => setEditing('tag')}>Tag</Pill>
+        )}
+      </div>
+
+      {editing !== 'title' && <button type="button" className="kb-more" aria-label="Card options" aria-expanded={menu?.kind === 'more'}
+        onMouseDown={e => e.stopPropagation()}
+        onClick={e => { e.stopPropagation(); open('more', e) }}
+        style={{
+          position: 'absolute', top: 6, right: 6, width: 22, height: 22, display: 'grid', placeItems: 'center',
+          border: 'none', borderRadius: 6, background: 'transparent', color: text3, cursor: 'pointer', fontSize: 14, lineHeight: 1,
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = 'var(--ds-raised)' }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+        ⋯
+      </button>}
+
+      {menu?.kind === 'priority' && (
+        <CardMenu anchor={menu.anchor} onClose={() => setMenu(null)} width={170}>
+          {PRIORITIES.map(p => (
+            <MenuItem key={p.id} active={card.priority === p.id} onClick={() => { onUpdate({ priority: p.id }); setMenu(null) }}>
+              <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 4, background: p.color }} />{p.label}
+            </MenuItem>
+          ))}
+          {card.priority && <MenuItem onClick={() => { onUpdate({ priority: null }); setMenu(null) }}><span style={{ color: text3 }}>No priority</span></MenuItem>}
+        </CardMenu>
+      )}
+      {menu?.kind === 'more' && (
+        <CardMenu anchor={menu.anchor} onClose={() => setMenu(null)} width={212}>
+          <div style={{ padding: '4px 8px 6px', fontSize: 11, fontWeight: 600, letterSpacing: 0.6, textTransform: 'uppercase', color: text3 }}>Colour</div>
+          <div role="group" aria-label="Card colour" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '0 8px 8px' }}>
+            <button type="button" aria-label="No colour" title="No colour" onClick={() => onUpdate({ color: null })}
+              style={{ width: 18, height: 18, borderRadius: '50%', cursor: 'pointer', background: 'transparent', border: card.color ? `1px dashed ${text3}` : `2px solid ${text}` }} />
+            {CARD_COLORS.map(c => (
+              <button key={c} type="button" aria-label={`Card colour ${c}`} title={SWATCHES.find(s => s.value === c)?.name}
+                onClick={() => onUpdate({ color: c })}
+                style={{ width: 18, height: 18, borderRadius: '50%', cursor: 'pointer', background: c, border: card.color === c ? `2px solid ${text}` : '2px solid transparent', boxShadow: card.color === c ? '0 0 0 1px var(--ds-surface) inset' : 'none' }} />
+            ))}
+          </div>
+          <div style={{ height: 1, background: border, margin: '2px 0 4px' }} />
+          <MenuItem onClick={() => { setMenu(null); setTitle(card.title); setEditing('title') }}>Edit title</MenuItem>
+          <MenuItem danger onClick={() => { setMenu(null); onDelete() }}>Delete card</MenuItem>
+        </CardMenu>
+      )}
+    </div>
   )
 }
 

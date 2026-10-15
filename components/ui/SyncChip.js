@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import Icon from './Icon'
-import { SYNC_OFF, SYNC_SYNCED, SYNC_SYNCING, SYNC_QUEUED, SYNC_ERROR } from '../../lib/sync'
+import { SYNC_OFF, SYNC_SYNCED, SYNC_SYNCING, SYNC_QUEUED, SYNC_ERROR, SYNC_OUTDATED } from '../../lib/sync'
 
 /*
   components/ui/SyncChip.js
@@ -51,7 +51,7 @@ export default function SyncChip({ status, colors, dark, onRetry }) {
   useEffect(() => {
     clearTimeout(timer.current)
 
-    if (state === SYNC_SYNCING || state === SYNC_QUEUED || state === SYNC_ERROR) {
+    if (state === SYNC_SYNCING || state === SYNC_QUEUED || state === SYNC_ERROR || state === SYNC_OUTDATED) {
       setShown(state)
       setVisible(true)
       return
@@ -80,9 +80,12 @@ export default function SyncChip({ status, colors, dark, onRetry }) {
     [SYNC_SYNCING]: { icon: 'sync-syncing', color: text2,               label: 'Syncing' },
     [SYNC_QUEUED]:  { icon: 'sync-offline', color: 'var(--ds-amber)',   label: pending ? `${pending} waiting` : 'Waiting' },
     [SYNC_ERROR]:   { icon: 'sync-error',   color: 'var(--ds-red)',     label: 'Sync error' },
+    /* An older build than the documents it syncs (lib/appversion.js). The
+       one fix is a reload, so the chip IS the reload button. */
+    [SYNC_OUTDATED]: { icon: 'sync-error',  color: 'var(--ds-amber)',   label: 'New version — reload' },
   }[shown] || { icon: 'sync-offline', color: text3, label: '' }
 
-  const interactive = shown === SYNC_QUEUED || shown === SYNC_ERROR
+  const interactive = shown === SYNC_QUEUED || shown === SYNC_ERROR || shown === SYNC_OUTDATED
 
   return (
     <div
@@ -99,7 +102,7 @@ export default function SyncChip({ status, colors, dark, onRetry }) {
         padding: '6px 10px', borderRadius: 6,
         background: `${surface}e8`,
         backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-        border: `1px solid ${shown === SYNC_ERROR ? 'var(--ds-red)' : border}`,
+        border: `1px solid ${shown === SYNC_ERROR ? 'var(--ds-red)' : shown === SYNC_OUTDATED ? 'var(--ds-amber)' : border}`,
         boxShadow: `0 2px 10px ${dark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.07)'}`,
         fontFamily: 'var(--ds-font-body)', fontSize: 12,
         color: look.color,
@@ -111,7 +114,7 @@ export default function SyncChip({ status, colors, dark, onRetry }) {
         userSelect: 'none',
       }}
       title={status?.message || look.label}
-      onClick={interactive ? onRetry : undefined}
+      onClick={interactive ? (shown === SYNC_OUTDATED ? () => window.location.reload() : onRetry) : undefined}
     >
       <Icon name={look.icon} size={12} />
       {look.label}

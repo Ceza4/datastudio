@@ -199,13 +199,17 @@ console.log('\n shortcuts')
 /* ── persistence helpers ─────────────────────────────────────────── */
 console.log('\n persistence helpers')
 ok(STATE_VERSION === 5, 'payload version is 5 (imported workbooks added)')
-/* The smallest unit is KB, deliberately — a storage meter reading "847 B"
-   is noise when the quota is measured in gigabytes. */
-ok(formatBytes(0) === '0 KB', 'zero formats as 0 KB, not 0 B')
-ok(formatBytes(-5) === '0 KB', 'a negative size clamps rather than printing a minus')
-ok(formatBytes(1) === '1 KB', 'sub-KB rounds up to 1 KB rather than showing 0')
-ok(/KB/.test(formatBytes(2048)), '2048 → KB')
-ok(/MB/.test(formatBytes(5 * 1024 * 1024)), '5MB → MB')
+/* The smallest unit is MB, deliberately — nobody reads a storage meter in
+   kilobytes. Tiny amounts say "< 0.1 MB" rather than rounding up to a lie. */
+ok(formatBytes(0) === '0 MB', 'zero formats as 0 MB')
+ok(formatBytes(-5) === '0 MB', 'a negative size clamps rather than printing a minus')
+ok(formatBytes(1) === '< 0.1 MB', 'a few bytes read as < 0.1 MB, never KB')
+ok(formatBytes(50 * 1024) === '< 0.1 MB', '50 KB → < 0.1 MB')
+ok(formatBytes(300 * 1024) === '0.3 MB', '300 KB → 0.3 MB')
+ok(formatBytes(5 * 1024 * 1024) === '5.0 MB', '5 MB → one decimal')
+ok(formatBytes(250 * 1024 * 1024) === '250 MB', 'over 10 MB → whole MB')
+ok(formatBytes(1.5 * 1024 ** 3) === '1.5 GB', 'GB beyond 1000 MB')
+ok(!/KB/.test(formatBytes(2048)), 'never prints KB')
 ok(formatBytes(undefined) !== undefined, 'undefined does not throw')
 {
   let calls = 0

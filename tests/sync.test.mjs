@@ -18,6 +18,7 @@
   -------------------------------------------------------------------------- */
 
 import { createSyncEngine } from '../lib/sync.js'
+import { stampDoc } from '../lib/appversion.js'
 import { _setStore, getMeta, setMeta, dropMeta, markDirty, listPending, TABLE_DOCS, TABLE_ASSETS, OP_DELETE, OP_UPSERT } from '../lib/outbox.js'
 import { fakeClient } from './fake-postgrest.mjs'
 
@@ -120,7 +121,8 @@ console.log('\n  the clean-quit case: identical bytes are not a conflict')
      to the next rev, and the response is never read so our bookkeeping stays
      behind. Without the equality check in resolveConflict, EVERY clean quit
      would manufacture a duplicate of a document nobody else touched. */
-  await client.from('docs').update({ doc: ws.notebooks[0], name: 'Thesis' }).eq('id', 'nb1')
+  /* The keepalive push stamps the format, exactly as a normal push does. */
+  await client.from('docs').update({ doc: stampDoc(ws.notebooks[0]), name: 'Thesis' }).eq('id', 'nb1')
 
   const res = await engine._internals.pushDoc({ table: TABLE_DOCS, id: 'nb1', localAt: 2 })
   ok(res.adopted, 'the revision is simply adopted')
@@ -136,7 +138,7 @@ console.log('\n  a row already up there, with no local bookkeeping')
   /* Signing out clears syncmeta; signing back in leaves rows on the server we
      have no rev for. The insert hits a duplicate key, which is a bookkeeping
      gap rather than an error. */
-  await client.from('docs').insert({ id: 'nb1', owner_id: 'user-a', kind: 'notebook', name: 'Thesis', doc: nb('nb1', 'Thesis') })
+  await client.from('docs').insert({ id: 'nb1', owner_id: 'user-a', kind: 'notebook', name: 'Thesis', doc: stampDoc(nb('nb1', 'Thesis')) })
 
   const res = await engine._internals.pushDoc({ table: TABLE_DOCS, id: 'nb1', localAt: 1 })
   ok(res.ok, 'the duplicate key is handled')
@@ -355,6 +357,38 @@ console.log('\n  retiring an asset goes through the queue')
   eq(queued.length, 2, 'both ids are queued')
   eq(queued.every(e => e.op === OP_DELETE), true, 'as deletions')
   ok(queued.every(e => e.localAt > 0), 'with a timestamp, so a later edit of the same id can outrank them')
+}
+
+console.log('\n  an older build meets a newer document')
+{
+  _setStore(memStore())
+  const ws = { notebooks: [nb('nb1', 'Thesis')], folders: [], files: [] }
+  const { engine, client, statuses } = harness(ws)
+  await engine._internals.pushDoc({ table: TABLE_DOCS, id: 'nb1', localAt: 1 })
+  const row = client._table('docs').rows.get('nb1')
+  ok(row.doc._schema >= 1, 'every push carries the format stamp')
+  ok(ws.notebooks[0]._schema === undefined, 'without writing it into the live workspace object')
+
+  /* The server refuses the write, as docs_00_schema_guard does. */
+  const origUpdate = client.from
+  client.from = table => {
+    const q = origUpdate.call(client, table)
+    if (table !== 'docs') return q
+    return new Proxy(q, { get: (t, k) => (k === 'update'
+      ? () => { const chain = { eq: () => chain, select: async () => ({ data: null, error: { message: 'outdated_client: this document was saved by a newer version of DataStudio (format 9, this app writes 1). Reload to keep editing.' } }) }; return chain }
+      : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) })
+  }
+  await markDirty(TABLE_DOCS, 'nb1', OP_UPSERT)
+  ws.notebooks = [nb('nb1', 'Thesis edited')]
+  await engine._internals.drain()
+  eq(engine.getStatus().state, 'outdated', 'the refusal is reported as "reload", not as a generic error')
+  ok((await listPending()).some(e => e.id === 'nb1'), 'and the edit stays queued — nothing is lost')
+  client.from = origUpdate
+  const before = statuses.length
+  await engine._internals.drain()
+  eq(engine.getStatus().state, 'outdated', 'further drains do not push over the newer document')
+  ok(client._table('docs').rows.get('nb1').name === 'Thesis', 'the server copy is untouched')
+  void before
 }
 
 _setStore(null)

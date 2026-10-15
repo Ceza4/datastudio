@@ -142,5 +142,17 @@ console.log('\n  links')
   has(out, 'https://example.test/x', 'with its href intact')
 }
 
+console.log('\n images stored in a Document, and paragraph indents')
+{
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  ok(sanitizeEditorHtml(`<img src="${png}" alt="a">`).includes(png), 'a raster data: image is kept in the editor')
+  ok(sanitizeHtml(`<img src="${png}">`).includes(png), '…and in exports, so printed documents keep their pictures')
+  ok(!sanitizeEditorHtml('<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">').includes('data:'), 'an SVG data: image is refused (it can carry script)')
+  ok(!sanitizeEditorHtml('<img src="data:text/html;base64,PGI+">').includes('data:'), 'a non-image data: URL is refused')
+  ok(!sanitizeEditorHtml('<img src="data:image/png;base64,AAA&quot; onerror=&quot;x">').includes('onerror'), 'no room to break out of the attribute')
+  ok(!sanitizeEditorHtml('<a href="data:image/png;base64,AAAA">x</a>').includes('data:'), 'data: stays refused for links')
+  ok(sanitizeEditorHtml('<p style="text-indent:0.5in">x</p>').includes('text-indent:0.5in'), 'first-line indent is kept per paragraph')
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

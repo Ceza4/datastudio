@@ -3,6 +3,11 @@ import Icon from '../../components/ui/Icon'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { usePrefs } from '../providers'
 import { useToast } from '../../components/ui/Toast'
+/* Agents. The store reaches Supabase, so it is imported HERE and handed down
+   as the agentHost prop — the canvas must stay free of the network layer
+   (npm run check:tree). */
+import { createAgentStore } from '../../lib/agent/store'
+import { runModel as runAgentModel, fetchBalance as fetchAgentBalance } from '../../lib/agent/transport'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 /* components/ui/SharePanel.js is built and tested but deliberately NOT wired
    in. The sidebar affordance for it was removed on Matas's call — the hover-
@@ -15,6 +20,9 @@ import { LEVEL_PROJECT, LEVEL_SHEET, onShares, incomingShares, sharesFor, shared
 import { knownPerson } from '../../lib/attribution'
 import PeoplePanel from '../../components/ui/PeoplePanel'
 import { documentToDocx, documentToPdf } from '../../lib/docexport'
+import { docApi } from '../../lib/docbridge'
+import { printDocument } from '../../lib/docprint'
+import { finalHtml } from '../../lib/doctrack'
 /* The same one-line download helper every other export in the app uses, rather
    than a second object-URL dance here. */
 import { download } from '../../lib/exporters'
@@ -24,6 +32,7 @@ import ChatBlock from '../../components/notebook/ChatBlock'
    NotebookCanvas.js explains what breaks when that slips, and the browser
    harness is what catches it. */
 import { fetchThread, postMessage, editMessage, unsendMessage, subscribeThread, shareIntoThread } from '../../lib/chat'
+import { onThreads, totalUnread, loadThreads, subscribeInbox, clearThreadList, shareIntoDm, startThread } from '../../lib/dm'
 import { makeColors, Z } from '../../lib/theme'
 import * as H from '../../lib/undo'
 import SettingsPanel from '../../components/settings/SettingsPanel'
@@ -37,8 +46,9 @@ import { normalizeCanvasBg } from '../../lib/canvasbg'
 import { lockViewportZoom } from '../../lib/viewportlock'
 import { markdownToHtml, markdownTitle, MARKDOWN_EXTS } from '../../lib/markdown'
 import { processPdfFile, putPdf, newPdfId, prunePdfs, PDF_EXTS } from '../../lib/pdfs'
-import { createBlock, ICON_FOOTPRINT } from '../../components/notebook/blockRegistry'
+import { createBlock, ICON_FOOTPRINT, growBlocksToMin } from '../../components/notebook/blockRegistry'
 import { migrateInk } from '../../lib/shapes'
+import { flashcardFileIds } from '../../lib/flashcards'
 import { newNotebookId, newSheetId, newSheetFileId, newFolderId } from '../../lib/ids'
 import { createSyncEngine, SYNC_OFF } from '../../lib/sync'
 import { applyPulled, KIND_NOTEBOOK, KIND_FOLDER, KIND_SHEETFILE } from '../../lib/syncdocs'
@@ -168,6 +178,7 @@ function _graceAssets(grace, blocks) {
     if (b?.imageId) grace.set(b.imageId, now)
     if (b?.pdfId) grace.set(b.pdfId, now)
     if (b?.fileId) grace.set(b.fileId, now)
+    for (const id of flashcardFileIds(b)) grace.set(id, now)
   }
 }
 
@@ -296,6 +307,9 @@ export default function AppPage() {
   const [renamingFolderLabel, setRenamingFolderLabel] = useState('')
   const [folderDragOver, setFolderDragOver] = useState(null)
   const [sidebarItemDrag, setSidebarItemDrag] = useState(null)
+  /* True while a foldered item hovers the loose part of the list — the
+     only place a "move out of folder" drop can land. */
+  const [rootDragOver, setRootDragOver] = useState(false)
   const [renamingNotebookId, setRenamingNotebookId] = useState(null)
   const [renamingNotebookLabel, setRenamingNotebookLabel] = useState('')
   const [renamingSheetId, setRenamingSheetId] = useState(null)
@@ -392,75 +406,93 @@ export default function AppPage() {
     return [...seen.values()]
   }, [shareTick])
 
-  /* ── WHO IS ON THIS SHEET'S PEOPLE LIST ─────────────────────────────────
-     Built from the grants that actually exist, not from an org directory —
-     there isn't one, and inventing a network call for a list nothing else in
-     the app has is a bigger change than this surface justifies.
+  /* ── PEOPLE: conversations, grants, and who shared with me ──────────────
+     The list itself is built inside PeoplePanel from lib/dm.js (threads),
+     lib/sharing.js (this project's grants) and people_who_shared_with_me().
+     What lives here is only what has to exist while the panel is CLOSED: the
+     unread count on the People button and the live inbox subscription.
 
-     Two sources, deduped by identity:
-       · grants I have MADE on this project        → the people I shared with
-       · grants other people have made to ME       → the people who shared with me
-
-     A grant identifies its grantee by EMAIL and its granter by uuid, so the two
-     halves key differently and the email is used as the id when there is no
-     uuid. That is honest about what is known rather than fabricating a uuid,
-     and personHue hashes either kind of string perfectly well — the colour just
-     has to be stable, not meaningful.
-
-     Read through `shareTick`, like sharedWithMe, so a pull that discovers a new
-     grant repaints the list. */
-  const peopleOnSheet = useMemo(() => {
-    const nb = notebooks.find(n => n.id === activeNotebookId)
-    const seen = new Map()
-    const add = (id, patch) => {
-      if (!id) return
-      seen.set(id, { ...(seen.get(id) || { id }), ...patch })
-    }
-    if (nb) {
-      for (const g of sharesFor(nb.id)) {
-        if (g.revoked_at) continue
-        add(g.grantee_email, { email: g.grantee_email, name: knownPerson(g.grantee_email) || g.grantee_email, shared: true })
-      }
-    }
-    for (const g of incomingShares()) {
-      if (g.revoked_at) continue
-      add(g.created_by, { name: knownPerson(g.created_by) || 'Someone', shared: true })
-    }
-    return [...seen.values()]
-  }, [notebooks, activeNotebookId, shareTick])
-
+     Conversations are threads with members (migration 0010), not hidden chat
+     blocks in the current project — the old model made a one-to-one readable
+     by every colleague who could read the project. */
   const [peopleOpen, setPeopleOpen] = useState(false)
-  const [activePersonId, setActivePersonId] = useState(null)
+  const [activeThreadId, setActiveThreadId] = useState(null)
+  const [unreadTotal, setUnreadTotal] = useState(0)
+  const signedInUserId = account?.userId || null
 
-  /* The floating chat block for one person on this project, if it exists.
-     Matched on `personId` rather than on a derived id string, so renaming
-     anything — or the person's email changing — cannot orphan a live thread. */
-  function personThreadId(personId) {
+  /* THE AGENT HOST — everything an agent block needs that touches the
+     network: the model (POST /api/agent, which also spends the credits) and
+     storage (lib/agent/store.js: Supabase, or this device until migration
+     0012 is applied). null when signed out; the blocks say so. */
+  const agentTitleRef = useRef(null)
+  const agentPlan = account?.plan || 'free'
+  const agentHost = useMemo(() => {
+    if (!signedInUserId) return null
+    return {
+      userId: signedInUserId,
+      plan: agentPlan,
+      store: createAgentStore({ userId: signedInUserId }),
+      runModel: runAgentModel,
+      fetchBalance: fetchAgentBalance,
+      toast: message => toast(message),
+      onError: err => toast(err?.message || 'Could not save the agent.', { tone: 'warn' }),
+      /* "(2) DataStudio" in the tab while agents are waiting on you. */
+      onNeedsChange: n => {
+        if (typeof document === 'undefined') return
+        const base = agentTitleRef.current ?? (agentTitleRef.current = document.title.replace(/^\(\d+\)\s*/, ''))
+        document.title = n > 0 ? `(${n}) ${base}` : base
+      },
+      notify: ({ chat, agent, kind }) => {
+        if (!chat || !agent) return
+        const away = typeof document !== 'undefined' && document.hidden
+        const onScreen = typeof document !== 'undefined' && chat.blockId && document.querySelector(`[data-block-id="${chat.blockId}"]`)
+        if (kind === 'needs' && (away || !onScreen)) toast(`${agent.name} needs you in “${chat.name}”.`, { tone: 'warn', duration: 8000 })
+        else if (kind === 'done' && (away || !onScreen)) toast(`${agent.name} finished “${chat.name}”.`)
+      },
+    }
+  }, [signedInUserId, agentPlan, toast])
+  useEffect(() => onThreads(() => setUnreadTotal(totalUnread())), [])
+  useEffect(() => {
+    if (!signedInUserId) { clearThreadList(); return undefined }
+    loadThreads().catch(() => {})
+    return subscribeInbox(() => {})
+  }, [signedInUserId])
+  /* The open conversation: load it and follow it live. */
+  useEffect(() => {
+    if (!activeThreadId) return undefined
+    fetchThread(activeThreadId).catch(() => {})
+    return subscribeThread(activeThreadId, () => {})
+  }, [activeThreadId])
+
+  /* A block handed to a person or a group (dropped on their row). Grant first,
+     then the message — same order and reason as handleChatShareBlock. */
+  const shareBlockToThread = useCallback(async (threadId, refBlockId) => {
     const nb = notebooks.find(n => n.id === activeNotebookId)
-    if (!nb) return null
-    for (const sh of nb.sheets || []) {
-      const found = (sh.blocks || []).find(b => b.type === 'chat' && b.floating && b.personId === personId)
-      if (found) return found.id
+    if (!nb || !threadId) return
+    const share = await shareIntoDm({ threadId, docId: nb.id, refBlockId })
+    if (!share.ok) { toast(share.reason || 'Could not share that block.', { tone: 'warn' }); return }
+    const res = await postMessage({ blockId: threadId, body: null, refBlockId, refShareId: share.shareId || null })
+    if (!res.ok) { toast(res.reason || 'Could not add that to the conversation.', { tone: 'warn' }); return }
+    toast(share.granted ? `Shared with ${share.granted} ${share.granted === 1 ? 'person' : 'people'}` : 'Added to the conversation')
+  }, [notebooks, activeNotebookId, toast])
+
+  /* A block of mine, wherever it lives — what a card in a conversation shows
+     to its sender (the other side resolves it through the grant). */
+  const localBlockById = useCallback(id => {
+    for (const nb of notebooks) for (const sh of nb.sheets || []) {
+      const b = (sh.blocks || []).find(x => x?.id === id)
+      if (b) return b
     }
     return null
-  }
+  }, [notebooks])
 
-  /* Create it on first use, never before. A chat block per person created
-     eagerly would put a row in `chat_messages`' permission graph for every
-     colleague you have never spoken to. Positioned off-canvas coordinates it
-     will never be drawn at, because `floating` is what hides it and a
-     position is required by the block shape regardless. */
-  function ensurePersonThread(person) {
-    const existing = personThreadId(person.id)
-    if (existing) return existing
+  const peopleProject = useMemo(() => {
     const nb = notebooks.find(n => n.id === activeNotebookId)
     if (!nb) return null
-    return addNotebookBlock(nb.id, 'chat', 0, 0, null, null, 320, 380, {
-      floating: true,
-      personId: person.id,
-      name: person.name || person.email || 'Conversation',
-    })
-  }
+    const sheetId = nb.activeSheetId || nb.sheets?.[0]?.id
+    const sheet = (nb.sheets || []).find(sh => sh.id === sheetId)
+    return { docId: nb.id, name: nb.name || 'this project', sheetId, sheetName: sheet?.name || 'this sheet' }
+  }, [notebooks, activeNotebookId])
 
   function freshNotebook() {
     /* WAS: `notebook_${Date.now()}` / `sheet_${Date.now()}`, with no random
@@ -615,7 +647,10 @@ export default function AppPage() {
          migrateInk returns the SAME array when there is nothing to move, so a
          workspace with no legacy strokes is not marked as changed and does
          not get written back on every boot. */
-      let initialNotebooks = migrateInk(saved?.notebooks?.length ? saved.notebooks : [])
+      /* growBlocksToMin (25 Sep 2026): blocks saved smaller than their type's
+         comfortable minimum are grown to it, once, here. Same identity when
+         nothing is under, so an unaffected workspace is not re-saved. */
+      let initialNotebooks = growBlocksToMin(migrateInk(saved?.notebooks?.length ? saved.notebooks : []))
       const initialFolders = saved?.folders?.length ? saved.folders : []
       /* v5. Imported workbooks were in React state and nowhere else — the
          payload only ever carried {notebooks, folders, prefs}, so a reload
@@ -709,6 +744,9 @@ export default function AppPage() {
           if (b.type === 'image' && b.imageId) live.push(b.imageId)
           if (b.type === 'pdf' && b.pdfId) livePdfs.push(b.pdfId)
           if (b.type === 'file' && b.fileId) liveFiles.push(b.fileId)
+          /* Flashcard attachments live in the files store too. Without this
+             the next save would prune them as unreferenced. */
+          if (b.type === 'flashcards') liveFiles.push(...flashcardFileIds(b))
         })))
         /* §9.1. A saved template owns COPIES of its assets, and no notebook
            block references them — so the keep-set above, on its own, describes
@@ -1377,6 +1415,10 @@ export default function AppPage() {
        file is prose, and routing prose through SheetJS produces a one-column
        grid of sentences. */
     if (MARKDOWN_EXTS.includes(ext)) return importMarkdown(file, opts)
+    /* A Word file opens as a Document block, footnotes, comments, tracked
+       changes, sections and all (lib/docimport.js). Old binary .doc is not
+       a ZIP and stays an attachment. */
+    if (ext === '.docx' || ext === '.dotx') return importWordDoc(file, opts)
 
     /* .txt IS DECIDED BY LOOKING AT IT.
 
@@ -1561,6 +1603,34 @@ export default function AppPage() {
      exported Markdown since the export panel existed (lib/exporters.js,
      blocksToMarkdown) and could not read it back — you could export a
      notebook to .md and then not drag it in. */
+  async function importWordDoc(file, opts = {}) {
+    const targetNb = ensureNotebook()
+    if (file.size > 60 * 1024 * 1024) { setImportError(`"${file.name}" is ${formatBytes(file.size)} — too large to open as a document.`); return }
+    setImporting(true)
+    try {
+      const [{ importDocx }, { imageFileToDataUrl }] = await Promise.all([import('../../lib/docimport'), import('../../lib/docedit')])
+      const { patch, warnings } = await importDocx(await file.arrayBuffer(), {
+        name: file.name.replace(/\.[^.]+$/, ''),
+        shrinkImage: async blob => (await imageFileToDataUrl(new File([blob], 'image', { type: blob.type }))).src,
+      })
+      const at = opts.at
+      addNotebookBlock(
+        targetNb, 'document',
+        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
+        at ? Math.max(0, at.y - 20) : 120 + Math.random() * 30,
+        null, null, 900, 1000,
+        { ...patch, ...sectionPatch(opts) },
+      )
+      if (warnings.length) toast(`Opened "${file.name}". ${warnings.join(' ')}`, { tone: 'warn' })
+    } catch (err) {
+      setImportError(err?.message || `"${file.name}" could not be opened as a Word document.`)
+      /* Still keep the file: as an attachment it can be downloaded again. */
+      return importAttachment(file, opts)
+    } finally {
+      setImporting(false)
+    }
+  }
+
   async function importMarkdown(file, opts = {}) {
     const targetNb = ensureNotebook()   // empty workspace: make one rather than refuse
     if (file.size > MAX_MARKDOWN_BYTES) {
@@ -1874,6 +1944,12 @@ export default function AppPage() {
       return { ...f, itemIds: f.itemIds.filter(id => id !== itemId) }
     }))
   }
+  /* Back to the top level: out of every folder (an item lives in at most
+     one, but filtering all of them also heals any older duplicate). */
+  function moveOutOfFolders(itemId) {
+    setFolders(prev => prev.map(f => f.itemIds.includes(itemId) ? { ...f, itemIds: f.itemIds.filter(id => id !== itemId) } : f))
+  }
+  const draggedItemFoldered = !!sidebarItemDrag && folders.some(f => f.itemIds.includes(sidebarItemDrag.itemId))
   function removeFromFolder(itemId, folderId) {
     setFolders(prev => prev.map(f => f.id === folderId ? { ...f, itemIds: f.itemIds.filter(id => id !== itemId) } : f))
   }
@@ -2260,10 +2336,16 @@ export default function AppPage() {
     const prevActiveSheetId = nb.activeSheetId
     /* Every asset on the sheet, protected before the sheet goes. */
     graceAssetsOf(sheet.blocks || [])
+    /* NEVER A NOTEBOOK WITH NO SHEETS (25 Sep 2026). Deleting the last sheet
+       puts a fresh empty one in its place, so there is always somewhere to
+       land. Minted out here so the updater stays pure; the undo below takes
+       it away again if nothing was put on it. */
+    const standIn = (nb.sheets || []).length === 1 ? { id: newSheetId(), name: 'Sheet 1', blocks: [] } : null
 
     setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
-      const newSheets = (n.sheets || []).filter(s => s.id !== sheetId)
+      let newSheets = (n.sheets || []).filter(s => s.id !== sheetId)
+      if (!newSheets.length && standIn) newSheets = [standIn]
       /* Only move if the sheet you were LOOKING AT is the one that went.
          Reassigning unconditionally yanked the canvas back to Sheet 1
          whenever any other sheet was deleted from the sidebar — and worse,
@@ -2284,8 +2366,9 @@ export default function AppPage() {
        showing a different tab, does not read as the same sheet coming back. */
     return () => setNotebooks(prev => prev.map(n => {
       if (n.id !== nbId) return n
-      const sheets = [...(n.sheets || [])]
+      let sheets = [...(n.sheets || [])]
       if (sheets.some(s => s.id === sheetId)) return n
+      if (standIn) sheets = sheets.filter(s => s.id !== standIn.id || (s.blocks || []).length > 0 || (s.shapes || []).length > 0)
       sheets.splice(Math.min(at, sheets.length), 0, sheet)
       return { ...n, sheets, activeSheetId: prevActiveSheetId || n.activeSheetId }
     }))
@@ -2323,14 +2406,25 @@ export default function AppPage() {
     for (const sh of doomed.sheets || []) graceAssetsOf(sh.blocks || [])
     const prevActiveId = activeNotebookId
     const remaining = notebooks.filter(n => n.id !== nbId)
+    /* ALWAYS SOMEWHERE TO LAND (25 Sep 2026, Matas's call). The note above
+       is why this was removed; it is back because an empty screen after
+       deleting everything read as a dead end. The trade-off stands: the
+       stand-in is a real notebook that syncs. So it is minimal (one empty
+       sheet), and the undo removes it again if nothing was put in it. */
+    const standIn = remaining.length === 0 ? { ...freshNotebook(), name: 'Untitled project' } : null
 
-    setNotebooks(prev => prev.filter(n => n.id !== nbId))
-    if (activeNotebookId === nbId) setActiveNotebookId(remaining[0]?.id || null)
+    setNotebooks(prev => {
+      const next = prev.filter(n => n.id !== nbId)
+      return standIn && !next.length ? [standIn] : next
+    })
+    if (activeNotebookId === nbId || standIn) setActiveNotebookId(standIn ? standIn.id : (remaining[0]?.id || null))
+    if (standIn) setExpandedNotebookIds(prev => new Set(prev).add(standIn.id))
 
     return () => {
       setNotebooks(prev => {
         if (prev.some(n => n.id === nbId)) return prev
-        const next = [...prev]
+        const pristine = n => (n.sheets || []).every(sh => !(sh.blocks || []).length && !(sh.shapes || []).length)
+        const next = standIn ? prev.filter(n => n.id !== standIn.id || !pristine(n)) : [...prev]
         next.splice(Math.min(at, next.length), 0, doomed)
         return next
       })
@@ -2351,7 +2445,7 @@ export default function AppPage() {
             try { e.dataTransfer.setData('text/plain', nb.name) } catch (_) {}
             setNativeDragImage(e, nb.name)
           }}
-          onDragEnd={() => setSidebarItemDrag(null)}
+          onDragEnd={() => { setSidebarItemDrag(null); setRootDragOver(false) }}
           style={{ padding: '8px 10px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: 'transparent' }}
           onClick={() => {
             if (renamingNotebookId === nb.id) return
@@ -2489,16 +2583,30 @@ export default function AppPage() {
       <div key={file.id} style={{ marginBottom: 6 }}>
         <div className="file-row"
           draggable
-          onDragStart={e => handleFileDragStart(e, file)}
-          title="Drag onto the canvas to add every column as one sheet"
+          onDragStart={e => {
+            e.stopPropagation()
+            handleFileDragStart(e, file)
+            /* Same gesture, two destinations: the canvas reads dragData
+               (columns), the sidebar reads sidebarItemDrag (refile). Without
+               the second, a sheet could be imported into a folder but never
+               dragged into or out of one. */
+            setSidebarItemDrag({ itemId: file.id, itemType: 'file' })
+            try { e.dataTransfer.effectAllowed = 'copyMove' } catch (_) {}
+          }}
+          onDragEnd={() => { setSidebarItemDrag(null); setRootDragOver(false) }}
+          title="Drag onto the canvas to add every column as one sheet, or into a folder to file it"
           onClick={() => setExpandedFiles(prev => { const next = new Set(prev); next.has(file.id) ? next.delete(file.id) : next.add(file.id); return next })}
           onDragOver={e => {
             if (window.__nbTableDrag) { e.preventDefault(); setDragOverFileId(file.id) }
           }}
           onDragLeave={() => setDragOverFileId(null)}
           onDrop={e => {
-            e.preventDefault(); e.stopPropagation()
+            /* Only a table-block drop belongs to this row. Anything else
+               (a sidebar item being refiled) must bubble to the folder or
+               the root list under it — swallowing it here made a file row a
+               dead spot in the middle of every drop target. */
             if (!window.__nbTableDrag) return
+            e.preventDefault(); e.stopPropagation()
             const drag = window.__nbTableDrag
             const block = drag.block
             window.__nbTableDrag = null
@@ -2701,36 +2809,29 @@ export default function AppPage() {
           workspace where nobody has ever opened a conversation carries none. */}
       <PeoplePanel
         open={peopleOpen}
-        people={peopleOnSheet}
         colors={colors}
-        activePersonId={activePersonId}
-        onClose={() => { setPeopleOpen(false); setActivePersonId(null) }}
-        onPickPerson={p => {
-          if (!p) { setActivePersonId(null); return }
-          ensurePersonThread(p)
-          setActivePersonId(p.id)
-        }}
-        onShareBlockWith={(p, blockId) => {
-          const threadId = ensurePersonThread(p)
-          if (threadId) handleChatShareBlock(threadId, blockId)
-          setActivePersonId(p.id)
-        }}>
-        {activePersonId && personThreadId(activePersonId) && (
+        me={{ signedIn: !!signedInUserId, email: account?.email || null }}
+        project={peopleProject}
+        activeThreadId={activeThreadId}
+        onOpenThread={setActiveThreadId}
+        notify={(msg, tone) => toast(msg, tone ? { tone } : undefined)}
+        onClose={() => { setPeopleOpen(false); setActiveThreadId(null) }}
+        renderChat={threadId => (
           <ChatBlock
-            block={{ id: personThreadId(activePersonId), w: 320, h: 380 }}
+            block={{ id: threadId, w: 340, h: 400 }}
             colors={colors}
             dark={dark}
-            /* The SAME three network calls the canvas's chat blocks use — a
-               floating thread is an ordinary chat block that is not drawn, so
-               it must not get a parallel write path that could diverge. */
-            onSend={body => postMessage({ blockId: personThreadId(activePersonId), body })}
-            onEdit={(id, body) => editMessage(id, personThreadId(activePersonId), body)}
-            onUnsend={id => unsendMessage(id, personThreadId(activePersonId))}
-            refBlock={sharedBlockFor}
-            refLabel={refId => sharedBlockFor(refId)?.name || null}
+            /* The SAME network calls the canvas's chat blocks use; lib/chat.js
+               takes a thread id wherever it takes a chat block id. */
+            onSend={body => postMessage({ blockId: threadId, body })}
+            onEdit={(id, body) => editMessage(id, threadId, body)}
+            onUnsend={id => unsendMessage(id, threadId)}
+            refBlock={refId => localBlockById(refId) || sharedBlockFor(refId)}
+            refLabel={refId => (localBlockById(refId) || sharedBlockFor(refId))?.name || null}
+            emptyHint="Only the people in this conversation can read it. Drag a block here or onto their name to share it."
           />
         )}
-      </PeoplePanel>
+      />
 
       <SyncChip
         status={syncStatus}
@@ -2744,6 +2845,7 @@ export default function AppPage() {
           Sits where the panel's own corner was, so the eye is already there. */}
       {sidebarCollapsed && (
         <button onClick={() => setPref('sidebarCollapsed', false)}
+          data-ds-island="left"
           title="Show sidebar"
           aria-label="Show sidebar"
           style={{
@@ -2814,7 +2916,7 @@ export default function AppPage() {
             highlighted, so reopening lands you somewhere you did not leave.
             pointerEvents:none is what stops the hidden panel from swallowing
             clicks meant for the canvas underneath it. */}
-        <div data-kbd-zone aria-hidden={sidebarCollapsed || undefined} style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: Z.chrome, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 12, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)',
+        <div data-kbd-zone data-ds-island="left" aria-hidden={sidebarCollapsed || undefined} style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: Z.chrome, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 12, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)',
           transform: sidebarCollapsed ? 'translateX(calc(-100% - 24px))' : 'none',
           opacity: sidebarCollapsed ? 0 : 1,
           pointerEvents: sidebarCollapsed ? 'none' : 'auto',
@@ -2880,7 +2982,25 @@ export default function AppPage() {
             </div>
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }}
+            /* The loose list is itself a drop target: dropping a foldered
+               item anywhere outside a folder moves it back to the top level.
+               Folders stop propagation on their own drags, so this only sees
+               drops that missed every folder. */
+            onDragOver={e => {
+              if (!draggedItemFoldered) return
+              e.preventDefault()
+              try { e.dataTransfer.dropEffect = 'move' } catch (_) {}
+              if (!rootDragOver) setRootDragOver(true)
+              if (folderDragOver) setFolderDragOver(null)
+            }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setRootDragOver(false) }}
+            onDrop={e => {
+              if (!sidebarItemDrag) return
+              e.preventDefault()
+              if (draggedItemFoldered) moveOutOfFolders(sidebarItemDrag.itemId)
+              setSidebarItemDrag(null); setRootDragOver(false)
+            }}>
 
             {folders.map(folder => {
               const folderFiles = files.filter(f => folder.itemIds.includes(f.id))
@@ -2898,8 +3018,8 @@ export default function AppPage() {
                    inside an open folder was not a drop target at all. It read
                    as an invitation and did nothing when you accepted it. The
                    whole folder, header and body, is now one target. */
-                <div key={folder.id} style={{ marginBottom: 2 }}
-                  onDragOver={e => { if (sidebarItemDrag || hasFileDrag(e)) { e.preventDefault(); setFolderDragOver(folder.id) } }}
+                <div key={folder.id} data-folder-drop={folder.id} style={{ marginBottom: 2 }}
+                  onDragOver={e => { if (sidebarItemDrag || hasFileDrag(e)) { e.preventDefault(); e.stopPropagation(); if (rootDragOver) setRootDragOver(false); setFolderDragOver(folder.id) } }}
                   onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFolderDragOver(null) }}
                   onDrop={e => {
                     e.preventDefault()
@@ -2914,7 +3034,7 @@ export default function AppPage() {
                       importFiles(e.dataTransfer.files, { folderId: folder.id })
                       return
                     }
-                    if (sidebarItemDrag) { moveToFolder(sidebarItemDrag.itemId, folder.id); setSidebarItemDrag(null) }
+                    if (sidebarItemDrag) { e.stopPropagation(); moveToFolder(sidebarItemDrag.itemId, folder.id); setSidebarItemDrag(null); setRootDragOver(false) }
                   }}>
                   <div className="folder-row"
                     style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 6px', borderRadius: 6, border: isDragOver ? `1px solid ${accent}` : '1px solid transparent', background: isDragOver ? accentDim : 'transparent' }}>
@@ -3012,6 +3132,20 @@ export default function AppPage() {
             {files.filter(f => !folders.some(folder => folder.itemIds.includes(f.id))).map(file => renderFileInSidebar(file, null))}
 
             {notebooks.filter(n => !folders.some(folder => folder.itemIds.includes(n.id))).map(nb => renderNotebookInSidebar(nb, null))}
+
+            {/* Drop slot for "out of the folder". Exists only while a foldered
+                item is in the air, so it costs no space the rest of the time,
+                and lights up when the drop would land at the top level. */}
+            {draggedItemFoldered && (
+              <div data-ds-root-drop style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', marginTop: 4, borderRadius: 6,
+                border: `1px dashed ${rootDragOver ? accent : border}`,
+                background: rootDragOver ? accentDim : 'transparent',
+                color: rootDragOver ? accent : text3, fontSize: 12, pointerEvents: 'none',
+              }}>
+                <Icon name="action-move-out" size={12} /> Drop here to move out of folder
+              </div>
+            )}
 
             {/* SHARED WITH ME.
                 Below your own work and visually quieter, because it is not
@@ -3223,7 +3357,7 @@ export default function AppPage() {
             would only sample this island's backdrop and stop blurring the
             canvas. zIndex -1 keeps the layer under the buttons: this div is
             already a stacking context (absolute + zIndex). */}
-        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: Z.chrome, display: 'flex', alignItems: 'center', gap: 6, height: ISLAND_H, padding: '0 10px', boxSizing: 'border-box', fontFamily: 'var(--ds-font-body)' }}>
+        <div data-ds-island="top" style={{ position: 'absolute', top: 16, right: 16, zIndex: Z.chrome, display: 'flex', alignItems: 'center', gap: 6, height: ISLAND_H, padding: '0 10px', boxSizing: 'border-box', fontFamily: 'var(--ds-font-body)' }}>
           <div aria-hidden="true" style={{ ...islandChrome({ surface, border, dark }), position: 'absolute', inset: 0, height: 'auto', zIndex: -1, pointerEvents: 'none' }} />
 
           {/* ── Builder ──
@@ -3295,10 +3429,15 @@ export default function AppPage() {
 
               Same button shape as Settings beside it, deliberately — three of a
               kind rather than one real button and two labels. */}
-          <button onClick={() => setPeopleOpen(o => !o)} aria-label="People" aria-expanded={peopleOpen} data-menu-toggle="people"
-            className={`ds-tbtn${peopleOpen ? ' is-on' : ''}`}>
+          <button onClick={() => setPeopleOpen(o => !o)} aria-label={unreadTotal ? `People, ${unreadTotal} unread` : 'People'} aria-expanded={peopleOpen} data-menu-toggle="people"
+            className={`ds-tbtn${peopleOpen ? ' is-on' : ''}`} style={{ position: 'relative' }}>
             <Icon name="share-people" size={14} />
             People
+            {unreadTotal > 0 && (
+              <span aria-hidden="true" style={{ position: 'absolute', top: -5, right: -5, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 8, background: 'var(--ds-accent)', color: '#fff', fontSize: 11, fontWeight: 600, lineHeight: '16px', textAlign: 'center', boxSizing: 'border-box' }}>
+                {unreadTotal > 99 ? '99+' : unreadTotal}
+              </span>
+            )}
           </button>
 
           <div ref={settingsRef} data-kbd-zone style={{ position: 'relative' }}>
@@ -3375,7 +3514,7 @@ export default function AppPage() {
                   boxShadow: `0 4px 24px ${dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.08)'}`,
                   fontFamily: 'var(--ds-font-body)', fontSize: 13, color: text2, cursor: 'pointer',
                 }}>
-                <Icon name="action-plus" size={14} />
+                <Icon name="action-add" size={14} />
                 New project
               </button>
             </div>
@@ -3400,6 +3539,7 @@ export default function AppPage() {
               onChatEdit={(id, blockId, body) => editMessage(id, blockId, body)}
               onChatUnsend={(id, blockId) => unsendMessage(id, blockId)}
               onChatShareBlock={handleChatShareBlock}
+              agentHost={agentHost}
               /* THE ONLY PATH from a shared block's id to its contents.
 
                  lib/shares.js's fetchSharedBlocks has always fetched these;
@@ -3423,8 +3563,17 @@ export default function AppPage() {
                     toast('Saved')
                     return
                   }
-                  if (what === 'pdf') { documentToPdf(block); return }
-                  const { blob, filename, warnings } = documentToDocx(block)
+                  /* PDF: printed from the laid-out pages when the document is
+                     on screen (page for page, with headers, footers and
+                     footnotes); from its HTML otherwise. Tracked changes
+                     export as the final text. */
+                  const finalBlock = { ...block, content: finalHtml(block.content) }
+                  if (what === 'pdf') {
+                    const html = docApi(block.id)?.printHtml?.()
+                    if (html) printDocument(html); else documentToPdf(finalBlock)
+                    return
+                  }
+                  const { blob, filename, warnings } = documentToDocx(finalBlock)
                   download(blob, filename)
                   /* Said out loud. A table that came across as prose looks like
                      it worked, which is the worst kind of export bug. */
@@ -3439,14 +3588,17 @@ export default function AppPage() {
                  back the row's id; the share itself is the same
                  handleChatShareBlock the in-canvas chat drop uses, so there is
                  one code path for "this block, into that thread". */
-              onShareBlockWithPerson={(personId, blockId) => {
-                const person = peopleOnSheet.find(p => p.id === personId)
-                if (!person) return
-                const threadId = ensurePersonThread(person)
-                if (!threadId) return
-                handleChatShareBlock(threadId, blockId)
+              onShareBlockWithPerson={async (rowId, blockId) => {
+                /* A row id is an email (a person) or `grp:<thread>` (a group). */
+                let threadId = String(rowId).startsWith('grp:') ? String(rowId).slice(4) : null
+                if (!threadId) {
+                  const t = await startThread([rowId])
+                  if (!t.ok) { toast(t.reason || 'Could not start the conversation.', { tone: 'warn' }); return }
+                  threadId = t.id
+                }
+                await shareBlockToThread(threadId, blockId)
                 setPeopleOpen(true)
-                setActivePersonId(person.id)
+                setActiveThreadId(threadId)
               }}
               onAddConnection={(conn) => addNotebookConnection(activeNotebookId, conn)}
               onDeleteConnection={(connId) => deleteNotebookConnection(activeNotebookId, connId)}

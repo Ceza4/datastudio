@@ -4,6 +4,7 @@ import Icon from '../ui/Icon'
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Z } from '../../lib/theme'
 import { tsvCell } from '../../lib/csv'
+import SheetTabs, { stepSheet, newSheet, takeGridFocus } from './SheetTabs'
 
 /* SheetGrid — the spreadsheet inside a notebook table block.
    --------------------------------------------------------------------------
@@ -144,6 +145,12 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
 
   useEffect(() => { editingRef.current = !!editing }, [editing, editingRef])
   useEffect(() => { if (editing && editorRef.current) editorRef.current.focus() }, [editing])
+
+  /* A sheet switch remounts the grid; the tab strip asks for focus to follow,
+     so the keyboard stays on the table. */
+  useEffect(() => {
+    if (takeGridFocus(block.id)) scrollRef.current?.focus({ preventScroll: true })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const el = scrollRef.current
@@ -321,9 +328,33 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     // Synchronous focus would land before React removes the input, and the
     // unmounting input's blur would immediately steal it back.
     requestAnimationFrame(() => {
-      if (document.activeElement !== el) el.focus({ preventScroll: true })
+      /* Only from nowhere. A blur-commit happens because you clicked into
+         something else — a note, the formula of another block — and pulling
+         the caret back here would throw away that click. */
+      const a = document.activeElement
+      if (a === el || (a && a !== document.body && !el.contains(a))) return
+      el.focus({ preventScroll: true })
     })
   }, [])
+
+  /* Enter and Tab hand the keyboard to the grid at once, not a frame later.
+     In that frame focus sat on <body>, so the next key — typed straight after
+     Tab, or while a heavy sheet re-rendered — went to the CANVAS shortcuts
+     instead: "S" made a section, other letters toggled tools, and the row you
+     were typing was lost. The editor's own blur, caused by this hand-off, is
+     not a second commit. */
+  const handingOffRef = useRef(false)
+  /* Returns whether the grid now holds focus. */
+  const handOff = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return false
+    if (document.activeElement !== el) {
+      handingOffRef.current = true
+      try { el.focus({ preventScroll: true }) } finally { handingOffRef.current = false }
+    }
+    return document.activeElement === el
+  }, [])
+  const isHandingOff = useCallback(() => handingOffRef.current, [])
 
   /* Set the moment an edit is abandoned, cleared by the next commit attempt.
      cancelEdit() unmounts the input, and some engines (Firefox reliably) fire
@@ -339,13 +370,21 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     if (cellAt(r, c) !== value || r >= nRows || c >= nCols) {
       writeCells([{ r, c, v: value }], r + 1, c + 1)
     }
+    if (move) handOff()
     setEditing(null)
     refocus()
-    if (move) moveTo(r + move.dr, c + move.dc)
+    if (move) { const [nr, nc] = stepFrom(r, c, move); moveTo(nr, nc) }
+  }
+
+  function onEditorBlur() {
+    if (isHandingOff()) return
+    commitEdit(draft, null)
   }
 
   function cancelEdit() {
     cancelledRef.current = true
+    // Handed off: the editor has already blurred and nothing will clear the flag.
+    if (handOff()) cancelledRef.current = false
     setEditing(null)
     refocus()
   }
@@ -363,6 +402,17 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   /* ── movement ─────────────────────────────────────────────────────── */
   const clampR = r => Math.max(0, Math.min(displayRows - 1, r))
   const clampC = c => Math.max(0, Math.min(displayCols - 1, c))
+
+  /* Excel's Tab-then-Enter: Tab across a row, Enter, and you land at the
+     start of the NEXT row — where you began tabbing — not under the last
+     cell. Arrows or a click forget where the row started. */
+  const tabStartRef = useRef(null)
+  function stepFrom(r, c, { dr = 0, dc = 0, enter = false }) {
+    if (dc) { if (tabStartRef.current == null) tabStartRef.current = c; return [r, c + dc] }
+    const col = enter && tabStartRef.current != null ? tabStartRef.current : c
+    tabStartRef.current = null
+    return [r + dr, col]
+  }
 
   function moveTo(r, c, extend = false) {
     const nr = clampR(r), nc = clampC(c)
@@ -416,6 +466,15 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const meta = e.ctrlKey || e.metaKey
     const k = e.key.toLowerCase()
 
+    /* Sheets, Excel's keys: Ctrl+PgUp / Ctrl+PgDn move between tabs,
+       Shift+F11 inserts one. Ahead of the plain PageUp/PageDown below. */
+    if (meta && (e.key === 'PageDown' || e.key === 'PageUp')) {
+      e.preventDefault()
+      stepSheet(block, onUpdateBlock, e.key === 'PageDown' ? 1 : -1)
+      return
+    }
+    if (e.shiftKey && e.key === 'F11') { e.preventDefault(); newSheet(block, onUpdateBlock); return }
+
     if (meta && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
     if (meta && k === 'y') { e.preventDefault(); redo(); return }
     if (meta && k === 'd') { e.preventDefault(); fillDown(); return }
@@ -425,13 +484,14 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       return
     }
 
+    if (e.key.startsWith('Arrow')) tabStartRef.current = null
     switch (e.key) {
       case 'ArrowUp':    e.preventDefault(); meta ? jump(-1, 0, ext) : moveTo(r - 1, c, ext); return
       case 'ArrowDown':  e.preventDefault(); meta ? jump(1, 0, ext)  : moveTo(r + 1, c, ext); return
       case 'ArrowLeft':  e.preventDefault(); meta ? jump(0, -1, ext) : moveTo(r, c - 1, ext); return
       case 'ArrowRight': e.preventDefault(); meta ? jump(0, 1, ext)  : moveTo(r, c + 1, ext); return
-      case 'Tab':        e.preventDefault(); moveTo(r, c + (ext ? -1 : 1)); return
-      case 'Enter':      e.preventDefault(); moveTo(r + (ext ? -1 : 1), c); return
+      case 'Tab':        { e.preventDefault(); const [nr, nc] = stepFrom(r, c, { dc: ext ? -1 : 1 }); moveTo(nr, nc); return }
+      case 'Enter':      { e.preventDefault(); const [nr, nc] = stepFrom(r, c, { dr: ext ? -1 : 1, enter: true }); moveTo(nr, nc); return }
       case 'F2':         e.preventDefault(); beginEdit(r, c, cellAt(r, c), 'edit'); return
       case 'Home':       e.preventDefault(); meta ? moveTo(0, 0, ext) : moveTo(r, 0, ext); return
       case 'End': {
@@ -573,6 +633,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const isSelected = (r, c) => inR(sel, r, c) || ranges.some(g => inR(g, r, c))
 
   function selectCell(r, c, e) {
+    tabStartRef.current = null
     scrollRef.current?.focus()
     if (e.shiftKey) { setSel(p => ({ ...p, r2: r, c2: c })); return }
     if (e.ctrlKey || e.metaKey) { setRanges(p => [...p, sel]); setSel({ r1: r, c1: c, r2: r, c2: c }); return }
@@ -821,11 +882,11 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                     ref={editorRef}
                     value={draft}
                     onChange={ev => setDraft(ev.target.value)}
-                    onBlur={() => commitEdit(draft, null)}
+                    onBlur={onEditorBlur}
                     onKeyDown={ev => {
                       ev.stopPropagation()
                       const m = ev.ctrlKey || ev.metaKey
-                      if (ev.key === 'Enter') { ev.preventDefault(); commitEdit(draft, { dr: ev.shiftKey ? -1 : 1, dc: 0 }) }
+                      if (ev.key === 'Enter') { ev.preventDefault(); commitEdit(draft, { dr: ev.shiftKey ? -1 : 1, dc: 0, enter: true }) }
                       else if (ev.key === 'Tab') { ev.preventDefault(); commitEdit(draft, { dr: 0, dc: ev.shiftKey ? -1 : 1 }) }
                       /* Always claimed here — there IS an edit to back out of,
                          so the canvas must not also act on this press. */
@@ -879,14 +940,16 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
           for the current selection on the right, which is the thing you
           actually want a status bar for. */}
       <div style={{
-        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14, height: 22, padding: '0 10px',
+        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14, height: 28, padding: '0 10px 0 0',
         background: raised, borderTop: `1px solid ${border}`,
         fontFamily: 'var(--ds-font-body)', fontSize: 11,
-        fontVariantNumeric: 'tabular-nums', color: text3, userSelect: 'none',
+        fontVariantNumeric: 'tabular-nums', color: text3, userSelect: 'none', minWidth: 0,
       }}>
-        <span style={{ color: accentText, fontWeight: 700, minWidth: 34 }}>{colName(cur.c)}{cur.r + 1}</span>
-        <span>{nRows.toLocaleString()} rows</span>
-        <span>{nCols} cols</span>
+        {/* Sheets first, bottom-left, where Excel keeps them. */}
+        <SheetTabs block={block} colors={colors} onUpdateBlock={onUpdateBlock} />
+        <span style={{ color: accentText, fontWeight: 700, minWidth: 34, flexShrink: 0 }}>{colName(cur.c)}{cur.r + 1}</span>
+        <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{nRows.toLocaleString()} rows</span>
+        <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{nCols} cols</span>
         {stats.cells > 1 && <span>{stats.cells.toLocaleString()} selected</span>}
         {ranges.length > 0 && <span>{ranges.length + 1} ranges</span>}
 
@@ -950,6 +1013,8 @@ export default memo(SheetGridInner, (a, b) =>
   a.block.colWidths === b.block.colWidths &&
   a.block.rowHeights === b.block.rowHeights &&
   a.block.id === b.block.id &&
+  a.block.tabs === b.block.tabs &&
+  a.block.activeTab === b.block.activeTab &&
   a.maxHeight === b.maxHeight &&
   a.colors === b.colors
 )

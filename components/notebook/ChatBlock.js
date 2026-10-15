@@ -42,6 +42,9 @@ import BlockRefCard from './BlockRefCard'
 function ChatBlock({
   block, colors, dark, dropping,
   onSend, onEdit, onUnsend, onOpenRef, refLabel,
+  /* What the empty thread says about who can read it. A canvas chat is read
+     by whoever can read the sheet; a People conversation only by its members. */
+  emptyHint,
   /* THE REFERENCED BLOCK'S DATA, resolved by the host.
 
      `refLabel` gave a name and that was enough for a flat chip. A card with a
@@ -144,7 +147,7 @@ function ChatBlock({
         {messages.length === 0 && (
           <div style={{ margin: 'auto', textAlign: 'center', color: text3, fontSize: 12, lineHeight: 1.5, padding: '0 12px' }}>
             No messages yet.<br />
-            Anyone you share this sheet with can read and reply here.
+            {emptyHint || 'Anyone you share this sheet with can read and reply here.'}
           </div>
         )}
         {messages.map(m => (
@@ -257,7 +260,9 @@ const Message = memo(function Message({
         </div>
       )}
 
-      <div
+      {/* A message that is only a block has no words: no empty bubble above
+          the card. */}
+      {(editing || unsent || String(m.body || '').length > 0 || !carriesBlock(m)) && <div
         onDoubleClick={() => { if (mine && !unsent) onStartEdit() }}
         title={mine && !unsent ? 'Double-click to edit' : undefined}
         style={{
@@ -294,7 +299,7 @@ const Message = memo(function Message({
              an HTML parser. */
           unsent ? UNSENT_TEXT : m.body
         )}
-      </div>
+      </div>}
 
       {/* WAS a flat name-and-"open" chip. A chip is a filename: it tells you a
           block was shared and nothing about which block, and — the part that

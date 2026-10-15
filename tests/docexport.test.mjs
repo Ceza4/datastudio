@@ -183,8 +183,8 @@ console.log('\n documentPrintHtml')
   ok(/margin: 1in 0\.75in 1\.25in 0\.75in/.test(html), '…and the real margins, in CSS order')
   ok(html.includes('font-size: 12pt'), 'the document font size is written in pt, not px')
   ok(html.includes('line-height: 2'), 'line spacing is carried')
-  ok(/\[data-ds-pagebreak\][^}]*break-before: page/.test(html),
-     'a deliberate break is honoured EXACTLY — unlike the automatic guides, which are estimates')
+  ok(/\.ds-pb[^}]*break-before: page/.test(html),
+     'a deliberate break is honoured EXACTLY on the printed page')
   ok(html.includes('page-break-before: always'),
      '…with the legacy property too, for print engines that only read that one')
   ok(/orphans: 2/.test(html) && /widows: 2/.test(html), 'orphan and widow control — a printed document, not a printed web page')
@@ -204,6 +204,22 @@ console.log('\n documentPrintHtml — sanitising')
   ok(!/onclick/i.test(html), 'an event handler is stripped')
   ok(html.includes('ok'), 'the legitimate content survives')
   ok(documentPrintHtml({}).includes('<body>'), 'an empty block still produces a valid page')
+}
+
+{
+  const { documentPrintHtml: dph, printFontStack } = await import('../lib/docexport.js')
+  const withBreak = dph({ content: '<p>one</p><div data-ds-pagebreak="1" contenteditable="false"></div><div><br></div><p style="text-align:center"><span style="font-size:20pt">two</span></p>' })
+  ok((withBreak.match(/class="ds-pb"/g) || []).length === 1, 'the break survives sanitising, as the exporter\'s own marker')
+  ok(withBreak.includes('text-align:center') && withBreak.includes('font-size:20pt'), 'paragraph and selection formatting are printed')
+  ok(!/<script|onerror/i.test(dph({ content: '<p>x</p><img src=x onerror=alert(1)><script>alert(1)</script>' })), 'still no script or handlers')
+  ok(printFontStack('Inter').startsWith('Inter') && !printFontStack('Inter').includes('var('), 'Inter is named for the print window, not a CSS variable')
+  ok(!/ 9in;/.test(dph({ pageSize: 'a4', margins: { top: 1, bottom: 1, left: 9, right: 0.25 } })), 'impossible margins are clamped before printing')
+}
+
+{
+  const evil = '1}</style><script>alert(1)</script><style>'
+  const out = documentPrintHtml({ type: 'document', content: '<p>x</p>', lineSpacing: evil, fontSize: evil })
+  ok(!/<script/i.test(out) && /line-height: 1\.5;/.test(out), 'a lineSpacing or fontSize from sync cannot break out of the print stylesheet')
 }
 
 console.log(`\n ${pass} passed, ${fail} failed\n`)

@@ -4,7 +4,7 @@
   GENERATED — do not edit by hand.
   Rebuild:  node scripts/build-icons.mjs <folder-of-svgs>
 
-  129 icons · 64×64 viewBox · stroke 4.66 · currentColor
+  130 icons (1 hand-added, see block-flashcards) · 64×64 viewBox · stroke 4.66 · currentColor
   Every file was checked for viewBox, hardcoded colour, transforms, groups,
   gradients and <text> before this was written.
   -------------------------------------------------------------------------- */
@@ -109,6 +109,15 @@ export const ICON_PATH_DATA = {
       'M12 48L26 32L52 48',
     ],
     dots: [{ x: 20, y: 26, r: 4 }],
+  },
+  /* HAND-ADDED 25 Sep 2026 (the SVG source folder is not in this repo): two
+     stacked cards, 64 grid, outline only, same corner radius as block-kanban.
+     Move to a real SVG through build-icons.mjs when the source folder is back. */
+  'block-flashcards': {
+    d: [
+      'M14 20H40A4 4 0 0 1 44 24V50A4 4 0 0 1 40 54H14A4 4 0 0 1 10 50V24A4 4 0 0 1 14 20Z',
+      'M20 20V14A4 4 0 0 1 24 10H50A4 4 0 0 1 54 14V40A4 4 0 0 1 50 44H44',
+    ],
   },
   'block-kanban': {
     d: [
