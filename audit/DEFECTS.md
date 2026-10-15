@@ -123,3 +123,14 @@ Environment unless stated: Chromium 141 headless, 1440×900, production build of
 - Root cause: SheetJS 0.18.5 with `cellDates:true` builds dates from a local `new Date(1899,11,30)` and corrects by `getTimezoneOffset()` (whole minutes); that epoch is in local mean time, which has seconds (Kyiv: 4 s), so each date became 23:59:56 the day before. AppPage then (correctly) read the local calendar day.
 - Fix: `readWorkbook` reads serials with their number formats and builds local dates from `SSF.parse_date_code` calendar fields (1904 workbooks honoured).
 - Verification: 13 unit assertions across UTC, Kyiv, Vilnius, Paris, New York, Kolkata (fail on the old code — 23:59:56); in-app import in Europe/Kiev shows 2026-08-12 / 2026-09-01.
+
+## DEF-021 · P3 · Accessibility · FIXED (verified)
+**Icon-only controls with no accessible name** (axe `button-name`, `label`): every block's × delete button, the project and sheet × buttons in the sidebar, and Kanban lane-name fields.
+- Fix: `aria-label`/`title` ("Delete block", "Delete project <name>", "Delete sheet <name>", "Lane name").
+- Verification: axe over the canvas with 12 block types, each block selected, Settings/People/Account/Builder/Export/Add open — 0 `button-name`/`label`/`link-name`/ARIA violations (85 buttons pass).
+
+## DEF-022 · P3 · Accessibility (contrast) · FIXED (verified)
+**The active project, active sheet and selected file column were drawn in `accent` (#1D9E75) — 2.78:1 on the active-row fill.** `lib/theme.js` itself says accent is for "fills, borders and rings only"; text has `accentText` (#147154). Fix: those three use `accentText`. Remaining contrast findings are design tokens (OPEN_QUESTIONS Q4).
+
+## DEF-023 · P3 · Copy · FIXED
+Section delete dialog read "It holds 1 block. They can go with the section…" — singular now says "It can go…".

@@ -345,6 +345,8 @@ export default function BlockHandle({
       {focused ? <FocusExit colors={colors} /> : <FocusEnter block={block} colors={colors} />}
 
       {!focused && <button
+        /* Named (audit DEF-021): an icon-only × was announced as "button". */
+        type="button" title="Delete block" aria-label="Delete block"
         onClick={e => {
           e.stopPropagation()
           onDelete()

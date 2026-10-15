@@ -257,6 +257,7 @@ function KanbanBlockInner({ block, onUpdateBlock, colors, dark, editingRef }) {
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
               <input
+                aria-label="Lane name"
                 value={lane.name}
                 onChange={e => onUpdateBlock(block.id, {
                   lanes: lanes.map(l => l.id === lane.id ? { ...l, name: e.target.value } : l)

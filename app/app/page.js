@@ -2222,7 +2222,8 @@ export default function AppPage() {
       const choice = await ask({
         title: `Delete "${b.name || 'Section'}"?`,
         body: `It holds ${children.length} block${children.length > 1 ? 's' : ''}. `
-            + 'They can go with the section, or stay on the canvas without it.',
+            + (children.length > 1 ? 'They can go with the section, or stay on the canvas without it.'
+                                   : 'It can go with the section, or stay on the canvas without it.'),
         actions: [
           { label: 'Delete all', value: 'all', tone: 'danger' },
           { label: 'Keep blocks', value: 'keep', autoFocus: true },
@@ -2555,7 +2556,7 @@ export default function AppPage() {
             <span
               onDoubleClick={e => { e.stopPropagation(); setRenamingNotebookId(nb.id); setRenamingNotebookLabel(nb.name) }}
               title="Double-click to rename · drag into a folder"
-              style={{ flex: 1, fontSize: 13, color: activeNotebookId === nb.id ? accent : text2, fontWeight: activeNotebookId === nb.id ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
+              style={{ flex: 1, fontSize: 13, color: activeNotebookId === nb.id ? accentText : text2, fontWeight: activeNotebookId === nb.id ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
           )}
           <div className="nb-actions" style={{ opacity: 0, display: 'flex', gap: 2 }}>
             {folderId && (
@@ -2565,7 +2566,7 @@ export default function AppPage() {
                 onMouseEnter={e => e.currentTarget.style.color = accent}
                 onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-move-out" size={12} /></button>
             )}
-            <button onClick={e => { e.stopPropagation(); const undo = deleteNotebook(nb.id); if (undo) toast(`"${nb.name}" deleted`, { undo }) }}
+            <button title="Delete project" aria-label={`Delete project ${nb.name}`} onClick={e => { e.stopPropagation(); const undo = deleteNotebook(nb.id); if (undo) toast(`"${nb.name}" deleted`, { undo }) }}
               style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4 }}
               onMouseEnter={e => e.currentTarget.style.color = red}
               onMouseLeave={e => e.currentTarget.style.color = text3}><Icon name="action-delete" size={12} /></button>
@@ -2582,7 +2583,7 @@ export default function AppPage() {
                   onClick={() => { if (!isRenaming) { setActiveNotebookId(nb.id); setNotebookActiveSheet(nb.id, sheet.id) } }}
                   onDoubleClick={e => { e.stopPropagation(); setRenamingSheetId(sheet.id); setRenamingSheetLabel(sheet.name) }}
                   title="Double-click to rename"
-                  style={{ padding: '6px 10px', borderRadius: 6, fontSize: 13, color: isActive ? accent : text3, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: isActive ? 600 : 400, background: isActive ? accentDim : 'transparent' }}
+                  style={{ padding: '6px 10px', borderRadius: 6, fontSize: 13, color: isActive ? accentText : text3, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: isActive ? 600 : 400, background: isActive ? accentDim : 'transparent' }}
                   onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = raised }}
                   onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}>
                   {isRenaming ? (
@@ -2601,7 +2602,7 @@ export default function AppPage() {
                   )}
                   {isActive && !isRenaming && <Icon name="action-check" size={12} style={{ color: accentText }} />}
                   {!isRenaming && nb.sheets.length > 1 && (
-                    <button onClick={e => { e.stopPropagation(); const undo = deleteNotebookSheet(nb.id, sheet.id); if (undo) toast(`Sheet "${sheet.name}" deleted`, { undo }) }}
+                    <button title="Delete sheet" aria-label={`Delete sheet ${sheet.name}`} onClick={e => { e.stopPropagation(); const undo = deleteNotebookSheet(nb.id, sheet.id); if (undo) toast(`Sheet "${sheet.name}" deleted`, { undo }) }}
                       style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4, opacity: 0.35, flexShrink: 0 }}
                       onMouseEnter={e => { e.currentTarget.style.color = red; e.currentTarget.style.opacity = '1' }}
                       onMouseLeave={e => { e.currentTarget.style.color = text3; e.currentTarget.style.opacity = '0.35' }}><Icon name="action-delete" size={12} /></button>
@@ -2653,7 +2654,7 @@ export default function AppPage() {
               onClick={e => toggleSidebarSelect(e, col.id)}
               style={{ padding: '6px 8px 6px 22px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, background: isSelected ? accentDim : 'transparent', border: isSelected ? `1px solid ${accent}44` : '1px solid transparent' }}>
               <div style={{ width: 6, height: 6, borderRadius: 4, background: accent, flexShrink: 0 }} />
-              <span title={col.label} style={{ flex: 1, fontSize: 13, color: isSelected ? accent : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
+              <span title={col.label} style={{ flex: 1, fontSize: 13, color: isSelected ? accentText : text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.label}</span>
               <span style={{ fontSize: 11, color: text3 }}>{sheet.rows.length}</span>
               <div className="col-actions">
                 <button style={{ color: text3, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4 }} title="Hide column" aria-label="Hide column" onClick={e => { e.stopPropagation(); hideColumn(file.id, sheet.name, col.id) }}><Icon name="status-empty" size={12} /></button>
