@@ -13,7 +13,7 @@
 import {
   emptyHistory, record, undo, redo, canUndo, canRedo,
   shouldCoalesce, nextUndoLabel, nextRedoLabel, COALESCE_MS, HISTORY_LIMIT,
-  revertChange, deepEqual,
+  revertChange, deepEqual, isNavigationOnly, sheetTouched,
 } from '../lib/undo.js'
 
 let pass = 0, fail = 0
@@ -243,6 +243,12 @@ console.log('\n  undo after another device\'s edit was pulled (DEF-003)')
   eq(undo(record(emptyHistory(), entry('edit', C0, C1)), Cp).state[0].sheets[0].blocks[0].rows, [['1', '2'], ['3', 'B']],
     "a cell A edited reverts, a cell B edited since is kept")
 
+  /* B typed past the last column since: every row grew by one cell. A's cell still reverts. */
+  const G0 = tb([['1', '2'], ['3', '4']]), G1 = tb([['1', '2'], ['A', '4']])
+  const Gp = parse(tb([['1', '2', ''], ['A', '4', ''], ['', '', 'B']]))
+  eq(undo(record(emptyHistory(), entry('edit', G0, G1)), Gp).state[0].sheets[0].blocks[0].rows, [['1', '2', ''], ['3', '4', ''], ['', '', 'B']],
+    "A's cell reverts even after B's edit widened every row and added one")
+
   /* The local case is exactly what it always was: same reference in, `before` out. */
   ok(undo(h, S1).state === S0, 'with nothing pulled in between, undo returns the recorded `before` itself')
   ok(revertChange(S1, S0, S1) === S0, 'revertChange fast path is identity on before')
@@ -255,6 +261,23 @@ console.log('\n  undo after another device\'s edit was pulled (DEF-003)')
   const Rp = parse(sh([s('s3'), s('s1'), s('s2'), s('sB')]))
   eq(undo(record(emptyHistory(), entry('reorder', R0, R1)), Rp).state[0].sheets.map(x => x.id), ['s1', 's2', 's3', 'sB'],
     'a reorder is undone and a sheet added since stays at the end')
+}
+
+console.log('\n  opening a sheet is not an edit; undo goes to the sheet it changed (DEF-010)')
+{
+  const sA = { id: 's1', blocks: [] }, sB = { id: 's2', blocks: [] }
+  const nb = { id: 'nb1', name: 'P', activeSheetId: 's1', sheets: [sA, sB] }
+  const other = { id: 'nb2', name: 'Q', activeSheetId: 'x', sheets: [] }
+  const nav = [{ ...nb, activeSheetId: 's2' }, other]
+  ok(isNavigationOnly([nb, other], nav), 'switching sheets is navigation only')
+  ok(!isNavigationOnly([nb, other], [{ ...nb, activeSheetId: 's2', name: 'R' }, other]), 'a switch plus a rename is not')
+  ok(!isNavigationOnly([nb, other], [nb, other]), 'no change at all is not navigation')
+  ok(!isNavigationOnly([nb], [nb, other]), 'a new notebook is not navigation')
+  const edited = [{ ...nb, sheets: [sA, { ...sB, blocks: [{ id: 'b' }] }] }, other]
+  eq(sheetTouched([nb, other], edited, 'nb1'), 's2', 'sheetTouched names the sheet whose blocks changed')
+  eq(sheetTouched([nb, other], [nb, other], 'nb1'), null, 'and nothing when the notebook is unchanged')
+  const u = undo(record(emptyHistory(), entry('add', [nb, other], edited)), edited)
+  ok(u.entry && u.entry.label === 'add', 'undo hands back the entry it stepped over')
 }
 
 console.log(`\n ${pass} passed, ${fail} failed\n`)

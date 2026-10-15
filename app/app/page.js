@@ -982,6 +982,14 @@ export default function AppPage() {
     if (prev === notebooks) return
     if (applyingHistoryRef.current) { applyingHistoryRef.current = false; return }
     if (prev === null) return
+    /* Opening another sheet is where you are, not something you did — see
+       H.isNavigationOnly (audit DEF-010). A label a mutator left pending is
+       dropped with it, so it cannot mislabel the next real edit. */
+    if (H.isNavigationOnly(prev, notebooks)) { pendingLabelRef.current = null; return }
+    /* A new array holding the very same notebooks is not a change. It was
+       being recorded ("edit", with nothing in it), so one Ctrl+Z in every
+       session did nothing at all but say "Undid edit". */
+    if (prev.length === notebooks.length && prev.every((n, i) => n === notebooks[i])) { pendingLabelRef.current = null; return }
 
     const label = pendingLabelRef.current || 'edit'
     pendingLabelRef.current = null
@@ -1006,6 +1014,14 @@ export default function AppPage() {
     const res = step(historyRef.current, current)
     if (!res) return null
     historyRef.current = res.history
+    /* Undo where the change happened. Sheet switches are no longer history
+       (DEF-010), so the sheet on screen may not be the one this entry
+       changed — open that one, never undo out of sight. */
+    const touched = res.entry && H.sheetTouched(res.entry.before, res.entry.after, res.activeId)
+    const elsewhere = n => n.id === res.activeId && n.activeSheetId !== touched && (n.sheets || []).some(s => s.id === touched)
+    if (touched && res.state.some(elsewhere)) {
+      res.state = res.state.map(n => elsewhere(n) ? { ...n, activeSheetId: touched } : n)
+    }
     /* Only arm the skip flag when a change will actually be committed. If the
        revert lands on the very array already on screen (everything it would
        undo was already undone by someone else) the capture effect never runs,
@@ -1976,6 +1992,7 @@ export default function AppPage() {
   }
   function createNotebook() {
     const nb = { ...freshNotebook(), name: uniqueProjectName() }
+    markUndo('add project')
     setNotebooks(prev => [...prev, nb])
     setActiveNotebookId(nb.id)
     /* New projects land expanded — the sidebar should show Sheet 1 right
@@ -2374,8 +2391,19 @@ export default function AppPage() {
     }))
   }
   function addNotebookSheet(nbId) {
-    const id = `sheet_${Date.now()}`
-    setNotebooks(prev => prev.map(n => n.id !== nbId ? n : { ...n, sheets: [...(n.sheets || []), { id, name: `Sheet ${(n.sheets || []).length + 1}`, blocks: [] }], activeSheetId: id }))
+    /* newSheetId(), not `sheet_${Date.now()}` — the unsalted timestamp the
+       notebook and folder ids were already moved off (see freshNotebook).
+       And the first FREE "Sheet N": counting sheets named the next one after
+       a deleted middle sheet "Sheet 3" while a Sheet 3 still existed. */
+    const id = newSheetId()
+    markUndo('add sheet')
+    setNotebooks(prev => prev.map(n => {
+      if (n.id !== nbId) return n
+      const taken = new Set((n.sheets || []).map(sh => (sh.name || '').trim().toLowerCase()))
+      let k = (n.sheets || []).length + 1
+      while (taken.has(`sheet ${k}`)) k++
+      return { ...n, sheets: [...(n.sheets || []), { id, name: `Sheet ${k}`, blocks: [] }], activeSheetId: id }
+    }))
   }
   function deleteNotebookSheet(nbId, sheetId) {
     const nb = notebooks.find(n => n.id === nbId)

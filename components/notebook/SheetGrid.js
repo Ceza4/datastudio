@@ -4,6 +4,7 @@ import Icon from '../ui/Icon'
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Z } from '../../lib/theme'
 import { tsvCell } from '../../lib/csv'
+import { revertChange } from '../../lib/undo'
 import SheetTabs, { stepSheet, newSheet, takeGridFocus } from './SheetTabs'
 
 /* SheetGrid — the spreadsheet inside a notebook table block.
@@ -201,21 +202,43 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const cellAt = (r, c) => (rows[r] && rows[r][c] != null ? String(rows[r][c]) : '')
 
   /* ── history ──────────────────────────────────────────────────────── */
+  /* Each entry keeps the table before AND after its edit, so undo reverts
+     that edit onto whatever the table is now (lib/undo.js revertChange)
+     instead of restoring a snapshot. Same bug as the workspace stack had
+     (audit DEF-003/DEF-011): a collaborator's cells pulled in after your
+     edit were wiped by your Ctrl+Z, and pushed back wiped. With nothing
+     pulled in between, the result is the snapshot exactly, as before. */
+  const pendingAfter = useRef(null)
   function snapshot() {
-    undoStack.current.push({ rows: block.rows, headers: block.headers })
+    const entry = { before: { rows: block.rows, headers: block.headers }, after: null }
+    undoStack.current.push(entry)
     if (undoStack.current.length > MAX_HISTORY) undoStack.current.shift()
     redoStack.current = []
+    pendingAfter.current = entry
+  }
+  /** Every mutator writes through here, so the entry snapshot() opened learns its `after`. */
+  function commit(patch) {
+    const e = pendingAfter.current
+    if (e) {
+      e.after = { rows: 'rows' in patch ? patch.rows : block.rows, headers: 'headers' in patch ? patch.headers : block.headers }
+      pendingAfter.current = null
+    }
+    onUpdateBlock(block.id, patch)
   }
   function undo() {
     const p = undoStack.current.pop(); if (!p) return
-    redoStack.current.push({ rows: block.rows, headers: block.headers })
-    setEditing(null); onUpdateBlock(block.id, { rows: p.rows, headers: p.headers })
+    const cur = { rows: block.rows, headers: block.headers }
+    const to = p.after ? revertChange(cur, p.before, p.after) : p.before
+    redoStack.current.push({ ...p, undone: cur })
+    setEditing(null); onUpdateBlock(block.id, { rows: to.rows, headers: to.headers })
     refocus()
   }
   function redo() {
     const n = redoStack.current.pop(); if (!n) return
-    undoStack.current.push({ rows: block.rows, headers: block.headers })
-    setEditing(null); onUpdateBlock(block.id, { rows: n.rows, headers: n.headers })
+    const cur = { rows: block.rows, headers: block.headers }
+    const to = n.after ? revertChange(cur, n.after, n.before) : n.undone
+    undoStack.current.push({ before: n.before, after: n.after })
+    setEditing(null); onUpdateBlock(block.id, { rows: to.rows, headers: to.headers })
     refocus()
   }
 
@@ -241,7 +264,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     }
     const patch = { rows: next }
     if (hdrs !== headers) patch.headers = hdrs
-    onUpdateBlock(block.id, patch)
+    commit(patch)
   }
 
   /* Materialise the grid out to at least minRows × minCols.
@@ -272,7 +295,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const { hdrs, rows: base } = materialise(at, nCols)
     const width = Math.max(hdrs.length, 1)
     for (let i = 0; i < count; i++) base.splice(at, 0, Array(width).fill(''))
-    onUpdateBlock(block.id, { headers: hdrs, rows: base })
+    commit({ headers: hdrs, rows: base })
   }
 
   function deleteRows(from, to) {
@@ -281,7 +304,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     snapshot()
     const next = rows.slice()
     next.splice(from, Math.min(to, nRows - 1) - from + 1)
-    onUpdateBlock(block.id, { rows: next.length ? next : [Array(Math.max(nCols, 1)).fill('')] })
+    commit({ rows: next.length ? next : [Array(Math.max(nCols, 1)).fill('')] })
   }
 
   function duplicateRows(from, to) {
@@ -291,7 +314,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const next = rows.slice()
     const copy = rows.slice(from, hi + 1).map(r => r.slice())
     next.splice(hi + 1, 0, ...copy)
-    onUpdateBlock(block.id, { rows: next })
+    commit({ rows: next })
   }
 
   function insertCols(at, count = 1) {
@@ -303,7 +326,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       for (let i = 0; i < count; i++) row.splice(at, 0, '')
       return row
     })
-    onUpdateBlock(block.id, { headers: hdrs, rows: next })
+    commit({ headers: hdrs, rows: next })
   }
 
   function deleteCols(from, to) {
@@ -312,7 +335,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     const hi = Math.min(to, nCols - 1)
     const hdrs = headers.slice(); hdrs.splice(from, hi - from + 1)
     const next = rows.map(r => { const row = r.slice(); row.splice(from, hi - from + 1); return row })
-    onUpdateBlock(block.id, {
+    commit({
       headers: hdrs.length ? hdrs : [''],
       rows: hdrs.length ? next : rows.map(() => ['']),
     })

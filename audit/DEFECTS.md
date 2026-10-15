@@ -63,3 +63,27 @@ Environment unless stated: Chromium 141 headless, 1440×900, production build of
 - Root cause: one copied handler, `if (key === 'Enter' || key === 'Escape') blur()`, with commit-on-blur.
 - Fix: `lib/renameinput.js` — Enter commits, Escape marks-and-blurs so onBlur closes without saving (block headers, which rename live, restore the original), and the Escape press stops at the field so it does not also deselect the block.
 - Verification: folder/project/block header sequences in `audit/e2e` — Escape leaves the old name and the block stays selected; Enter keeps the new one.
+
+## DEF-010 · P2 · Undo (wrong action reversed) · FIXED (verified)
+**Clicking between sheets was recorded as an undoable "edit"; Ctrl+Z then bounced you between sheets instead of undoing your work.**
+- Repro: type in a note on Sheet 2 → click Sheet 1 → click Sheet 2 → Ctrl+Z. Actual: "Undid edit" and you are on Sheet 1; again → back on Sheet 2; only the third press undoes the typing.
+- Root cause: `activeSheetId` lives inside the notebook, so a sheet switch mints a new `notebooks` and the capture effect recorded it.
+- Fix: `isNavigationOnly(prev, next)` — a change that only moves `activeSheetId` is not recorded; and `sheetTouched()` makes an undo/redo open the sheet its change was on, so nothing is undone out of sight.
+- Verification: same repro → first Ctrl+Z "Undid edit text" on Sheet 2. From Sheet 1, Ctrl+Z opens Sheet 2 and undoes there. 7 new unit assertions.
+
+## DEF-011 · P1 · Data integrity · FIXED (verified)
+**Ctrl+Z inside a table wiped cells another device/collaborator had typed since — and pushed the wipe to the server.**
+- Repro (two contexts, same table): A types A-FIRST, B pulls; A types A-SECOND; B pulls and types B-CELL; A pulls B-CELL; A clicks a cell and presses Ctrl+Z.
+- Actual on c990efe: A-SECOND **and B-CELL** vanish on A, and the server copy loses B-CELL (re-run against the original SheetGrid to confirm: 2 FAIL).
+- Root cause: SheetGrid's own 60-step stack restored whole `{rows, headers}` snapshots — the DEF-003 bug again, one level down.
+- Fix: grid entries keep `before` and `after` (all six mutators write through `commit()`), undo/redo use `revertChange`. `revertChange` also learned to merge positionally when the table grew since (a wider row from someone typing past the last column).
+- Tests: `audit/e2e/two-device-grid-undo.mjs` 6/6; unit test for the widened-row case.
+
+## DEF-012 · P3 · Undo · FIXED (verified)
+**Every session had an undo step that did nothing ("Undid edit"), and adding a project or a sheet was labelled just "edit".**
+- Root cause: a new array holding the same notebook objects was recorded as a change.
+- Fix: such no-op changes are skipped; `markUndo('add project')`, `markUndo('add sheet')`.
+
+## DEF-013 · P3 · Data identity · FIXED (code-verified)
+**New sheets got `sheet_${Date.now()}` ids (the unsalted pattern already removed from notebooks and folders) and the name "Sheet N+1" even when that name was taken** — delete Sheet 2 of three, add one → two "Sheet 3".
+- Fix: `newSheetId()` and the first free "Sheet N".
