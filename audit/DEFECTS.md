@@ -87,3 +87,16 @@ Environment unless stated: Chromium 141 headless, 1440×900, production build of
 ## DEF-013 · P3 · Data identity · FIXED (code-verified)
 **New sheets got `sheet_${Date.now()}` ids (the unsalted pattern already removed from notebooks and folders) and the name "Sheet N+1" even when that name was taken** — delete Sheet 2 of three, add one → two "Sheet 3".
 - Fix: `newSheetId()` and the first free "Sheet N".
+
+## DEF-014 · P3 · Visual (regression of a 25 Sep fix) · FIXED (verified)
+**The Document's Home ribbon never fit — at the 880 px default its right third (Editing, part of Paragraph) was scrolled out of sight, at every block width.**
+- Measured: full Home = 1587 px (Font 550, Paragraph 346, Styles 480, Editing 211). The hard-coded breakpoints (852/972) were written for a 962 px tab; Font, Styles and a new Editing group grew past them.
+- Fix: compaction is measured per level (sum of group widths) and the fullest level that fits is used; new level folds Editing (Find/Replace/Painter) into one dropdown; the tightest level narrows the font box to 80 px.
+- Verification: 880 px → natural 876 ≤ 878, nothing hidden (`audit/evidence/doc-ribbon-880-after.png`); 1620 px → full gallery; 720 px (minimum) → overflow fade as before. Editing dropdown → Find opens.
+
+## DEF-015 · P2 · Interaction (hit-testing) · FIXED (verified)
+**Pressing on a block's visible border did not resize it — on 18 of 19 block types.**
+- Repro: select a Notes block, press on its right border line and drag. Nothing happens (width unchanged). Only a 4 px strip just *inside* the border worked.
+- Root cause: `ResizeHandle` (10 px bands, 5 px either side of the edge) was rendered inside each block's body, and every body except Chat is `overflow:hidden`, so the outer half and the border itself were clipped out of hit-testing.
+- Fix: one `ResizeHandle` on the block wrapper (same box, no clipping) instead of 19 inside the bodies; hidden in full screen; Countdown still has none.
+- Verification: Notes, Table, Database, Kanban, Chat — pressing exactly on the border hits the `e` handle and widens by the dragged 100 px; 2 px outside also hits.

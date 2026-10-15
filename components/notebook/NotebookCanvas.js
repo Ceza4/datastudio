@@ -5807,8 +5807,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onEditEnd={onBlockEditEnd}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -5875,8 +5873,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onEditStart={onBlockEditStart}
                     onEditEnd={onBlockEditEnd}
                   />
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                 <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -5922,8 +5918,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onUpdateBlock={onUpdateBlock}
                     editingRef={editingRef}
                   />
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                 <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6090,8 +6084,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       for a model where the stored size is the user's and the
                       footprint is the mode's, and it is why the handle is not
                       hidden here. */}
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
                 )
@@ -6157,8 +6149,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onExtract={blockCb(block.id, 'pdfExtract', () => payload => latestRef.current.extractFromPdf(block, payload))}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6189,8 +6179,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                   }}>
                   <div style={{ height: isSelected && !isFocused ? 3 : 0, background: accent, transition: 'height 0.2s ease' }} />
                   <FileBlock block={block} colors={colors} dark={dark} onUpdateBlock={onUpdateBlock} />
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6225,8 +6213,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     onUpdateBlock={onUpdateBlock}
                     onTeleport={id => { const t = blocks.find(b => b.id === id); if (t) { selectAndReveal(t); setArrivedId(t.id) } }}
                   />
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6275,8 +6261,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onTeleport={blockCb(block.id, 'calTeleport', () => addr => latestRef.current.onTeleport?.(addr))}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6355,8 +6339,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                         latestRef.current.onResolveRefThumb?.(refId) || null)}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6408,8 +6390,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       editingRef={editingRef}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6459,8 +6439,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       openRowId={blocks.find(b => b.type === 'record' && b.pipelineId === block.id)?.rowId || null}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6499,8 +6477,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     <FlashcardsBlock block={block} colors={colors} editingRef={editingRef}
                       onUpdateBlock={patch => onUpdateBlock(block.id, patch)} />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6541,8 +6517,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onReveal={revealBlock}
                       onUpdateBlock={blockCb(block.id, 'agentUpdate', () => patch => latestRef.current.onUpdateBlock?.(block.id, patch))} />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                 </div>
               )}
 
@@ -6586,8 +6560,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onReveal={revealBlock} onOpenAgentSettings={openAgentSettings}
                       onUpdateBlock={blockCb(block.id, 'agentChatUpdate', () => patch => latestRef.current.onUpdateBlock?.(block.id, patch))} />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                 </div>
               )}
 
@@ -6626,8 +6598,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       active={isSelected && selectedIds.size <= 1}
                       onUpdateBlock={patch => onUpdateBlock(block.id, patch)} />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6673,8 +6643,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       onRetarget={patch => onUpdateBlock(block.id, patch)}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
@@ -6825,8 +6793,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       }} />
                     ))}
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                 </div>
               )}
 
@@ -6971,8 +6937,6 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       Drag blocks here
                     </div>
                   )}
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                 </div>
               )}
               {block.type === 'kanban' && (
@@ -7016,12 +6980,23 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                       editingRef={editingRef}
                     />
                   </div>
-                  <ResizeHandle border={border} accent={accent} show={isSelected}
-                    onResizeStart={(e, dir) => startResize(e, block, dir)} />
                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
                 </div>
               )}
               </BlockErrorBoundary>
+              {/* RESIZE HANDLES ON THE WRAPPER, NOT INSIDE THE BLOCK (audit
+                  DEF-015). Every block type drew its own ResizeHandle inside
+                  its body, and every body but Chat is overflow:hidden — so the
+                  half of each 10px edge band that sits OUTSIDE the border was
+                  clipped away. What was left was a 4px strip inside the edge:
+                  pressing on the visible border, which is where everyone aims,
+                  did nothing at all. The wrapper is the same box (it shrink-
+                  wraps its one child) and clips nothing. Countdown sizes itself
+                  and never had handles; full screen is a view, not a resize. */}
+              {block.type !== 'countdown' && !isFocused && (
+                <ResizeHandle border={border} accent={accent} show={isSelected}
+                  onResizeStart={(e, dir) => startResize(e, block, dir)} />
+              )}
             </div>
             )
           })}

@@ -449,13 +449,33 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
        · under 852px alignment and indent fold into one "Align" dropdown
      Measured from the band's CONTAINER, whose width does not depend on what
      is inside it, so a collapse can never feed back into the measurement. */
-  const [bandW, setBandW] = useState(9999)
-  const compact = bandW < 852 ? 2 : bandW < 972 ? 1 : 0
+  /* MEASURED, NOT HARD-CODED (audit DEF-014, 16 Oct 2026). The breakpoints
+     above were 852/972px for a 962px Home tab. Since then Font grew to 550px,
+     the Styles gallery to 480 and an Editing group (Find · Replace · Painter,
+     211) arrived — the full tab is ~1590px, so at the 880px default the
+     right third was scrolled out of sight again, and no block width ever
+     showed all of Home. Each level's natural width (the sum of its groups,
+     which never shrink) is now measured as it renders, and the band takes
+     the fullest level that fits:
+       0 · everything
+       1 · Styles gallery → one "Styles" dropdown
+       2 · + Editing → one "Editing" dropdown
+       3 · + alignment and indent → one "Align" dropdown
+     A level's width does not depend on the band's width, so this cannot
+     oscillate; an unmeasured level is tried, measured, and kept or passed. */
+  const [compact, setCompact] = useState(0)
+  const levelW = useRef({})
   const measureOverflow = () => {
     const wrap = scrollWrapRef.current
-    if (wrap && Math.abs(wrap.clientWidth - bandW) > 1) setBandW(wrap.clientWidth)
     const el = bandRef.current
     if (!el) return
+    if (tab === 'home' && wrap) {
+      levelW.current[compact] = [...el.children].reduce((w, g) => w + g.offsetWidth, 0)
+      const avail = wrap.clientWidth
+      let lvl = 0
+      while (lvl < 3 && levelW.current[lvl] != null && levelW.current[lvl] > avail + 1) lvl++
+      if (lvl !== compact) setCompact(lvl)
+    }
     const start = el.scrollLeft > 2
     const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 2
     setOverflow(`${start ? 'start' : ''} ${end ? 'end' : ''}`.trim())
@@ -721,7 +741,9 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             {...pressProps(() => setMenu(m => (m === 'font' ? null : 'font')))}
             title="Font family"
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, height: 26, width: 118,
+              /* 80 at the tightest level: the last 38px that lets the whole
+                 Home tab fit the 880px default (DEF-014). */
+              display: 'flex', alignItems: 'center', gap: 6, height: 26, width: compact >= 3 ? 80 : 118,
               padding: '0 7px', border: `1px solid ${border}`, borderRadius: 'var(--ds-radius-xs)',
               background: raised, color: text, cursor: 'pointer',
               fontFamily: 'var(--ds-font-body)', fontSize: 12, lineHeight: 1,
@@ -937,13 +959,13 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
             thing. Three stacked bars whose lengths and offsets actually differ
             per alignment is the universal shape for this and reads correctly at
             13px, so it stands in until the real four are drawn. */}
-        {compact < 2 && <>
+        {compact < 3 && <>
         <RibbonBtn title="Align left (Ctrl+L)" on={caret?.align === 'left'} onClick={() => exec('justifyLeft')}><AlignGlyph mode="left" /></RibbonBtn>
         <RibbonBtn title="Align centre (Ctrl+E)" on={caret?.align === 'center'} onClick={() => exec('justifyCenter')}><AlignGlyph mode="center" /></RibbonBtn>
         <RibbonBtn title="Align right (Ctrl+R)" on={caret?.align === 'right'} onClick={() => exec('justifyRight')}><AlignGlyph mode="right" /></RibbonBtn>
         <RibbonBtn title="Justify (Ctrl+J)" on={caret?.align === 'justify'} onClick={() => exec('justifyFull')}><AlignGlyph mode="justify" /></RibbonBtn>
         </>}
-        {compact === 2 && (
+        {compact >= 3 && (
           <div style={{ position: 'relative', flexShrink: 0 }}>
             <RibbonBtn wide title="Alignment and indent" on={menu === 'align'}
               onClick={() => setMenu(m => (m === 'align' ? null : 'align'))}>
@@ -995,7 +1017,7 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
           )}
         </div>
         <Sep />
-        {compact < 2 && <>
+        {compact < 3 && <>
         <RibbonBtn title="Decrease indent (Shift+Tab)" onClick={() => indent(-1)}>
           <span style={{ fontSize: 13 }}>⇤</span>
         </RibbonBtn>
@@ -1072,10 +1094,18 @@ export default function DocumentRibbon({ block, colors, onUpdateBlock, onInsert,
       </Group>
 
       <Group label="Editing">
+        {compact < 2 ? <>
         <RibbonBtn wide title="Find (Ctrl+F)" icon="nav-search" label="Find" onClick={() => doc('find')} />
         <RibbonBtn wide title="Replace (Ctrl+H)" label="Replace" onClick={() => doc('replace')} />
         <RibbonBtn wide title="Format painter — click to copy the caret's format onto the next selection; double-click to keep it on"
           label="Painter" on={!!ds.painter} onClick={e => doc('painter', e?.detail >= 2)} />
+        </> : dropBtn('editing', { title: 'Find, replace and format painter', icon: 'nav-search', label: '▾', on: !!ds.painter }, (
+          <Pop style={{ ...popover, right: 0, left: 'auto', minWidth: 200 }}>
+            {menuRow('find', 'Find', () => { setMenu(null); doc('find') }, { hint: 'Ctrl+F' })}
+            {menuRow('replace', 'Replace', () => { setMenu(null); doc('replace') }, { hint: 'Ctrl+H' })}
+            {menuRow('painter', ds.painter ? 'Format painter (on)' : 'Format painter', () => { setMenu(null); doc('painter', false) }, { on: !!ds.painter })}
+          </Pop>
+        ))}
       </Group>
     </>
   )
