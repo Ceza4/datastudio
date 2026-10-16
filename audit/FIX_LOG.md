@@ -19,7 +19,7 @@ Branch `audit/reliability-oct16`, cut from `main` at `c990efe`. Pushed; **not me
 | 23e2185 | 038 | `lib/pressable.js`; Draw panel, file/folder toggles, zoom reset, swatches, Crosscheck, sync retry keyboard-operable |
 | c995891 | 039 | Canvas paste through the native `paste` event, gated by focus; repeated pastes cascade |
 | c06d4ea | — | Lint: no new React-compiler findings on audit lines; ledger |
-| (next) | 040–042 + review follow-ups | Block updates target the block's own sheet; toast UNDO pinned to its history slot; `repairBlocks` on load/pull; error-card delete can't throw; paste gated while shortcuts open + Safari fallback; Draw panel click/Esc; check-undef fails on parse errors |
+| ad7186a | 040–042 + review follow-ups | Block updates target the block's own sheet; toast UNDO pinned to its history slot; `repairBlocks` on load/pull; error-card delete can't throw; paste gated while shortcuts open + Safari fallback; Draw panel click/Esc; check-undef fails on parse errors |
 
 ## Guards and tests added
 
