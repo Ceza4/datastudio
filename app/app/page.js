@@ -2081,7 +2081,10 @@ export default function AppPage() {
     if (nbId === activeNotebookId && placeRef.current) {
       try { return placeRef.current(w, h, type) } catch { /* fall through */ }
     }
-    return { x: fx + Math.random() * 40, y: fy + Math.random() * 30 }
+    /* Only when the canvas is not mounted to place it (another project is
+       open). A fixed fallback: the block is placed properly the moment its
+       project is opened and you look at it. */
+    return { x: fx, y: fy }
   }
 
   function addNotebookBlock(nbId, type, x, y, customHeaders, customRows, customW, customH, patch) {

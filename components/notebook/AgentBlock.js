@@ -11,7 +11,7 @@
    Sections, in the rail on the left:
      Overview · Chats · Model & effort · Instructions · Permissions
      Sub-agents · Usage & limits · Privacy */
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Icon from '../ui/Icon'
 import {
   getAgent, loadAgent, createAgent, updateAgent, loadChats, chatsOf, createChat, deleteChat, send,
@@ -374,9 +374,9 @@ function InstructionsSection({ c, agent, set, head, sec, sheet }) {
      unmount, from refs so the cleanup sees the latest draft. */
   const pending = useRef(null)
   const setRef = useRef(set)
-  setRef.current = set
+  useLayoutEffect(() => { setRef.current = set })
   const flush = () => { if (t.current) { clearTimeout(t.current); t.current = null; setRef.current({ instructions: pending.current }) } }
-  useEffect(() => () => flush(), []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => flush(), [])
   const blocks = visibleBlocks(sheet.blocks())
   const nameOf = id => { const b = blocks.find(x => x.id === id); return b ? (b.name || b.type) : 'Removed block' }
   return <>

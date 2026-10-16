@@ -45,7 +45,7 @@ Environment unless stated: Chromium 141 headless, 1440×900, production build of
 - Fix: zoom to 100 % anchored on the selection, else the blocks currently visible, else the view centre; tooltip now "Zoom to 100%".
 - Verification: block at (722,414) and in view after the click.
 
-## DEF-006 · P3 · Accessibility · OPEN
+## DEF-006 · P3 · Accessibility · FIXED (verified — see "DEF-006 · update" below)
 **After picking a non-text block from +Add, keyboard focus falls to `<body>`.**
 - Repro: +Add → Kanban (or Table, Task, Calendar, Database, Countdown, Flashcards, Section, Agent) → Enter. `document.activeElement` is BODY.
 - Impact: shortcuts still work (the canvas treats BODY as itself) but a screen reader loses its place and the canvas focus ring is gone. Text blocks focus their editor correctly.
@@ -171,13 +171,13 @@ Section delete dialog read "It holds 1 block. They can go with the section…" �
 - LIVE (2026-10-16): not reproduced through the Chrome extension — it types slower than a frame per key, so the late frame always fires first. The race needs keys within one frame of Tab (fast typists; heavy sheets).
 - Verification: in-app 5/5 correct (was 0/3). New browser regression (`tests/browser/run.mjs`, "table grid — typing straight after Tab"): the harness renders too fast to slip a frame, so the test delays animation frames deliberately — it FAILS on the old SheetGrid and passes on the fix.
 
-## DEF-030 · P2 · Data loss (small window) · FIXED (verified in-app; browser regression written, NOT yet run)
+## DEF-030 · P2 · Data loss (small window) · FIXED (verified in-app and by browser regression; LIVE-confirmed)
 **HTML typed into an HTML block in the last 600 ms before switching sheet, closing the project or closing the tab was lost.** Same class as DEF-024.
 - Repro: HTML block → type `<p>LAST</p>` at the end → immediately click New Sheet → back to Sheet 1. The source and the saved block lack `<p>LAST</p>`. Control (wait 1 s before switching) keeps it.
 - Root cause: `HtmlBlock` saved through a 600 ms debounce and its unmount cleanup only `clearTimeout`-ed it — the pending save was dropped, not flushed. No pagehide/visibilitychange flush either (TextBlockContent has both).
 - Fix (`components/notebook/HtmlBlock.js`): the pending commit is kept in a ref and flushed on editor blur, on unmount, on `pagehide` and on `visibilitychange`.
 - LIVE (2026-10-16, production build, Matas's Chrome): reproduced — typed `<p>LAST</p>`, clicked New Sheet, back to Sheet 1: gone. Control with a 1.5 s pause: kept. Test blocks and sheet deleted afterwards.
-- Verification: in-app scenario 2/2 keeps `<p>LAST</p>` (was lost). Browser regression added to `tests/browser/run.mjs` (unmount with focus still in the editor) — its run was interrupted by Matas and is still pending. Sweep: every other unmount `clearTimeout` in components/ is a display timer (countdown tick, midnight re-render), not a pending write.
+- Verification: in-app scenario 2/2 keeps `<p>LAST</p>` (was lost). Browser regression added to `tests/browser/run.mjs` (unmount with focus still in the editor) — FAILS on the old HtmlBlock ("saved []"), passes now. Sweep: every other unmount `clearTimeout` in components/ is a display timer (countdown tick, midnight re-render), not a pending write.
 
 ## DEF-031 · P1 · Crash (block-level) · FIXED (verified; LIVE-confirmed)
 **Opening the Filter menu of any database — or the Name column's menu, a select with no options, the view menu of a board/calendar with nothing to group by, or the view menu on a database's only view — crashed the whole block** ("This database block couldn't be displayed — text2 is not defined"). The board's own empty state says "Click the highlighted view chip above", which is one of the crashing clicks.

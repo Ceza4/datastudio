@@ -626,7 +626,7 @@ function DocumentBlockInner({
      the body has the same flush on unmount, the notes did not (audit
      DEF-024). */
   const patchRef = useRef(patch)
-  patchRef.current = patch
+  useLayoutEffect(() => { patchRef.current = patch })
   useEffect(() => () => {
     if (noteTimer.current) { clearTimeout(noteTimer.current); noteTimer.current = null; patchRef.current({ footnotes: notesRef.current }) }
   }, [])

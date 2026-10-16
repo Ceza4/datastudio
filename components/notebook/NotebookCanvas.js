@@ -1066,7 +1066,7 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
      and only when the canvas itself (or nothing) has focus — a paste into a
      note, a cell or an input belongs to that element. */
   const pasteRef = useRef(null)
-  pasteRef.current = pasteFromClipboard
+  useLayoutEffect(() => { pasteRef.current = pasteFromClipboard })
   useEffect(() => {
     function onPaste(e) {
       if (focusRef.current) return
@@ -1257,8 +1257,12 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
      its id selected. The canvas then stayed LOCKED (wheel and pinch frozen)
      over an empty sheet, with nothing on screen to click away from. Pruned
      here, once, rather than at every place a block can disappear. */
+  /* Effects on purpose: a block can vanish from outside this component (sync,
+     undo, a section taking its children), and each setter returns the SAME
+     value when nothing was pruned, so there is no cascading render. */
   useEffect(() => {
     const live = new Set(blocks.map(b => b.id))
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedIds(prev => {
       if (!prev.size) return prev
       const keep = [...prev].filter(id => live.has(id))
@@ -1267,6 +1271,7 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
   }, [blocks])
   useEffect(() => {
     const live = new Set(shapes.map(sh => sh.id))
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedShapeIds(prev => {
       if (!prev.size) return prev
       const keep = [...prev].filter(id => live.has(id))
@@ -1274,6 +1279,7 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
     })
   }, [shapes])
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (selectedConnId && !connections.some(c => c.id === selectedConnId)) setSelectedConnId(null)
   }, [connections, selectedConnId])
   function toggleMindMap() { setMindMapMode(m => !m); setMindMapMaster(null) }
@@ -1472,6 +1478,12 @@ function addBlockAnimated(type, x, y) {
      in, on top of each other. So: same rule as the Add menu, plus the spots
      handed out in the last few seconds, because a multi-file import asks for
      all of them before any block has reached `blocks`. */
+  /* Declared here, before the placer reads them. It worked further down — the
+     effect fires after render — but a read above a declaration is one refactor
+     away from a TDZ crash. (Comment for both: the collapsed sidebar's row
+     offset, and whether it is collapsed.) */
+  const ROW_LEFT_COLLAPSED = 93
+  const sidebarHidden = !!prefs?.sidebarCollapsed
   const pendingSpotsRef = useRef([])
   useEffect(() => {
     if (!placeRef) return
@@ -1641,8 +1653,8 @@ function addBlockAnimated(type, x, y) {
      NOTE this is the only ROW_LEFT that moves. `usableL`, block placement and
      `leftPx` keep the full 284 on purpose: a block dropped into the space the
      sidebar will reoccupy is a block that vanishes the moment it reopens. */
-  const ROW_LEFT_COLLAPSED = 93
-  const sidebarHidden = !!prefs?.sidebarCollapsed
+  /* ROW_LEFT_COLLAPSED and sidebarHidden are declared above the import placer,
+     which reads them. */
   const ROW_RIGHT = 162     // profile island (~130) + its 16 inset + 16 gutter
 
   /* Keep the viewport-lock ref in step with the selection. A block being
