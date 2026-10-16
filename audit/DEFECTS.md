@@ -301,3 +301,19 @@ The error card's Delete went through `deleteBlock`, whose content check THROWS o
 - Verification: main chunk 1,583,714 → 1,167,558 bytes (−26 %); SheetJS in its own 411,883-byte chunk, 0 requests on page load, 1 on first import; CSV/XLSX/European CSV imports and all 9 export formats pass (.xlsx 16 KB); workbook tests +2 (51 pass).
 - Further, not done (OPEN_QUESTIONS Q10): every block type, toolbar and panel is imported statically into NotebookCanvas; lazy-loading the heavy, rarely-first-used ones (Document + ribbon, PDF, Agent, HTML, Database, Builder) would cut the main chunk further.
 - Minor: exporting a table with no data downloads a 0-byte CSV; a "nothing to export" message would read better.
+
+## DEF-046 · P3 · Accessibility (focus) · FIXED (verified; LIVE-reproduced)
+**Closing Account, Settings or People with Escape dropped focus on `<body>`; People could not be reached with Tab at all; and Escape typed in People's search field did nothing.**
+- LIVE (16 Oct): Account → Escape → `document.activeElement` = BODY.
+- Causes: no panel returned focus on close; the canvas's own Escape handler runs first and moves focus, so a check on `document.activeElement` was already wrong; People is portalled to the end of `<body>`, after every other control; its search input stopped propagation of every key, Escape included.
+- Fix: on Escape each panel returns focus to its own toolbar button when focus WAS inside it or nowhere (read from `e.target`); People's search takes focus on open and lets Escape through.
+- Verification (e2e panelfocus.js): Account/Settings/People → Tab inside → Escape → focus on the matching button; an outside click on People leaves focus where it lands.
+
+## DEF-047 · P2 · Interaction (stray notes) · FIXED (verified)
+**Clicking empty canvas to close Account, Settings, People, Builder or the Add menu also wrote a new empty note there** — every time; only Export (a modal overlay) did not. handleBgClick already treated "a click that lets go of a selection" as only that; panels were not covered.
+- Fix (`NotebookCanvas.js`): in the canvas's capture-phase pointerdown, before panels' own outside-press handlers close them, note whether a top-island trigger is `aria-expanded="true"`; such a click only dismisses.
+- Verification (e2e dismiss2.js, a clean workspace per panel): new blocks after the dismiss-click — before 1/1/1/1/0/1 (Account, Settings, People, Builder, Export, Add); after 0 for all six. Plain click-to-write unchanged (clickwrite.js: first click writes, click away releases, next click writes).
+
+## Live notes (16 Oct, not code defects)
+- Account → Privacy: "Privacy policy" and "Terms of service" are marked SOON on an account with an active Pro plan → OPEN_QUESTIONS Q11.
+- Account → Security: "Change email" and "Two-factor authentication" share the same person icon; a lock/shield for 2FA would read better.

@@ -197,7 +197,14 @@ export default function PeoplePanel({
       if (menuFor) setMenuFor(null)
       else if (view !== 'list') setView('list')
       else if (activeThreadId) onOpenThread?.(null)
-      else onClose?.()
+      else {
+        /* Esc only (not an outside click): focus back to the People button
+           (audit DEF-046). The panel is portalled to <body>, so closing it
+           otherwise left focus nowhere. */
+        const a = e.target
+        onClose?.()
+        if (!a || a === document.body || ref.current?.contains(a)) document.querySelector('[data-menu-toggle=people]')?.focus({ preventScroll: true })
+      }
     }
     /* Close on a CLICK outside, not on a mousedown: dragging a block from the
        canvas onto a person starts with a mousedown outside this panel, and
@@ -368,7 +375,11 @@ export default function PeoplePanel({
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, padding: '8px 8px 8px 12px', borderBottom: `1px solid ${border}` }}>
         <Icon name="nav-search" size={14} style={{ color: text3, flexShrink: 0 }} />
-        <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.stopPropagation()}
+        {/* Takes focus when the panel opens (audit DEF-046): the panel is
+            portalled to the end of <body>, so Tab from the People button never
+            reached it. Escape is let through to the panel's own handler —
+            swallowing every key here made Escape do nothing once you typed. */}
+        <input autoFocus value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key !== 'Escape') e.stopPropagation() }}
           placeholder="Find someone…" aria-label="Find someone"
           style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: text, caretColor: accent, fontFamily: 'var(--ds-font-body)', fontSize: 13 }} />
         <button type="button" style={btn(true)} onClick={() => setView('add')} disabled={!signedIn} title="Invite someone by email">

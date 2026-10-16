@@ -33,6 +33,9 @@ When two tabs really do edit at once, the one that saves second is told "changed
 ## Q10 · Code-split the block types
 Live: first contentful paint 1.5 s (warm cache), main JS chunk 1.17 MB after the SheetJS split (was 1.52 MB). Every block type, toolbar and panel is a static import of NotebookCanvas, so an empty canvas downloads the Document editor, PDF toolbar, Agent, HTML, Database and Builder code. `next/dynamic` for those, with the block's skeleton as the loading state, is the next big first-load win. A refactor with UI risk (loading flashes), so proposed rather than done — want it?
 
+## Q11 · Privacy policy and Terms before charging (legal, not code)
+Account → Privacy shows "Privacy policy — SOON" and "Terms of service — SOON", while the live account is on a paid Pro plan. Selling to EU users requires at least a GDPR privacy notice (what is collected, Supabase/Vercel/Anthropic as processors, retention, rights). Recommendation: publish both before the first paid signup (pairs with registering the business, AGENT_ECONOMICS §15). Not legal advice — worth a short check with a lawyer/accountant.
+
 ## Q8 · Smaller ones
 - Safari: Cmd+V on the canvas now falls back to reading the clipboard (one permission prompt) — untested here, please try once on a Mac.
 - Database footer counts "0 fields" next to a visible Name column (title deliberately not counted). Suggest "1 row · Name only" or count it.

@@ -2466,6 +2466,7 @@ function addBlockAnimated(type, x, y) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds, selectedShapeIds, selectedShapeList, shapes, drawings, blocks, selectedConnId, soleSelected, viewSize, kbMode, toolbarIdx, shortcutsOpen, onUndo, onRedo])
   /* Only create a text block when nothing is being edited */
+  const dismissPressRef = useRef(false)
   function handleBgClick(e) {
     if (e.target !== e.currentTarget) return
     if (drawMode) return
@@ -2475,6 +2476,8 @@ function addBlockAnimated(type, x, y) {
        rather than a one-shot flag, so a gesture that produces no click
        cannot swallow the next real one. */
     if (performance.now() < bgClickGuardRef.current) return
+    /* The press that closed a toolbar panel — the click is a dismissal only. */
+    if (dismissPressRef.current) { dismissPressRef.current = false; return }
 
     if (suppressNextBgClickRef.current) {
       const why = suppressNextBgClickRef.current
@@ -5182,6 +5185,14 @@ function addBlockAnimated(type, x, y) {
         data-ds-canvas=""
         data-ds-pan={panCursor || undefined}
         onPointerDownCapture={e => {
+          /* Was a toolbar panel open at the moment of this press (Account,
+             Settings, People, Builder, Add)? Read here, in capture, before
+             those panels' own outside-press handlers close them. A click
+             whose job is to dismiss a panel must not also write a note
+             (audit DEF-047) — the same rule handleBgClick already applies to
+             letting go of a selection. */
+          dismissPressRef.current = e.target === e.currentTarget &&
+            !!document.querySelector('[data-ds-island="top"] button[aria-expanded="true"]')
           // Space + any button, or the middle button on its own. Both mean
           // "move the camera", and neither may reach what is underneath.
           if (!(e.button === 1 || spaceHeldRef.current)) return

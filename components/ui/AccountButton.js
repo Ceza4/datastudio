@@ -174,7 +174,17 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
        is a panel somebody gets stuck in — Escape is the reflex for keyboard
        users and clicking away is the reflex for everyone else. */
     const onDown = e => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false) }
-    const onKey = e => { if (e.key === 'Escape') setOpen(false) }
+    const onKey = e => {
+      if (e.key !== 'Escape') return
+      /* Focus goes back to the Account button (audit DEF-046) — the panel
+         unmounting dropped it on <body>, so the next Tab started from the top
+         of the page. Only when it was in the panel or nowhere. */
+      /* e.target, not document.activeElement: the canvas's own Escape handler
+         runs first and has already moved focus to the canvas. */
+      const a = e.target
+      setOpen(false)
+      if (!a || a === document.body || rootRef.current?.contains(a)) rootRef.current?.querySelector('button')?.focus({ preventScroll: true })
+    }
     document.addEventListener('pointerdown', onDown)
     document.addEventListener('keydown', onKey)
     return () => {

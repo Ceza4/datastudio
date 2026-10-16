@@ -1227,7 +1227,13 @@ export default function AppPage() {
     function onDown(e) {
       if (settingsRef.current && !settingsRef.current.contains(e.target)) setSettingsOpen(false)
     }
-    function onKey(e) { if (e.key === 'Escape') setSettingsOpen(false) }
+    function onKey(e) {
+      if (e.key !== 'Escape') return
+      const a = e.target   // where focus WAS; the canvas may already have moved it
+      setSettingsOpen(false)
+      // Back to the Settings button (DEF-046), unless focus is somewhere else on purpose.
+      if (!a || a === document.body || settingsRef.current?.contains(a)) settingsRef.current?.querySelector('button')?.focus({ preventScroll: true })
+    }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
     return () => {
