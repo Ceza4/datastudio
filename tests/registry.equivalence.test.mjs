@@ -313,5 +313,25 @@ ok(blockHasContent({ type: 'chart' }) === false, 'an unknown type reports no con
 ok(blockDims({ type: 'chart' }).w === 320, 'an unknown type still gets usable dimensions')
 ok(isKnownType('pdf') === true, 'pdf, by contrast, is now a real registered type')
 
+/* DEF-042: one malformed table must not crash the whole app on load. */
+{
+  console.log('\n repairBlocks')
+  const { repairBlocks } = await import('../components/notebook/blockRegistry.js')
+  const healthy = [{ id: 'n', sheets: [{ id: 's', blocks: [{ id: 't', type: 'table', headers: ['a'], rows: [['1']] }, { id: 'x', type: 'text', content: '<p>hi</p>' }] }] }]
+  ok(repairBlocks(healthy) === healthy, 'a healthy workspace comes back as the SAME array — not re-saved on every boot')
+  const bad = [{ id: 'n', sheets: [{ id: 's', blocks: [
+    { id: 't1', type: 'table', headers: 7, rows: {} },
+    { id: 't2', type: 'table', headers: ['a', 'b'], rows: [['1', '2'], 'oops', null] },
+    { id: 'k', type: 'kanban', lanes: {} },
+  ] }] }]
+  const fixed = repairBlocks(bad)
+  const [t1, t2, k] = fixed[0].sheets[0].blocks
+  ok(Array.isArray(t1.headers) && t1.headers.length === 0 && Array.isArray(t1.rows), 'non-array headers/rows become empty arrays')
+  ok(deepEq(t2.headers, ['a', 'b']) === null && deepEq(t2.rows, [['1', '2'], [], []]) === null, 'good columns and good rows are kept; only the broken rows are emptied')
+  ok(k === bad[0].sheets[0].blocks[2], 'other block types are left to their own error boundary, untouched')
+  ok(bad[0].sheets[0].blocks[0].headers === 7, 'the input is not mutated')
+  ok(Array.isArray(repairBlocks(null)), 'a missing notebooks list does not throw')
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

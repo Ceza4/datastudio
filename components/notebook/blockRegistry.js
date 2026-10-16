@@ -1056,6 +1056,52 @@ export function growBlocksToMin(notebooks) {
   return any ? out : notebooks
 }
 
+/* ── REPAIR ON THE WAY IN (audit DEF-042) ─────────────────────────────────
+   A block's own render is behind an error boundary, so bad data there costs
+   one block. Workspace-level code is not: AppPage reads every table's
+   `headers` while it renders (Crosscheck's column list), and ONE table whose
+   headers were not an array — a damaged row from sync, an export edited by
+   hand, a different client's shape — crashed the whole app on load with
+   "Application error", with no way back short of clearing site data.
+
+   So the shapes workspace-level code relies on are made true where data
+   enters (load, sync pull). Only what is unusable is touched — a non-array
+   holds no columns, so [] loses nothing. Same identity when nothing needed
+   it, so a healthy workspace is not re-saved. */
+function repairBlock(b) {
+  if (!b || typeof b !== 'object' || b.type !== 'table') return b
+  const headersOk = Array.isArray(b.headers)
+  const rowsOk = Array.isArray(b.rows) && b.rows.every(r => Array.isArray(r))
+  if (headersOk && rowsOk) return b
+  return {
+    ...b,
+    headers: headersOk ? b.headers : [],
+    rows: Array.isArray(b.rows) ? b.rows.map(r => (Array.isArray(r) ? r : [])) : [],
+  }
+}
+
+export function repairBlocks(notebooks) {
+  if (!Array.isArray(notebooks)) return []
+  let any = false
+  const out = notebooks.map(n => {
+    if (!n || !Array.isArray(n.sheets)) return n
+    let nChanged = false
+    const sheets = n.sheets.map(sh => {
+      if (!sh) return sh
+      if (!Array.isArray(sh.blocks)) { if (sh.blocks == null) return sh; nChanged = true; return { ...sh, blocks: [] } }
+      let sChanged = false
+      const blocks = sh.blocks.map(b => { const c = repairBlock(b); if (c !== b) sChanged = true; return c })
+      if (!sChanged) return sh
+      nChanged = true
+      return { ...sh, blocks }
+    })
+    if (!nChanged) return n
+    any = true
+    return { ...n, sheets }
+  })
+  return any ? out : notebooks
+}
+
 /* ── EFFECTIVE FOOTPRINT ──────────────────────────────────────────────────
    What a block ACTUALLY occupies on the canvas right now, which stopped being
    the same question as blockDims() the moment an image could render at three

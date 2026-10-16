@@ -51,7 +51,7 @@ counted as passed unless a scenario in TEST_MATRIX.md says PASS with evidence.
 
 ## Current phase
 
-Final regression and independent review (RUN_LOG batch 15). 39 defects logged: 38 fixed and verified, DEF-028 open (product decision), DEF-031 recommended for an immediate hotfix (OPEN_QUESTIONS Q0).
+Final regression and independent review (RUN_LOG batch 15). 42 defects logged: 41 fixed and verified (Safari paste fallback untested — no WebKit), DEF-028 open (product decision). DEF-031 recommended for an immediate hotfix (OPEN_QUESTIONS Q0). An independent read-only review found 3 confirmed bugs in the audit's own fixes; all fixed and re-verified (DEFECTS, bottom section).
 
 ## Ledger
 

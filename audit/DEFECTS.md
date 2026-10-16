@@ -243,3 +243,40 @@ LIVE-confirmed 2026-10-16: after Add → Database, `document.activeElement` is `
 - Fix (`NotebookCanvas.js`): Ctrl+V falls through to the browser, and a document `paste` listener takes the text from the event (no permission needed). Gated like the keymap — not in full screen; only when the canvas or nothing has FOCUS. (First version gated on `e.target` and failed after switching sheet: Chrome aims paste at the element holding the text *selection* — a sidebar span — not at the focused element; traced and fixed.) The palette's Paste command keeps the explicit read. Same view, same clipboard, pasted again → cascades 24 px.
 - Verification: with NO clipboard-read permission granted — copy a note on Sheet 1, New Sheet, Ctrl+V → "Pasted 1 item."; twice → 2 blocks, distinct ids, not overlapping; Ctrl+X then Ctrl+Z restores; Sheet 1 untouched; a probe page confirmed Chromium fires `paste` at a focused non-editable element and at body.
 - Open (product): a copied block travels as text/plain JSON (`datastudio/blocks;v1 {…}`), by design per lib/clipboard.js. Pasting it into a note, an email or a doc inserts that JSON. Suggested: also write text/html with a readable rendering + the payload in a data attribute; read the attribute on canvas paste (OPEN_QUESTIONS).
+
+---
+## Independent review (separate agent, read-only, 16 Oct) — findings and outcomes
+
+## DEF-040 · P2 · Data loss (unmount flush went nowhere) · FIXED (verified; failing repro on old code)
+**Block updates were written to the ACTIVE sheet, so every unmount flush after a sheet switch was a silent no-op** — and still recorded an empty "edit" in history. DEF-024 (footnotes, agent instructions) and DEF-030 (HTML) only appeared fixed where a blur flush ran first; footnotes have none.
+- Repro: Document → Ctrl+Alt+F → type `NOTE-XYZ` → click New Sheet at once → back to Sheet 1. Old: footnote saved as "". New: "NOTE-XYZ".
+- Fix: `updateNotebookBlock` targets the sheet that HOLDS the block (active first), and leaves the state untouched when no sheet does.
+
+## DEF-041 · P3 · Undo (wrong item restored) · FIXED (verified; failing repro on old code)
+**With two delete toasts up, UNDO on the older one restored the NEWER deletion.** `undoVia` matched on label only.
+- Repro: delete note AAA, delete note BBB, click the first UNDO. Old: BBB back, AAA gone. New: AAA back.
+- Fix: each toast remembers its own history slot (cap-aware); otherwise the hand restore puts back only what that change removed.
+
+## DEF-042 · P1 · Crash (whole app) · FIXED (verified)
+**One table block whose `headers` was not an array crashed the entire app on load ("Application error"), with no recovery short of clearing site data.** AppPage reads every table's headers while rendering (Crosscheck's column list), outside any error boundary. Found while building the review's corrupt-data repro.
+- Fix: `repairBlocks` (blockRegistry.js) on load and on every sync pull — non-array headers/rows become empty arrays, nothing else touched, same identity when healthy (+6 unit tests); Crosscheck's scan guarded too.
+- Verification: workspace with a table `{headers: 7, rows: {}}` and a kanban `{lanes: {}}` → app loads, the table renders empty, the kanban shows its own error card.
+
+## DEF-032 follow-up · FIXED (verified)
+The error card's Delete went through `deleteBlock`, whose content check THROWS on the malformed data that crashes a block — the escape hatch was dead. Now a throw counts as "has content". Verified: corrupted kanban → Delete block → gone, "kanban block deleted · UNDO", not LOCKED.
+
+## DEF-039 follow-ups · FIXED (Safari part UNVERIFIED — no WebKit here)
+- Ctrl+V pasted behind the open shortcuts dialog → the paste listener stands down while it is open (verified: 0 behind, 1 after closing).
+- Safari fires no `paste` at a non-editable focus → if no paste event arrives 120 ms after Cmd+V, the canvas reads the clipboard the old way (prompt). Chrome unaffected (verified: two pastes → two blocks, no doubles).
+
+## DEF-038 follow-ups · FIXED (verified)
+- A mouse click inside the Draw panel pinned it open (focus-inside guard) → only keyboard focus (`:focus-visible`) holds it now; closes 140 ms after the mouse leaves.
+- Esc inside the panel while drawing also left draw mode → the canvas's draw-mode Escape now respects `__dsConsumed`.
+- `aria-expanded` removed from the Draw button (it toggles drawing, not the panel).
+
+## Guard follow-up
+`scripts/check-undef.mjs` passed a file that does not parse (ESLint reports it as `fatal`, ruleId null) → fatal messages now fail the guard (verified with a deliberately broken file).
+
+## Accepted as known limits (documented, not changed)
+- `revertChange` is all-or-nothing when an array changed length and something unrecorded (a sync pull) changed the same array afterwards: the undo does nothing but the history still pops and says "Undid …". Safe (never overwrites a collaborator), sometimes ineffective. → OPEN_QUESTIONS Q3.
+- `lib/workbook.js`: time-only cells (serial < 1) map to 1899-12-31 (were 1899-12-30; both drop the time downstream); serials 60/61 both → 1 Mar 1900 (Lotus leap-year bug, cosmetic); in comma-decimal CSVs a value like `192.168.100` reads as 192168100, as Excel in a de-DE locale would.

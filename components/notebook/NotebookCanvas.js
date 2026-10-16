@@ -1066,10 +1066,14 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
      and only when the canvas itself (or nothing) has focus — a paste into a
      note, a cell or an input belongs to that element. */
   const pasteRef = useRef(null)
+  const pasteArrivedRef = useRef(true)
+  const shortcutsOpenRef = useRef(false)
+  useLayoutEffect(() => { shortcutsOpenRef.current = shortcutsOpen })
   useLayoutEffect(() => { pasteRef.current = pasteFromClipboard })
   useEffect(() => {
     function onPaste(e) {
-      if (focusRef.current) return
+      pasteArrivedRef.current = true
+      if (focusRef.current || shortcutsOpenRef.current) return
       /* By FOCUS, not e.target: Chrome aims a paste event at wherever the
          page's text selection sits — after clicking New Sheet that was a span
          in the sidebar — even while the canvas has the keyboard. */
@@ -1411,7 +1415,11 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
        full of blocks skipped the prompt that the multi-delete would have shown
        for the identical action. One source now — and it decides whether the
        deletion is worth a toast rather than whether to ask. */
-    const hasContent = registryHasContent(block, blocks)
+    /* Must not throw: the error card calls this for a block whose data is
+       malformed — the very data a content check can choke on (DEF-032
+       review). A throw counts as "has content", so the UNDO toast is offered. */
+    let hasContent = true
+    try { hasContent = registryHasContent(block, blocks) } catch { /* keep true */ }
     // Animate out, then remove
     setDeletingBlockId(block.id)
     setTimeout(async () => {
@@ -2143,7 +2151,10 @@ function addBlockAnimated(type, x, y) {
       /* Draw mode with no stroke in flight: Escape leaves draw mode and goes
          back to the pointer. Above the ordinary Escape branch, because in draw
          mode the pen is the innermost state. */
-      if (e.key === 'Escape' && drawModeRef.current) {
+      /* A panel or block that already handled this Escape (the Draw options
+         panel closing, a grid cell cancelling) is the innermost state — draw
+         mode is not dropped on the same press. */
+      if (e.key === 'Escape' && drawModeRef.current && !e.__dsConsumed) {
         e.preventDefault()
         setDrawMode(false); setShowDrawPanel(false)
         return
@@ -2353,7 +2364,14 @@ function addBlockAnimated(type, x, y) {
            "Paste" bubble to click on EVERY paste. Letting the key through
            makes the browser fire a native 'paste' event carrying the text,
            with no prompt at all — handled by the listener below. */
-        if (k === 'v') return
+        if (k === 'v') {
+          /* Safari fires no 'paste' at a non-editable focus, so give the
+             native event one beat to arrive and fall back to reading the
+             clipboard (which may prompt) if it does not. */
+          pasteArrivedRef.current = false
+          setTimeout(() => { if (!pasteArrivedRef.current && !focusRef.current) pasteRef.current?.() }, 120)
+          return
+        }
       }
 
       /* Shapes, before the `selectedIds.size === 0` bail below — that early
@@ -4779,9 +4797,12 @@ function addBlockAnimated(type, x, y) {
         <div ref={drawPanelRef} style={{ position: 'relative' }}
           onMouseEnter={() => { clearTimeout(drawPanelCloseRef.current); setShowDrawPanel(true) }}
           onMouseLeave={() => {
-            /* Not while the keyboard is inside it — Tab-ing through the
-               colours must not close the panel because the mouse left. */
-            if (drawPanelRef.current?.contains(document.activeElement)) return
+            /* Not while the KEYBOARD is driving it — Tab-ing through the
+               colours must not close the panel because the mouse moved. A
+               button merely focused by a click (:focus-visible is false) does
+               not count, or a click would pin the panel open over the canvas. */
+            const a = document.activeElement
+            if (drawPanelRef.current?.contains(a) && a?.matches?.(':focus-visible')) return
             clearTimeout(drawPanelCloseRef.current)
             drawPanelCloseRef.current = setTimeout(() => setShowDrawPanel(false), 140)
           }}
@@ -4803,7 +4824,7 @@ function addBlockAnimated(type, x, y) {
                the panel Esc just closed. */
             if (drawBtn && document.activeElement !== drawBtn) { drawPanelEscRef.current = true; drawBtn.focus() }
           }}>
-          <button onClick={() => setDrawMode(v => !v)} aria-expanded={showDrawPanel}
+          <button onClick={() => setDrawMode(v => !v)}
             className={`ds-tbtn${drawMode ? ' is-on' : ''}`}
             title={drawMode ? 'Turn drawing off' : 'Draw on the canvas · hover for options'}>
             <Icon name="tool-draw" size={14} />

@@ -48,7 +48,7 @@ import { normalizeCanvasBg } from '../../lib/canvasbg'
 import { lockViewportZoom } from '../../lib/viewportlock'
 import { markdownToHtml, markdownTitle, MARKDOWN_EXTS } from '../../lib/markdown'
 import { processPdfFile, putPdf, newPdfId, prunePdfs, PDF_EXTS } from '../../lib/pdfs'
-import { createBlock, ICON_FOOTPRINT, growBlocksToMin } from '../../components/notebook/blockRegistry'
+import { createBlock, ICON_FOOTPRINT, growBlocksToMin, repairBlocks } from '../../components/notebook/blockRegistry'
 import { migrateInk } from '../../lib/shapes'
 import { flashcardFileIds } from '../../lib/flashcards'
 import { newNotebookId, newSheetId, newSheetFileId, newFolderId } from '../../lib/ids'
@@ -652,7 +652,7 @@ export default function AppPage() {
       /* growBlocksToMin (25 Sep 2026): blocks saved smaller than their type's
          comfortable minimum are grown to it, once, here. Same identity when
          nothing is under, so an unaffected workspace is not re-saved. */
-      let initialNotebooks = growBlocksToMin(migrateInk(saved?.notebooks?.length ? saved.notebooks : []))
+      let initialNotebooks = growBlocksToMin(migrateInk(repairBlocks(saved?.notebooks?.length ? saved.notebooks : [])))
       const initialFolders = saved?.folders?.length ? saved.folders : []
       /* v5. Imported workbooks were in React state and nowhere else — the
          payload only ever carried {notebooks, folders, prefs}, so a reload
@@ -864,7 +864,7 @@ export default function AppPage() {
 
     if (touched.has(KIND_NOTEBOOK)) {
       applyingHistoryRef.current = true
-      setNotebooks(next.notebooks)
+      setNotebooks(repairBlocks(next.notebooks))   // DEF-042: bad shapes stop at the door
       /* The open notebook can be deleted on another device. Pointing
          activeNotebookId at something that no longer exists renders an empty
          canvas with no way back — the same clamp applyHistory already does,
@@ -2145,11 +2145,27 @@ export default function AppPage() {
   function updateNotebookBlock(nbId, blockId, patch) {
     if (patch?.__delete) { deleteNotebookBlock(nbId, blockId); return }
     markUndo(labelForPatch(patch))
-    setNotebooks(prev => prev.map(n => {
-      if (n.id !== nbId) return n
-      const sid = _getActiveSheetId(n)
-      return { ...n, sheets: (n.sheets || []).map(s => s.id === sid ? { ...s, blocks: s.blocks.map(b => b.id === blockId ? { ...b, ...patch } : b) } : s) }
-    }))
+    /* The BLOCK's sheet, not the active one (audit DEF-040). A block flushing
+       its last keystrokes on unmount (HTML source, footnotes, agent
+       instructions) does so after a sheet switch has already committed — the
+       active sheet is the new one, which does not hold the block, so the
+       write went nowhere and an empty "edit" was still recorded. Active sheet
+       first (the normal case), then any sheet that holds the id; nothing
+       found → the state is left exactly as it was. */
+    setNotebooks(prev => {
+      let hit = false
+      const next = prev.map(n => {
+        if (n.id !== nbId) return n
+        const sheets = n.sheets || []
+        const active = _getActiveSheetId(n)
+        const holds = s => (s.blocks || []).some(b => b.id === blockId)
+        const target = sheets.find(s => s.id === active && holds(s)) || sheets.find(holds)
+        if (!target) return n
+        hit = true
+        return { ...n, sheets: sheets.map(s => s === target ? { ...s, blocks: s.blocks.map(b => b.id === blockId ? { ...b, ...patch } : b) } : s) }
+      })
+      return hit ? next : prev
+    })
   }
   /* Puts a removal back exactly where it came from.
      --------------------------------------------------------------------
@@ -2169,10 +2185,19 @@ export default function AppPage() {
      happened the hand restore is still the right tool: the change is no longer
      the top of the history to step back from. */
   function undoVia(label, fallback) {
+    /* THIS change's slot in the history (audit DEF-041). Called while the
+       delete is being made, before the capture effect records it, so its
+       entry will sit at today's length. Matching on label alone let an OLDER
+       toast's UNDO step back the NEWER delete (delete A, delete B, UNDO on A's
+       toast → B came back, A stayed gone). If anything has been recorded
+       since, the hand restore — which only puts back what this change took —
+       is the right path. */
+    const h0 = historyRef.current
+    const slot = Math.min(h0.past.length, (h0.limit || Infinity) - 1)   // at the cap the oldest drops off
     return () => {
       const past = historyRef.current.past
       const top = past[past.length - 1]
-      if (top?.label === label && top.after === workspaceRef.current?.notebooks) { undoEdit(); return }
+      if (past.length - 1 === slot && top?.label === label && top.after === workspaceRef.current?.notebooks) { undoEdit(); return }
       fallback()
     }
   }
@@ -2848,13 +2873,13 @@ export default function AppPage() {
     const sheet = getActiveNotebookSheet()
     if (!sheet) return []
     const cols = []
-    ;(sheet.blocks || []).filter(b => b.type === 'table').forEach(block => {
-      (block.headers || []).forEach((h, idx) => {
+    ;(Array.isArray(sheet.blocks) ? sheet.blocks : []).filter(b => b?.type === 'table' && Array.isArray(b.headers)).forEach(block => {
+      block.headers.forEach((h, idx) => {
         cols.push({
           id: `${block.id}::${idx}`,
           label: h || `Column ${idx + 1}`,
           tableName: block.name || 'Table',
-          rows: (block.rows || []).map(r => r[idx] ?? ''),
+          rows: (Array.isArray(block.rows) ? block.rows : []).map(r => r?.[idx] ?? ''),
         })
       })
     })

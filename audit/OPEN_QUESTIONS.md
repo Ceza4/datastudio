@@ -3,7 +3,7 @@
 Ordered by impact. Each says what was found, what the audit did, and what is recommended.
 
 ## Q0 · Hotfix DEF-031 to main now? (urgent)
-Every database's Filter menu (and the Name column menu, empty select options, board/calendar "group by", the only view's menu) crashes the block in production. 4-line fix on the branch (`e2245d3`). Recommendation: cherry-pick `e2245d3` to main today, ahead of the rest.
+Every database's Filter menu (and the Name column menu, empty select options, board/calendar "group by", the only view's menu) crashes the block in production. 4-line fix on the branch (`e2245d3`). Recommendation: cherry-pick `e2245d3` to main today, ahead of the rest. Second candidate: DEF-042 (one malformed table crashes the whole app on load) — rarer, but unrecoverable for the user when it happens.
 
 ## Q1 · Centre toolbar icon-only below 1700 px (DEF-002)
 To stop the title island clipping, the four toolbar words are visually hidden under 1700 px (still announced, every button has a tooltip). Keep, or would you rather move the title island / shrink the sidebar?
@@ -13,6 +13,7 @@ To stop the title island clipping, the four toolbar words are visually hidden un
 
 ## Q3 · Two undo stacks
 A table has its own Ctrl+Z (cell edits) and the workspace has another. Undo inside the grid is itself recorded as a workspace edit, so leaving the grid and pressing Ctrl+Z re-applies what the grid just undid. Options: (a) route grid edits through the workspace history only; (b) keep both and mark grid-undo as non-recorded. Recommendation: (b) now, (a) later.
+Related limit (independent review): after a sync pull touches the same table, undo of a row insert/delete can do nothing while still saying "Undid …". Safe but confusing; (a) would remove it.
 
 ## Q4 · Contrast tokens
 axe still reports contrast on design tokens (text3 on raised surfaces, accent on accentDim chips). Token changes ripple everywhere, so not touched. Recommendation: darken `--ds-text-3` one step in light theme and re-run axe.
@@ -27,6 +28,7 @@ N T K S D A C I each drop a block when the canvas has focus. Now documented and 
 By design (lib/clipboard.js), but pasting a copied block into a note, an email or Word inserts `datastudio/blocks;v1 {…}`. Recommendation: also write `text/html` with a readable rendering and the payload in a data attribute; canvas paste reads the attribute.
 
 ## Q8 · Smaller ones
+- Safari: Cmd+V on the canvas now falls back to reading the clipboard (one permission prompt) — untested here, please try once on a Mac.
 - Database footer counts "0 fields" next to a visible Name column (title deliberately not counted). Suggest "1 row · Name only" or count it.
 - People panel docks bottom-right, ~230 px from its button; Settings/Account open under theirs. Intended?
 - Tab order visits the right-hand island (Builder…Account) before the title island and toolbar (DOM order).

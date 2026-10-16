@@ -34,7 +34,10 @@ try { results = JSON.parse(out) } catch {
 }
 const hits = []
 for (const f of results) for (const m of f.messages) {
-  if (m.ruleId === 'no-undef') hits.push(`${f.filePath.replace(ROOT + '/', '')}:${m.line}:${m.column}  ${m.message}`)
+  /* A file that does not PARSE has not been checked at all — ESLint reports
+     it with ruleId null and fatal: true. Counting only no-undef let a syntax
+     error read as "clean". */
+  if (m.ruleId === 'no-undef' || m.fatal) hits.push(`${f.filePath.replace(ROOT + '/', '')}:${m.line}:${m.column}  ${m.fatal ? 'does not parse — ' : ''}${m.message}`)
 }
 if (!hits.length) { console.log(`  ✓ no undefined identifiers across ${results.length} files in app/, components/, lib/`); process.exit(0) }
 console.log('  ✗ undefined identifiers — each one throws the moment that code runs:\n')
