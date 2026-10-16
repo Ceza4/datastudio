@@ -2564,7 +2564,22 @@ export default function AppPage() {
           ) : (
             <span
               onDoubleClick={e => { e.stopPropagation(); setRenamingNotebookId(nb.id); setRenamingNotebookLabel(nb.name) }}
-              title="Double-click to rename · drag into a folder"
+              /* Reachable from the keyboard (audit DEF-035): projects and sheets
+                 had no tab stop at all — only their delete buttons did — so
+                 switching project or sheet needed a mouse. Enter/Space does
+                 what a click does (open and expand); F2 renames, as on the
+                 canvas. The row stays a plain div, so the delete button
+                 beside this is a sibling, not a control nested in a control. */
+              role="button" tabIndex={0}
+              aria-expanded={isExpanded}
+              aria-current={activeNotebookId === nb.id ? 'true' : undefined}
+              onKeyDown={e => {
+                if (e.key === 'F2') { e.preventDefault(); e.stopPropagation(); setRenamingNotebookId(nb.id); setRenamingNotebookLabel(nb.name); return }
+                if (e.key !== 'Enter' && e.key !== ' ') return
+                e.preventDefault(); e.stopPropagation()
+                e.currentTarget.closest('.nb-row')?.click()
+              }}
+              title="Double-click or F2 to rename · drag into a folder"
               style={{ flex: 1, fontSize: 13, color: activeNotebookId === nb.id ? accentText : text2, fontWeight: activeNotebookId === nb.id ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
           )}
           <div className="nb-actions" style={{ opacity: 0, display: 'flex', gap: 2 }}>
@@ -2591,7 +2606,7 @@ export default function AppPage() {
                 <div key={sheet.id}
                   onClick={() => { if (!isRenaming) { setActiveNotebookId(nb.id); setNotebookActiveSheet(nb.id, sheet.id) } }}
                   onDoubleClick={e => { e.stopPropagation(); setRenamingSheetId(sheet.id); setRenamingSheetLabel(sheet.name) }}
-                  title="Double-click to rename"
+                  title="Double-click or F2 to rename"
                   style={{ padding: '6px 10px', borderRadius: 6, fontSize: 13, color: isActive ? accentText : text3, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: isActive ? 600 : 400, background: isActive ? accentDim : 'transparent' }}
                   onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = raised }}
                   onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}>
@@ -2607,7 +2622,15 @@ export default function AppPage() {
                       style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 12, outline: 'none', minWidth: 0 }}
                     />
                   ) : (
-                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sheet.name}</span>
+                    <span role="button" tabIndex={0}
+                      aria-current={isActive ? 'page' : undefined}
+                      onKeyDown={e => {
+                        if (e.key === 'F2') { e.preventDefault(); e.stopPropagation(); setRenamingSheetId(sheet.id); setRenamingSheetLabel(sheet.name); return }
+                        if (e.key !== 'Enter' && e.key !== ' ') return
+                        e.preventDefault(); e.stopPropagation()
+                        setActiveNotebookId(nb.id); setNotebookActiveSheet(nb.id, sheet.id)
+                      }}
+                      style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', outlineOffset: 2, borderRadius: 4 }}>{sheet.name}</span>
                   )}
                   {isActive && !isRenaming && <Icon name="action-check" size={12} style={{ color: accentText }} />}
                   {!isRenaming && nb.sheets.length > 1 && (
@@ -3009,12 +3032,13 @@ export default function AppPage() {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: 'var(--ds-font-body)', position: 'relative' }}>
 
         {/* ── Sidebar (floating island) ── */}
-        {/* Collapsed = translated out and made inert, NOT unmounted. Unmounting
+        {/* Collapsed = translated out and made inert (the real `inert`, audit
+            DEF-035 — aria-hidden alone left every button in it tabbable), NOT unmounted. Unmounting
             throws away scroll position, which folder is open and which sheet is
             highlighted, so reopening lands you somewhere you did not leave.
             pointerEvents:none is what stops the hidden panel from swallowing
             clicks meant for the canvas underneath it. */}
-        <div data-kbd-zone data-ds-island="left" aria-hidden={sidebarCollapsed || undefined} style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: Z.chrome, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 12, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)',
+        <div data-kbd-zone data-ds-island="left" aria-hidden={sidebarCollapsed || undefined} inert={sidebarCollapsed || undefined} style={{ width: 252, position: 'absolute', top: 16, left: 16, bottom: 16, zIndex: Z.chrome, background: `${surface}f0`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: `1px solid ${border}`, borderRadius: 12, boxShadow: `0 8px 40px ${dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.12)'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--ds-font-body)',
           transform: sidebarCollapsed ? 'translateX(calc(-100% - 24px))' : 'none',
           opacity: sidebarCollapsed ? 0 : 1,
           pointerEvents: sidebarCollapsed ? 'none' : 'auto',

@@ -612,6 +612,11 @@ export default function TextBlockToolbar({ colors, onClose, editableRef }) {
       data-kbd-zone
       role="toolbar"
       aria-label="Text formatting"
+      /* Parked = inert (audit DEF-035). Opacity and pointer-events hid it from
+         the eye and the mouse, but its ten buttons stayed in the Tab order and
+         the accessibility tree: the first ten Tab presses on the page landed on
+         invisible controls at (−9999, −9999). */
+      inert={!pos}
       style={{
         position: 'fixed',
         left: pos ? pos.left : -9999,

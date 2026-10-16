@@ -472,7 +472,14 @@ h1, h2, h3, h4 {
 .folder-row:hover .folder-actions,
 .nb-row:hover .nb-actions,
 .col-row:hover .col-actions,
-.kanban-card:hover .card-del { opacity: 1 !important; }
+.kanban-card:hover .card-del,
+/* …and when the keyboard is in the row (audit DEF-035): Tab used to land on
+   these buttons while they were still invisible. */
+.folder-row:focus-within .folder-actions,
+.nb-row:focus-within .nb-actions,
+.col-row:focus-within .col-actions,
+.kanban-card:focus-within .card-del { opacity: 1 !important; }
+.nb-row:focus-within { background: var(--ds-raised) !important; }
 
 .col-row { transition: background 0.1s; cursor: grab; user-select: none; }
 .col-row:hover { background: var(--ds-raised) !important; }

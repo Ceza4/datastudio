@@ -206,3 +206,12 @@ LIVE-confirmed 2026-10-16: after Add → Database, `document.activeElement` is `
 
 ## DEF-034 · P3 · Copy · FIXED
 **Count + plural noun with a count of one**, swept across app/, components/, lib/: sheet tooltip "Sheet 1 · 1 blocks", PDF reference card "1 pages", database filter message "All 1 rows are still here", sidebar drag label "· 1 columns", PDF text label "1 lines · 1 words", People "1 people", Crosscheck "1 rows" (×2), Export "(1 rows)". Also the project and sheet names (text cursor, rename on double-click) now say "double-click to rename" in their tooltips.
+
+## DEF-035 · P2 · Accessibility (keyboard) · FIXED (verified)
+**Keyboard users could not switch project or sheet, and Tab started on ten invisible buttons.**
+- (a) Projects and sheets in the sidebar had no tab stop — they were `<div>`/`<span>` with click handlers. Only their delete × buttons were reachable, and the project's × sat at `opacity: 0` (hover-reveal) while focused.
+- (b) While a text block was active, its formatting toolbar parks at (−9999, −9999) with `opacity: 0; pointer-events: none` — invisible and click-through, but its 10 buttons stayed in the Tab order and the accessibility tree: the first ten Tab presses on the page went nowhere visible.
+- (c) The collapsed sidebar had `aria-hidden` but not `inert` (its comment said inert): every button inside stayed tabbable — and focusable content under aria-hidden is itself an axe violation.
+- Fix: project and sheet names are `role="button" tabIndex=0` (Enter/Space = click, F2 = rename, `aria-expanded` on projects, `aria-current` on the active one); rows stay plain divs so the × is a sibling, not nested. Hover-only actions also reveal on `:focus-within`. Parked toolbar and collapsed sidebar get the real `inert`.
+- Verification: Tab walk from page start — before: 10 off-screen toolbar buttons, then no project/sheet stops; after: Hide sidebar → Import → Folder → Project → My Project → its × → Sheet 1 → × → Sheet 2 → × → New Sheet → … Keyboard: focus "Sheet 1", Enter → active (`aria-current=page`); F2 → rename input; type + Enter → renamed. Collapsed sidebar: Tab skips it entirely.
+- Not changed (noted): DOM order puts the right-hand island (Builder…Account) before the title island and toolbar, so Tab order is sidebar → right → title → centre. Moving it is a layout refactor; logged in OPEN_QUESTIONS.
