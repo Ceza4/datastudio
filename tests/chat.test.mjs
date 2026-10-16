@@ -196,5 +196,18 @@ console.log('\n  postMessage waits for a new block to reach the server')
   ok(!r2.ok && f2.count() === 1, 'any other error reports at once, without retrying')
 }
 
+console.log('\n  a message being sent survives a refresh')
+{
+  clearThreads()
+  addPending('blk_p', { id: 'm1', body: 'hi', created_at: '2026-10-16T10:00:00Z' })
+  setThread('blk_p', [{ id: 'm0', body: 'older', created_at: '2026-10-16T09:00:00Z' }])
+  ok(threadFor('blk_p').some(m => m.id === 'm1' && m.pending), 'a refresh during the send keeps the pending row on screen')
+  setThread('blk_p', [{ id: 'm0', body: 'older', created_at: '2026-10-16T09:00:00Z' }, { id: 'm1', body: 'hi', created_at: '2026-10-16T10:00:01Z' }])
+  const m1 = threadFor('blk_p').filter(m => m.id === 'm1')
+  ok(m1.length === 1 && !m1[0].pending, "once the server has it, the server's copy replaces it — no duplicate")
+  setThread('blk_p', [{ id: 'm0', body: 'older', created_at: '2026-10-16T09:00:00Z' }])
+  ok(!threadFor('blk_p').some(m => m.id === 'm1'), 'a confirmed message unsent elsewhere still disappears (only PENDING rows are kept)')
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

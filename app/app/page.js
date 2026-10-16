@@ -1,5 +1,6 @@
 'use client'
 import { renameKeyDown, renameCancelled, selectAllOnFocus } from '../../lib/renameinput'
+import { leaveOnPurpose, isLeavingOnPurpose, _resetLeaving, markWiped, isWiped } from '../../lib/leave'
 import { pressable } from '../../lib/pressable'
 import Icon from '../../components/ui/Icon'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
@@ -714,12 +715,13 @@ export default function AppPage() {
        together than the delay — and renaming a block writes per keystroke, so
        holding a key down meant the workspace never saved at all. */
     debouncedSaveRef.current = debounce(async (state, onResult) => {
+      if (isWiped()) return   // local data was wiped on purpose — never write it back
       const res = await saveState(state)
       onResult(res)
     }, 600, { maxWait: 5000 })
   }
   useEffect(() => {
-    if (!hydrated) return
+    if (!hydrated || isWiped()) return
     debouncedSaveRef.current({ notebooks, folders, files, prefs }, res => {
       setSaveError(res.status === SAVE_OK ? null : res.error)
       setSaveStale(res.status === SAVE_STALE)
@@ -1068,7 +1070,7 @@ export default function AppPage() {
      may be killed without a pagehide at all. Both just force the debounce to
      run now. */
   useEffect(() => {
-    function flush() { debouncedSaveRef.current?.flush?.() }
+    function flush() { if (!isWiped()) debouncedSaveRef.current?.flush?.() }
     function onHidden() { if (document.visibilityState === 'hidden') flush() }
     window.addEventListener('pagehide', flush)
     document.addEventListener('visibilitychange', onHidden)
@@ -1078,8 +1080,16 @@ export default function AppPage() {
     }
   }, [])
 
-  const leavingOnPurposeRef = useRef(false)
-  const reloadOnPurpose = () => { leavingOnPurposeRef.current = true; window.location.reload() }
+  const reloadOnPurpose = () => leaveOnPurpose(() => window.location.reload())
+  /* Stop autosaving before local data is wiped (independent review): a
+     pending debounce — or the pagehide flush on the reload that follows —
+     wrote the in-memory workspace straight back after "delete everything". */
+  const stopSaving = () => { markWiped(); debouncedSaveRef.current?.cancel?.() }
+  useEffect(() => {
+    const onShow = e => { if (e.persisted) _resetLeaving() }
+    window.addEventListener('pageshow', onShow)
+    return () => window.removeEventListener('pageshow', onShow)
+  }, [])
 
   /* Warn before closing when there is genuinely something unwritten.
 
@@ -1097,7 +1107,7 @@ export default function AppPage() {
          need, then reload"; answering it with "Leave site?" made its own
          button look broken, and browsers that suppress the prompt simply did
          nothing. */
-      if (leavingOnPurposeRef.current) return
+      if (isLeavingOnPurpose()) return
       const unwritten = saveError || saveStale || debouncedSaveRef.current?.pending?.()
       if (!unwritten) return
       e.preventDefault()
@@ -1346,6 +1356,7 @@ export default function AppPage() {
     })
     if (choice === null) return false
     if (choice === 'wipe') {
+      stopSaving()
       await wipeLocalStores()
       /* Reload rather than clearing React state: every block, image URL and
          PDF document in memory still refers to bytes that no longer exist. */
@@ -1392,6 +1403,7 @@ export default function AppPage() {
       ],
     })
     if (choice !== 'delete') return
+    stopSaving()
     await wipeLocalStores()
     reloadOnPurpose()
   }
@@ -1766,7 +1778,9 @@ export default function AppPage() {
   async function importWorkbook(file, opts = {}) {
     /* SheetJS arrives on first use (DEF-045) — needed for CSV too, because
        tableFromSheet reads every sheet through its utilities. */
+    setImporting(true)   // shown while the library downloads too, not only while parsing
     try { await loadWorkbookLib() } catch {
+      setImporting(false)
       setImportError('Spreadsheet support could not be loaded — check your connection and try again.')
       return null
     }
@@ -3608,7 +3622,7 @@ export default function AppPage() {
 
               Same button shape as Settings beside it, deliberately — three of a
               kind rather than one real button and two labels. */}
-          <button onClick={() => setPeopleOpen(o => !o)} aria-label={unreadTotal ? `People, ${unreadTotal} unread` : 'People'} aria-expanded={peopleOpen} data-menu-toggle="people"
+          <button onClick={() => setPeopleOpen(o => !o)} aria-label={unreadTotal ? `People, ${unreadTotal} unread` : 'People'} aria-expanded={peopleOpen} data-menu-toggle="people" data-ds-dismiss-trigger
             className={`ds-tbtn${peopleOpen ? ' is-on' : ''}`} style={{ position: 'relative' }}>
             <Icon name="share-people" size={14} />
             People
@@ -3620,7 +3634,7 @@ export default function AppPage() {
           </button>
 
           <div ref={settingsRef} data-kbd-zone style={{ position: 'relative' }}>
-            <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen}
+            <button onClick={() => setSettingsOpen(o => !o)} aria-label="Settings" aria-expanded={settingsOpen} data-ds-dismiss-trigger
               className={`ds-tbtn${settingsOpen ? ' is-on' : ''}`}>
               <Icon name="settings-gear" size={14} />
               Settings

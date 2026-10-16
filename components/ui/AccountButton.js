@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import { leaveOnPurpose, markWiped } from '../../lib/leave'
 import Icon from './Icon'
 import { setDisplayName, exportEverything, deleteAccount } from '../../lib/account'
 import {
@@ -239,6 +240,7 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
        leave the user staring at a dialog after their account has already been
        destroyed, with no way forward. */
     try { await signOut() } catch { /* the account is gone; there is no session to end */ }
+    markWiped()   // no autosave or pagehide flush may write the workspace back
     try { await clearState() } catch { /* fall through to the store wipe */ }
     try {
       await Promise.all([
@@ -247,7 +249,7 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
       ])
     } catch { /* nothing left to do but leave */ }
 
-    window.location.href = '/'
+    leaveOnPurpose(() => { window.location.href = '/' })
   }
 
   const row = {
@@ -267,6 +269,7 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
           Builder, People and Settings beside it. The island owns the glass. */}
       <button
         onClick={() => setOpen(o => !o)}
+        data-ds-dismiss-trigger
         aria-label="Account"
         aria-expanded={open}
         title={email || 'Account'}
@@ -340,7 +343,7 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
                 which is the only sensible reading of "cancel" here. */}
             <button style={row} onClick={async () => {
               if (onSignOut && !(await onSignOut())) return
-              await signOut(); window.location.href = '/login'
+              await signOut(); leaveOnPurpose(() => { window.location.href = '/login' })
             }}>
               <Icon name="auth-sign-out" size={14} />
               <span style={{ flex: 1 }}>Sign out</span>
@@ -500,7 +503,7 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
 
             <button style={{ ...row, color: text3 }} onClick={async () => {
               if (onSignOut && !(await onSignOut())) return
-              await signOutEverywhere(); window.location.href = '/login'
+              await signOutEverywhere(); leaveOnPurpose(() => { window.location.href = '/login' })
             }}>
               <Icon name="auth-sign-out" size={14} />
               <span style={{ flex: 1 }}>Sign out everywhere</span>

@@ -2476,8 +2476,11 @@ function addBlockAnimated(type, x, y) {
        rather than a one-shot flag, so a gesture that produces no click
        cannot swallow the next real one. */
     if (performance.now() < bgClickGuardRef.current) return
-    /* The press that closed a toolbar panel — the click is a dismissal only. */
-    if (dismissPressRef.current) { dismissPressRef.current = false; return }
+    /* Consumed here, acted on just before writing: a dismiss-click still lets
+       go of an edit or a selection like any other click — it only never
+       writes a note. */
+    const dismissing = dismissPressRef.current
+    dismissPressRef.current = false
 
     if (suppressNextBgClickRef.current) {
       const why = suppressNextBgClickRef.current
@@ -2510,6 +2513,8 @@ function addBlockAnimated(type, x, y) {
       return
     }
 
+    /* The press that closed a toolbar panel: a dismissal, not a request to write. */
+    if (dismissing) return
     const { x, y } = toCanvas(e.clientX, e.clientY)
     addBlockAnimated('text', x - 140, y - 20)
   }
@@ -4765,7 +4770,7 @@ function addBlockAnimated(type, x, y) {
               setAddAnchor({ left: r.left, top: r.top, bottom: r.bottom })
               setAddMenuOpen(true)
             }}
-            aria-expanded={addMenuOpen}
+            aria-expanded={addMenuOpen} data-ds-dismiss-trigger
             data-menu-toggle="add"
             title="Add a block"
             className={`ds-tbtn is-menu${addMenuOpen ? ' is-on' : ''}`}>
@@ -5191,8 +5196,12 @@ function addBlockAnimated(type, x, y) {
              whose job is to dismiss a panel must not also write a note
              (audit DEF-047) — the same rule handleBgClick already applies to
              letting go of a selection. */
+          /* Only panels that really close on an outside press mark their
+             trigger (data-ds-dismiss-trigger). Builder stays open until you
+             close it, so counting it would switch click-to-write off for as
+             long as it is open (independent review). */
           dismissPressRef.current = e.target === e.currentTarget &&
-            !!document.querySelector('[data-ds-island="top"] button[aria-expanded="true"]')
+            !!document.querySelector('[data-ds-dismiss-trigger][aria-expanded="true"]')
           // Space + any button, or the middle button on its own. Both mean
           // "move the camera", and neither may reach what is underneath.
           if (!(e.button === 1 || spaceHeldRef.current)) return

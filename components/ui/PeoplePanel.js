@@ -66,6 +66,18 @@ export default function PeoplePanel({
 }) {
   const { surface, raised, border, text, text2, text3, accent, accentText, accentDim } = colors
   const ref = useRef(null)
+  /* Focus the search ONCE per opening (audit DEF-046 + review): the panel is
+     portalled to the end of <body>, so Tab from the People button never
+     reached it. Not `autoFocus` — that re-fired whenever the list view
+     remounted (stealing focus from a conversation just opened) — and not on a
+     touch screen, where it would pop the on-screen keyboard every time. */
+  const searchRef = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
+    const t = requestAnimationFrame(() => searchRef.current?.focus({ preventScroll: true }))
+    return () => cancelAnimationFrame(t)
+  }, [open])
   const [, bump] = useState(0)
   const [view, setView] = useState('list')           // list | add | group | members
   const [query, setQuery] = useState('')
@@ -375,11 +387,9 @@ export default function PeoplePanel({
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, padding: '8px 8px 8px 12px', borderBottom: `1px solid ${border}` }}>
         <Icon name="nav-search" size={14} style={{ color: text3, flexShrink: 0 }} />
-        {/* Takes focus when the panel opens (audit DEF-046): the panel is
-            portalled to the end of <body>, so Tab from the People button never
-            reached it. Escape is let through to the panel's own handler —
-            swallowing every key here made Escape do nothing once you typed. */}
-        <input autoFocus value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key !== 'Escape') e.stopPropagation() }}
+        {/* Focused on open by the effect at the top. Escape is let through to
+            the panel's own handler. */}
+        <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key !== 'Escape') e.stopPropagation() }}
           placeholder="Find someone…" aria-label="Find someone"
           style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: text, caretColor: accent, fontFamily: 'var(--ds-font-body)', fontSize: 13 }} />
         <button type="button" style={btn(true)} onClick={() => setView('add')} disabled={!signedIn} title="Invite someone by email">

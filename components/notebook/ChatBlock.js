@@ -92,14 +92,20 @@ function ChatBlock({
     if (el && stickRef.current) el.scrollTop = el.scrollHeight
   }, [messages.length])
 
+  const sendingRef = useRef(false)
   const send = useCallback(async () => {
+    /* One send at a time. Enter was unguarded (only the button was disabled),
+       and a first message can take seconds while a new block syncs — a second
+       Enter posted the same words twice (independent review). */
+    if (sendingRef.current) return
     const problem = draftProblem(draft)
     if (problem === 'empty') return
     if (problem) { setError(problem); return }
     setError(null)
     setBusy(true)
-    const res = await onSend?.(draft.trim())
-    setBusy(false)
+    sendingRef.current = true
+    let res
+    try { res = await onSend?.(draft.trim()) } finally { sendingRef.current = false; setBusy(false) }
     if (res && res.ok === false) { setError(res.reason); return }
     setDraft('')
     stickRef.current = true

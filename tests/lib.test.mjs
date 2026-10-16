@@ -281,6 +281,20 @@ ok(formatBytes(undefined) !== undefined, 'undefined does not throw')
   ok(hits === 2, 'a key pressed inside a child control is left to that child')
 }
 
+/* ── leave / wipe flags (audit DEF-044 + review) ───────────────────── */
+{
+  const L = await import('../lib/leave.js')
+  console.log('\n leave')
+  ok(L.isLeavingOnPurpose() === false && L.isWiped() === false, 'nothing is flagged at start')
+  let went = 0
+  L.leaveOnPurpose(() => went++)
+  ok(went === 1 && L.isLeavingOnPurpose(), 'a deliberate exit runs and is flagged, so the unload guard stands down')
+  L._resetLeaving()
+  ok(!L.isLeavingOnPurpose(), 'and is cleared again when a page comes back from the back/forward cache')
+  L.markWiped()
+  ok(L.isWiped(), 'a wipe is flagged, so no autosave can write the workspace back')
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)
 

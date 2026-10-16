@@ -155,6 +155,9 @@ console.log('\n  sameWorkspace')
   ok(!P.sameWorkspace({ ...copy, prefs: { dark: true } }, ws), 'a changed preference counts too')
   ok(!P.sameWorkspace({ ...copy, folders: [{ id: 'f' }] }, ws), 'and a folder')
   ok(!P.sameWorkspace(null, ws), 'nothing stored is not "the same"')
+  ok(!P.sameWorkspace({ ...copy, version: 99 }, { ...ws, version: 5 }), 'a row from a NEWER build is never "identical" — an old tab must not adopt its clock')
+  ok(!P.sameWorkspace({ ...copy, futureKey: { x: 1 } }, ws), 'nor is a row carrying a key this build does not know')
+  ok(!P.sameWorkspace({ ...copy, notebooks: [{ id: 'n', when: new Date(1) }] }, { ...ws, notebooks: [{ id: 'n', when: new Date(2) }] }), 'non-plain values (Dates) count as different, never silently equal')
 }
 
 console.log(`\n ${pass} passed, ${fail} failed\n`)
