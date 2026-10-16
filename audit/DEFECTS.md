@@ -294,3 +294,10 @@ The error card's Delete went through `deleteBlock`, whose content check THROWS o
 - Fix (`app/app/page.js`): `reloadOnPurpose()` marks the exit as deliberate so beforeunload stands down for it; used by the banner and by both "delete everything" flows (which reload after a confirmed dialog).
 - Verification: e2e `stalereload.js` — genuine two-tab conflict → stale tab → Reload → page reloads (new timeOrigin), banner gone, shows the other tab's newer text.
 - Design note (OPEN_QUESTIONS Q9): the stale tab's own edit is discarded by that reload, as the banner warns. A merge (or "keep mine as a copy") would remove the loss.
+
+## DEF-045 · P2 · Performance (first load) · FIXED (verified)
+**SheetJS (~412 KB) shipped in the app's main chunk and was downloaded and parsed on every visit**, before anyone imported or exported a spreadsheet. LIVE measurement in Matas's Chrome (warm cache): first contentful paint 1.5 s; 2.26 MB of JS in 10 files, one chunk 1.52 MB. PDF.js was already lazy; SheetJS was not (`import * as XLSX` in lib/workbook.js and lib/exporters.js).
+- Fix: `loadWorkbookLib()` loads SheetJS on first use; spreadsheet import (CSV too — tableFromSheet uses its utilities) and .xlsx export await it; calling before load throws a clear error. Import shows a message if the chunk cannot be fetched (offline).
+- Verification: main chunk 1,583,714 → 1,167,558 bytes (−26 %); SheetJS in its own 411,883-byte chunk, 0 requests on page load, 1 on first import; CSV/XLSX/European CSV imports and all 9 export formats pass (.xlsx 16 KB); workbook tests +2 (51 pass).
+- Further, not done (OPEN_QUESTIONS Q10): every block type, toolbar and panel is imported statically into NotebookCanvas; lazy-loading the heavy, rarely-first-used ones (Document + ribbon, PDF, Agent, HTML, Database, Builder) would cut the main chunk further.
+- Minor: exporting a table with no data downloads a 0-byte CSV; a "nothing to export" message would read better.

@@ -10,10 +10,21 @@
   shipping a malicious .xlsx into the repo.
   -------------------------------------------------------------------------- */
 
-import { readWorkbook, utils } from '../lib/workbook.js'
+import { readWorkbook, workbookUtils, loadWorkbookLib, tableFromSheet as _tfs } from '../lib/workbook.js'
+
+/* DEF-045: SheetJS is loaded on first use. Before that, the API says so
+   plainly instead of failing somewhere inside the parser. */
+let earlyError = ''
+try { readWorkbook(new Uint8Array([1, 2, 3]), { type: 'array' }) } catch (e) { earlyError = e.message }
+await loadWorkbookLib()
+const utils = workbookUtils()
 
 let pass = 0, fail = 0
 const ok = (c, m) => { if (c) { pass++; console.log('  ok   ' + m) } else { fail++; console.log('  FAIL ' + m) } }
+
+console.log('\n  loaded on first use')
+ok(/loadWorkbookLib/.test(earlyError), `reading before the library is loaded says so (${earlyError})`)
+ok(typeof utils.aoa_to_sheet === 'function', 'and after loadWorkbookLib() the utilities are there')
 
 console.log('\n  a clean workbook round-trips')
 {

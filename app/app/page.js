@@ -62,7 +62,7 @@ import { getSupabase } from '../../lib/supabaseClient'
    public npm and carries CVE-2023-30533 — reachable from exactly this parse,
    with attacker-controlled bytes. See that file for the full reasoning and
    DEFERRED.md for the version bump that makes the guard unnecessary. */
-import { readWorkbook, readDelimitedText, tableFromSheet } from '../../lib/workbook'
+import { readWorkbook, readDelimitedText, tableFromSheet, loadWorkbookLib } from '../../lib/workbook'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import CrosscheckPanel from '../../components/tools/CrosscheckPanel'
 import { saveState, loadState, clearState, debounce, SAVE_OK, SAVE_QUOTA, SAVE_STALE, LOAD_FAILED, storageEstimate, workspaceByteSize, formatBytes } from '../../lib/persistence'
@@ -1757,7 +1757,13 @@ export default function AppPage() {
      A wrapper rather than a rewrite of the body: reindenting forty lines to
      add a promise is a large diff for a small change, and this keeps the
      parsing code untouched. */
-  function importWorkbook(file, opts = {}) {
+  async function importWorkbook(file, opts = {}) {
+    /* SheetJS arrives on first use (DEF-045) — needed for CSV too, because
+       tableFromSheet reads every sheet through its utilities. */
+    try { await loadWorkbookLib() } catch {
+      setImportError('Spreadsheet support could not be loaded — check your connection and try again.')
+      return null
+    }
     return new Promise(done => importWorkbookInner(file, opts, done))
   }
 
