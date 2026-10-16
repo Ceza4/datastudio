@@ -718,7 +718,7 @@ function GroupMembers({ thread, colors, btn, say, onLeft }) {
         <button type="button" style={btn()} disabled={busy || title.trim() === (thread.title || '')}
           onClick={async () => { setBusy(true); const r = await renameThread(thread.id, title); setBusy(false); say(r.ok ? 'Renamed.' : r.reason, r.ok ? undefined : 'warn') }}>Save</button>
       </div>
-      <Label colors={colors}>{members.length} people</Label>
+      <Label colors={colors}>{members.length} {members.length === 1 ? 'person' : 'people'}</Label>
       {members.map(m => (
         <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
           <Avatar seed={m.email || m.key} label={m.name || m.email} />

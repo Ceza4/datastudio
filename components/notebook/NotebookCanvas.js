@@ -1969,9 +1969,19 @@ function addBlockAnimated(type, x, y) {
     const host = containerRef.current?.querySelector(`[data-block-id="${CSS.escape(b.id)}"]`)
     const def = getBlockType(b.type)
     const el = host && def.focusSelector ? host.querySelector(def.focusSelector) : null
-    if (!el) return
-    const typeable = el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|)$/.test(el.type))
-    if (!typeable || document.activeElement === el) return
+    const typeable = !!el && (el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|)$/.test(el.type)))
+    if (!typeable) {
+      /* Nothing to type into (a database, a chart, a PDF): the keyboard goes
+         back to the canvas rather than to nowhere (audit DEF-006). The Add
+         menu that had focus has just unmounted, which dropped it on <body>:
+         shortcuts still worked (body counts as the canvas) but a screen
+         reader announced nothing and Tab restarted from the top of the page.
+         Only from nowhere — never pulled out of something you clicked. */
+      const a = document.activeElement
+      if (!a || a === document.body) containerRef.current?.focus({ preventScroll: true })
+      return
+    }
+    if (document.activeElement === el) return
     el.focus({ preventScroll: true })
     if (el.isContentEditable) {
       const r = document.createRange(); r.selectNodeContents(el); r.collapse(!def.caretToEnd)
@@ -4467,22 +4477,27 @@ function addBlockAnimated(type, x, y) {
           gave it more room. Animating padding reflows, but it reflows three
           elements once per click, which is not a frame budget anyone will
           notice. */}
-      <div style={{ minWidth: 0, paddingLeft: sidebarHidden ? ROW_LEFT_COLLAPSED : ROW_LEFT, paddingRight: 16, display: 'flex', justifyContent: 'flex-start', overflow: 'hidden', transition: `padding-left ${MOTION.enter} ${MOTION.standard}` }}>
+      {/* A size container (globals.css, audit DEF-033): the column's width comes
+          from the grid, never from its content, so the island can ask how much
+          room it REALLY has and compact the LOCKED state before the project
+          name pays for it. */}
+      <div className="ds-title-col" style={{ minWidth: 0, containerType: 'inline-size', containerName: 'dstitle', paddingLeft: sidebarHidden ? ROW_LEFT_COLLAPSED : ROW_LEFT, paddingRight: 16, display: 'flex', justifyContent: 'flex-start', overflow: 'hidden', transition: `padding-left ${MOTION.enter} ${MOTION.standard}` }}>
 
-      <div style={{ ...islandChrome({ surface, border, dark }), flex: '0 1 auto', minWidth: 0, pointerEvents: 'auto', display: 'flex', gap: 2, padding: '0 12px', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
+      <div className="ds-title-island" style={{ ...islandChrome({ surface, border, dark }), flex: '0 1 auto', minWidth: 0, pointerEvents: 'auto', display: 'flex', gap: 2, padding: '0 12px', overflow: 'hidden', fontFamily: 'var(--ds-font-body)', alignItems: 'center' }}>
         {renamingNb ? (
           <input autoFocus value={nbLabel} onChange={e => setNbLabel(e.target.value)} onFocus={selectAllOnFocus} onBlur={e => { if (renameCancelled(e)) { setNbLabel(nb.name); setRenamingNb(false); return } onRenameNotebook(nbLabel || nb.name); setRenamingNb(false) }} onKeyDown={renameKeyDown()} maxLength={40} style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-head)', fontSize: 13, fontWeight: 700, outline: 'none', minWidth: 100, maxWidth: 200 }} />
         ) : (
-          <span onDoubleClick={() => setRenamingNb(true)} title={nb.name}
+          <span onDoubleClick={() => setRenamingNb(true)} title={`${nb.name} — double-click to rename`}
             style={{ fontFamily: 'var(--ds-font-head)', fontSize: 16, fontWeight: 700, color: text, cursor: 'text', marginRight: 6, flex: '0 1 auto', minWidth: 36, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nb.name}</span>
         )}
         {activeSheet && !renamingSheet && (
           <span onDoubleClick={() => { setSheetLabel(activeSheet.name); setRenamingSheet(true) }}
-            title={`${activeSheet.name || 'Sheet 1'} · ${blocks.length} blocks`}
+            title={`${activeSheet.name || 'Sheet 1'} · ${blocks.length} ${blocks.length === 1 ? 'block' : 'blocks'} — double-click to rename`}
             /* Gives way long before the project name does (flex-shrink 100
                against 1): at 1568px wide the island read "My …" because the
                name and this line shrank equally. The block count lives in
                the tooltip — nobody navigates by it. */
+            className="ds-title-sheet"
             style={{ fontSize: 12, color: text3, cursor: 'text', marginRight: 6, flex: '0 100 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             · {activeSheet.name || 'Sheet 1'}
           </span>
@@ -4497,7 +4512,8 @@ function addBlockAnimated(type, x, y) {
             find something and clicking here, the canvas came back empty — the
             blocks were still there, a screen or two away, with nothing to say
             so. */}
-        <span style={{ fontSize: 12, color: text3, fontFamily: 'var(--ds-font-body)', fontVariantNumeric: 'tabular-nums', padding: '0 4px', cursor: 'pointer', flexShrink: 0 }}
+        <span className="ds-title-zoom" data-default={Math.round(nbZoom * 100) === 100 ? '' : undefined}
+          style={{ fontSize: 12, color: text3, fontFamily: 'var(--ds-font-body)', fontVariantNumeric: 'tabular-nums', padding: '0 4px', cursor: 'pointer', flexShrink: 0 }}
           onClick={() => {
             stopPanAnim()
             const z = nbZoomRef.current, p0 = panRef.current
@@ -4528,15 +4544,18 @@ function addBlockAnimated(type, x, y) {
             itself still needs saying, because pan and zoom really are frozen
             and there'd otherwise be nothing explaining why. */}
         {selectedIds.size > 0 && (
-          <span title="Canvas is frozen while a block is selected — press Esc to release"
-            style={{ fontSize: 11, color: accentText, background: accentDim, padding: '4px 8px', borderRadius: 4, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6, flexShrink: 0, marginLeft: 6, whiteSpace: 'nowrap' }}>
-            LOCKED
+          <span className="ds-locked" title="Canvas is frozen while a block is selected — press Esc to release"
+            style={{ fontSize: 11, color: accentText, background: accentDim, padding: '4px 8px', borderRadius: 4, fontFamily: 'var(--ds-font-mono)', letterSpacing: 0.6, flexShrink: 0, marginLeft: 6, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+            {/* Narrow title column only: a lock badge, the word kept for
+                screen readers (globals.css). Wide screens are unchanged. */}
+            <span className="ds-locked-icon" aria-hidden="true"><Icon name="state-lock" size={12} /></span>
+            <span className="ds-locked-text">LOCKED</span>
           </span>
         )}
 
         {/* Icon only: the words cost ~80px of an island that has to fit the
            project name next to the centred toolbar. The tooltip names it. */}
-        <button onClick={togglePresentation} className="ds-tbtn" style={{ flexShrink: 0, marginLeft: 6 }}
+        <button onClick={togglePresentation} className="ds-tbtn ds-title-fs" style={{ flexShrink: 0, marginLeft: 6 }}
           title={isPresentation ? 'Leave full screen' : 'Full screen'} aria-label={isPresentation ? 'Leave full screen' : 'Full screen'}>
           <Icon name={isPresentation ? 'view-fullscreen-exit' : 'view-fullscreen-enter'} size={14} />
           {isPresentation ? 'Exit' : null}

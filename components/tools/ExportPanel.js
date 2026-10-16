@@ -183,7 +183,7 @@ export default function ExportPanel({ open, onClose, blocks, selectedIds, notebo
                       style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'var(--ds-surface)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', fontSize: 13, outline: 'none' }}>
                       {sourceColumns.map((c, i) => (
                         <option key={i} value={i}>
-                          {c.blockName} · {c.header || `column ${i + 1}`} ({c.values.length} rows)
+                          {c.blockName} · {c.header || `column ${i + 1}`} ({c.values.length} {c.values.length === 1 ? 'row' : 'rows'})
                         </option>
                       ))}
                     </select>

@@ -215,7 +215,7 @@ function PdfPreview({ block, colors }) {
         <Icon name="block-pdf" size={12} style={{ color: text3 }} />
       </span>
       <span style={{ fontSize: 11, color: text3, fontFamily: 'var(--ds-font-mono)' }}>
-        {block.pdfPages ? `${block.pdfPages} pages` : 'PDF document'}
+        {block.pdfPages ? `${block.pdfPages} ${block.pdfPages === 1 ? 'page' : 'pages'}` : 'PDF document'}
       </span>
     </div>
   )

@@ -1939,7 +1939,7 @@ export default function AppPage() {
     if (!cols.length) return
     dragData.current = { type: 'sidebar', cols, sourceFileId: file.id, wholeFile: file.name }
     const label = file.sheets.length > 1 ? `${file.name} › ${sheet.name}` : file.name
-    setNativeDragImage(e, `${label} · ${cols.length} columns`)
+    setNativeDragImage(e, `${label} · ${cols.length} ${cols.length === 1 ? 'column' : 'columns'}`)
     e.dataTransfer.effectAllowed = 'copy'
     try { e.dataTransfer.setData('text/plain', file.name) } catch (_) {}
   }

@@ -193,5 +193,16 @@ Section delete dialog read "It holds 1 block. They can go with the section…" �
 - Fix (`components/notebook/NotebookCanvas.js`): the error card uses `deleteBlock(block)`; and selection of blocks, shapes and the selected connection is pruned to what exists whenever those lists change.
 - Verification: in-app with the crash reinstated in a throwaway build — after the error-card delete LOCKED is gone and the wheel pans (translate 60→−240). Undo-of-add while selected: not LOCKED.
 
-## DEF-006 · update
+## DEF-006 · update — FIXED (verified)
 LIVE-confirmed 2026-10-16: after Add → Database, `document.activeElement` is `<body>`.
+- Fix (`NotebookCanvas.enterFresh`): a new block with nothing to type into hands the keyboard to the canvas (role=application) when focus is nowhere; text blocks still take the caret.
+- Verification: Database, Table, Kanban, Calendar, Countdown, Flashcards, and a mouse-driven add → canvas; Notes → its editor; HTML → its source. The canvas shows its existing subtle focus ring.
+
+## DEF-033 · P2 · Visual (laptop widths) · FIXED (verified)
+**Whenever anything was selected — most of the time — the project name read "M…" on 1280–1440 px screens (and "My Pro…" at 1700), and the sheet name collapsed to a "·…" stub.**
+- Root cause: the title island lives in the left third of the `1fr auto 1fr` row (true-centred toolbar), ~200–265 px of room at laptop widths. The LOCKED chip (64 px) appears with any selection and the name was the only thing allowed to shrink, down to its 36 px floor. DEF-002 had fixed the unselected case only.
+- Fix: the title column is a CSS size container (`container-type: inline-size`; its width comes from the grid, never its content). Under 300 px of room LOCKED becomes a lock badge (the word stays for screen readers and in the tooltip) and the full-screen button tightens; under 340 px the sheet name is hidden rather than stubbed (it is highlighted in the sidebar); under 250 px "100%" steps aside only while the zoom IS 100% (any other zoom shows it, clickable); under 210 px the island padding trims. Wide screens unchanged.
+- Verification: "My Project" with a block selected, name width / natural width — before: 1280 36/84, 1366 36/84, 1440 37/84, 1700 70/84; after: 84/84 at 1280, 1366, 1440, 1536, 1700, 1920, island never clipped. Zoomed to 135% at 1280: zoom label back, name 73/84. A 31-character name truncates with the full name in the tooltip. Screenshots audit/evidence/title-before.png / title-after.png.
+
+## DEF-034 · P3 · Copy · FIXED
+**Count + plural noun with a count of one**, swept across app/, components/, lib/: sheet tooltip "Sheet 1 · 1 blocks", PDF reference card "1 pages", database filter message "All 1 rows are still here", sidebar drag label "· 1 columns", PDF text label "1 lines · 1 words", People "1 people", Crosscheck "1 rows" (×2), Export "(1 rows)". Also the project and sheet names (text cursor, rename on double-click) now say "double-click to rename" in their tooltips.

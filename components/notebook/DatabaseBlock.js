@@ -651,7 +651,9 @@ function TableView({
       {rows.length === 0 && db.rows.length > 0 && (
         <Empty colors={colors} icon="nav-search"
           title="Nothing matches this filter"
-          body={`All ${db.rows.length} rows are still here — the filter on this view is hiding them.`} />
+          body={db.rows.length === 1
+            ? 'The row is still here — the filter on this view is hiding it.'
+            : `All ${db.rows.length} rows are still here — the filter on this view is hiding them.`} />
       )}
     </div>
   )

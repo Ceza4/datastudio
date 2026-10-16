@@ -617,6 +617,38 @@ h1, h2, h3, h4 {
   [data-ds-island="top"] .ds-isl-sep { margin: 0 1px !important; }
 }
 
+/* THE TITLE ISLAND WHEN SOMETHING IS SELECTED (audit DEF-033).
+   Below 1700px the LOCKED chip — on screen whenever any block is selected,
+   which is most of the time — took 64px of ~240 and the project name gave
+   way to its 36px floor: "My Project" read "M…" on every 1280–1440 laptop,
+   and the sheet name vanished. Under 300px of real room (a container query,
+   so it follows the actual column, not a guessed viewport) the chip becomes
+   a lock badge and the full-screen button tightens: ~58px back, which is a
+   whole "My Project". The word stays for screen readers and in the tooltip. */
+.ds-locked-icon { display: none; }
+@container dstitle (max-width: 300px) {
+  .ds-locked { padding: 4px 5px !important; }
+  .ds-locked-icon { display: inline-flex; }
+  .ds-locked-text {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  .ds-title-fs { padding: 0 6px; }
+}
+/* The sheet name either fits or goes — squeezed, it read as a "·…" stub. It is
+   in the sidebar, highlighted, at every width. */
+@container dstitle (max-width: 340px) {
+  .ds-title-sheet { display: none; }
+}
+/* The tightest columns (1280px): "100%" says nothing at the default zoom, so
+   it steps aside until you zoom — then it is back, and clickable to reset. */
+@container dstitle (max-width: 250px) {
+  .ds-title-zoom[data-default] { display: none; }
+}
+@container dstitle (max-width: 210px) {
+  .ds-title-island { padding: 0 8px !important; }
+}
+
 /* Primary action in the toolbar (Crosscheck). */
 .ds-tbtn.is-accent {
   color: var(--ds-accent);

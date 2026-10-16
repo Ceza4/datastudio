@@ -322,7 +322,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>{col.label}</div>
                         <div style={{ fontSize: 'var(--ds-fs-sm)', color: 'var(--ds-text-3)', marginTop: 2 }}>
-                          {col.rows.length.toLocaleString()} rows · {col.tableName}
+                          {col.rows.length.toLocaleString()} {col.rows.length === 1 ? 'row' : 'rows'} · {col.tableName}
                         </div>
                       </div>
                     </div>
@@ -458,7 +458,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
               }}>{matchedOnly ? <Icon name="action-check" size={12} /> : null}</span>
               Output matched rows only
               <span style={{ marginLeft: 'auto', opacity: 0.7, fontFamily: 'var(--ds-font-mono)' }}>
-                {outputCount.toLocaleString()} rows
+                {outputCount.toLocaleString()} {outputCount === 1 ? 'row' : 'rows'}
               </span>
             </button>
 
