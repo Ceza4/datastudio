@@ -51,7 +51,7 @@ counted as passed unless a scenario in TEST_MATRIX.md says PASS with evidence.
 
 ## Current phase
 
-Final regression and independent review (RUN_LOG batch 15). 48 defects logged: 47 fixed (DEF-048 unit-verified only — needs a deploy to confirm live; Safari paste fallback untested — no WebKit), 1 open (DEF-028, product decision). Live session in Matas's Chrome (16 Oct evening) found DEF-043, 044, 046, 048 and the perf baseline for DEF-045. Two independent read-only reviews of the audit's own fixes; the first found 3 confirmed bugs, all fixed.
+Final regression and independent review (RUN_LOG batch 15). 48 defects logged: 47 fixed (DEF-048 unit-verified only — needs a deploy to confirm live; Safari paste fallback untested — no WebKit), 1 open (DEF-028, product decision). Live session in Matas's Chrome (16 Oct evening) found DEF-043, 044, 046, 048 and the perf baseline for DEF-045. Two independent read-only reviews of the audit's own fixes; the first found 3 confirmed bugs, the second 3 more plus follow-ups — all fixed and re-verified.
 
 ## Ledger
 
