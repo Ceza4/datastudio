@@ -1,0 +1,1 @@
+return await page.evaluate(async () => { const r = await axe.run(document, { runOnly: ['color-contrast'] }); return r.violations.flatMap(v => v.nodes.map(n => (n.any[0]?.message || '').slice(0, 160) + ' || ' + n.html.replace(/style="[^"]*"/g, '').slice(0, 80))) })

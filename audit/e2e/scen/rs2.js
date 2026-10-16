@@ -1,0 +1,2 @@
+const hs = await page.evaluate(() => [...document.querySelectorAll('[data-ds-resize]')].map(g => { const r = g.getBoundingClientRect(); const cx = r.x + r.width / 2, cy = r.y + r.height / 2; const hit = document.elementFromPoint(cx, cy); return [g.dataset.dsResize, Math.round(cx), Math.round(cy), hit === g ? 'SELF' : (hit?.tagName + '.' + (hit?.getAttribute('data-ds-resize') || hit?.className?.toString?.().slice(0, 30) || '') + ' z=' + getComputedStyle(hit).zIndex)] }))
+return hs

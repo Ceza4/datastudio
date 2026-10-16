@@ -1,0 +1,10 @@
+import { createRequire } from 'node:module'
+const require = createRequire('/opt/npm-tools/node_modules/')
+const { chromium } = require('playwright')
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' } })
+const p = await b.newPage()
+await p.goto('http://localhost:3100/')
+const dl = p.waitForEvent('download')
+await p.evaluate(() => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['x'])); a.download = 'Ataskaita už rugsėjį.csv'; document.body.appendChild(a); a.click() })
+console.log((await dl).suggestedFilename())
+await b.close()

@@ -1,0 +1,5 @@
+await page.locator('input[type=date]').first().fill(new Date().toISOString().slice(0, 10)); await sleep(200)
+await page.keyboard.press('Escape'); await page.keyboard.press('Escape')
+await H.add('Calendar'); await sleep(500); await page.keyboard.press('Escape')
+await shot('cal1')
+return await page.evaluate(() => [...document.querySelectorAll('[data-ds-block-wrap]')].map(w => w.innerText.replace(/\n+/g, ' | ').slice(0, 400)))

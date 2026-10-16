@@ -51,4 +51,8 @@ counted as passed unless a scenario in TEST_MATRIX.md says PASS with evidence.
 
 ## Current phase
 
-See RUN_LOG.md for the latest batch and the exact next step.
+Final regression and independent review (RUN_LOG batch 15). 39 defects logged: 38 fixed and verified, DEF-028 open (product decision), DEF-031 recommended for an immediate hotfix (OPEN_QUESTIONS Q0).
+
+## Ledger
+
+DEFECTS · FIX_LOG · TEST_MATRIX · REGRESSION_MATRIX · COVERAGE_REPORT · OPEN_QUESTIONS · RUN_LOG · APPLICATION_MAP · INTERACTION_GRAPH · e2e/ (harness and every scenario).

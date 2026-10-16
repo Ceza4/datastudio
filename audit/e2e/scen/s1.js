@@ -1,0 +1,5 @@
+await page.goto('http://localhost:3100/app', { waitUntil: 'networkidle' })
+await sleep(500)
+await page.getByRole('button', { name: /new project/i }).click()
+await sleep(800)
+await shot('tour1')

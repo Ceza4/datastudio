@@ -1,0 +1,1 @@
+return await page.evaluate(async () => { const r = await axe.run(document, { runOnly: ['button-name', 'label', 'color-contrast'] }); return { passes: r.passes.map(p => p.id + ':' + p.nodes.length), viol: r.violations.map(v => v.id + ':' + v.nodes.length) } })

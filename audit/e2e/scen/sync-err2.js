@@ -1,0 +1,2 @@
+await shot('syncerr')
+return await page.evaluate(() => { const el = [...document.querySelectorAll('*')].find(e => e.childElementCount < 3 && /Sync error/.test(e.textContent) && e.getBoundingClientRect().width < 200); let n = el; for (let i = 0; i < 4 && n; i++) { if (n.title || n.getAttribute('aria-label')) return { title: n.title, aria: n.getAttribute('aria-label') }; n = n.parentElement } return { html: el?.parentElement?.outerHTML.slice(0, 300) } })
