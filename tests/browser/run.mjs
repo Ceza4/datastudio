@@ -805,6 +805,37 @@ console.log('\n table grid — typing straight after Tab keeps every key (DEF-02
      'and the grid holds focus afterwards, so the next key keeps working')
 }
 
+console.log('\n database — every menu opens without taking the block down (DEF-031)')
+{
+  /* Each of these read `text2` from a destructure that never took it. The
+     server render cannot reach a menu, so only a click finds it — and in
+     production the click replaced the whole block with an error card. */
+  const alive = async () => (await page.locator(`${DB} [data-ds-db-view]`).count()) === 1
+  const errs0 = errors.length
+  const chips = page.locator(`${DB} [data-ds-db-viewchip]`)
+  await chips.first().click(); await page.waitForTimeout(120)       // make the table view active
+  await chips.first().click(); await page.waitForTimeout(150)       // …and click it again: view menu
+  ok(await alive(), 'the view menu (click the active view chip — what the empty board tells you to do)')
+  await page.keyboard.press('Escape'); await page.waitForTimeout(100)
+
+  /* The crashing lines are all EMPTY-STATE hints — the title column's "cannot
+     be deleted" note, "No filters", "no options yet", "nothing to group by",
+     "the last view" — so these steps aim at exactly those states. */
+  await page.locator(`${DB} [data-ds-db-col="${dbIds.title}"]`).click()
+  await page.waitForTimeout(150)
+  ok(await alive(), 'the title column\'s menu (its "cannot be deleted" note)')
+  await page.keyboard.press('Escape'); await page.waitForTimeout(100)
+
+  await page.locator(`${DB} button`, { hasText: 'Filter' }).first().click(); await page.waitForTimeout(150)
+  ok(await alive(), 'the filter menu with no filters yet — every first open')
+  await page.keyboard.press('Escape'); await page.waitForTimeout(100)
+
+  await page.locator(dbCell(0, dbIds.status)).click(); await page.waitForTimeout(150)
+  ok(await alive(), 'the option picker on a select cell')
+  await page.keyboard.press('Escape'); await page.waitForTimeout(100)
+  ok(errors.length === errs0, `and not one page error while doing it (${errors.slice(errs0).join(' | ')})`)
+}
+
 console.log('\n html block — typing just before the block unmounts is saved (DEF-030)')
 {
   await page.evaluate(() => window.__html.show())

@@ -1213,6 +1213,32 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
 
   // ── Mind map & snap helpers ──
   const connections = activeSheet?.connections || []
+
+  /* A selection can only hold things that exist (audit DEF-032). Deleting a
+     crashed block from its error card, a block removed by sync from another
+     device, an undo that takes an add back — each removed the block and left
+     its id selected. The canvas then stayed LOCKED (wheel and pinch frozen)
+     over an empty sheet, with nothing on screen to click away from. Pruned
+     here, once, rather than at every place a block can disappear. */
+  useEffect(() => {
+    const live = new Set(blocks.map(b => b.id))
+    setSelectedIds(prev => {
+      if (!prev.size) return prev
+      const keep = [...prev].filter(id => live.has(id))
+      return keep.length === prev.size ? prev : new Set(keep)
+    })
+  }, [blocks])
+  useEffect(() => {
+    const live = new Set(shapes.map(sh => sh.id))
+    setSelectedShapeIds(prev => {
+      if (!prev.size) return prev
+      const keep = [...prev].filter(id => live.has(id))
+      return keep.length === prev.size ? prev : new Set(keep)
+    })
+  }, [shapes])
+  useEffect(() => {
+    if (selectedConnId && !connections.some(c => c.id === selectedConnId)) setSelectedConnId(null)
+  }, [connections, selectedConnId])
   function toggleMindMap() { setMindMapMode(m => !m); setMindMapMaster(null) }
   function toggleSnap() { const next = !snapEnabled; setSnapEnabled(next); snapRef.current = next }
 
@@ -5791,7 +5817,9 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                    against and collapses to a narrow column. */
                 width={blockDims(block).w}
                 height={blockDims(block).h}
-                onDelete={() => onDeleteBlock(block.id)}>
+                /* The canvas's own delete: animation, the UNDO toast, and the
+                   selection cleared — the raw callback did none of them. */
+                onDelete={() => deleteBlock(block)}>
 
               {/* ── DOCUMENT BLOCK ──
                   The heavier writing surface. Its ribbon is pinned INSIDE the

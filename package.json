@@ -14,13 +14,14 @@
     "icons:check": "node scripts/check-icons.mjs",
     "check:geom": "node scripts/check-canvas-geom.mjs",
     "check:hooks": "node scripts/check-hook-order.mjs",
-    "check": "node scripts/check-icons.mjs && node scripts/check-canvas-geom.mjs && node scripts/check-hook-order.mjs && node scripts/check-tokens.mjs && node scripts/check-scale.mjs && node scripts/check-render-tree.mjs",
+    "check": "node scripts/check-icons.mjs && node scripts/check-canvas-geom.mjs && node scripts/check-hook-order.mjs && node scripts/check-tokens.mjs && node scripts/check-scale.mjs && node scripts/check-render-tree.mjs && node scripts/check-undef.mjs",
     "check:tokens": "node scripts/check-tokens.mjs",
     "check:scale": "node scripts/check-scale.mjs",
     "check:supabase": "node scripts/check-supabase.mjs",
     "test:browser": "node tests/browser/run.mjs",
     "check:db": "bash supabase/test/run.sh",
-    "check:tree": "node scripts/check-render-tree.mjs"
+    "check:tree": "node scripts/check-render-tree.mjs",
+    "check:undef": "node scripts/check-undef.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",

@@ -126,6 +126,7 @@ Environment unless stated: Chromium 141 headless, 1440×900, production build of
 
 ## DEF-021 · P3 · Accessibility · FIXED (verified)
 **Icon-only controls with no accessible name** (axe `button-name`, `label`): every block's × delete button, the project and sheet × buttons in the sidebar, and Kanban lane-name fields.
+- LIVE (2026-10-16): the sheet × in the sidebar still reads as a nameless button in production.
 - Fix: `aria-label`/`title` ("Delete block", "Delete project <name>", "Delete sheet <name>", "Lane name").
 - Verification: axe over the canvas with 12 block types, each block selected, Settings/People/Account/Builder/Export/Add open — 0 `button-name`/`label`/`link-name`/ARIA violations (85 buttons pass).
 
@@ -159,6 +160,7 @@ Section delete dialog read "It holds 1 block. They can go with the section…" �
 
 ## DEF-028 · P2 · Sharing · OPEN — needs a product decision (OPEN_QUESTIONS Q6)
 **A project or sheet shared to you by an account outside your workspace is listed under "Shared with me" but cannot be opened.** The row is clickable only when the notebook already exists locally (`notebooks.find(n => n.id === row.docId)`, app/app/page.js); the pull is filtered by `org_id`/`owner_id` (lib/sync.js), and a sheet-level grant deliberately does not carry the `docs` row (0008 §9). So the row reads "A shared project" / "Shared with you", has a default cursor, and does nothing on click — no message says why.
+- LIVE (2026-10-16, Matas's Chrome): the row "Shared with you · one sheet" does nothing on click, and its chip reads "Shared from someone" — the sender's name is not resolved either.
 - Not fixed: whether a shared project opens read-only, opens live (needs an RLS read path for granted docs), or is copied in is a product and security decision. Smallest honest interim: a tooltip/toast on click ("Opening shared projects is coming — ask the owner to invite you to the workspace"). See OPEN_QUESTIONS Q6.
 
 ## DEF-029 · P1 · Data loss (typing) · FIXED (verified)
@@ -166,6 +168,7 @@ Section delete dialog read "It holds 1 block. They can go with the section…" �
 - Repro: Table block → click A1 → type `a` → Tab → immediately type `b,c` → Enter. B1 holds `c`. Reproduced 3/3 in the real app; does not happen when the cell is opened by clicking (no pending hand-back).
 - Root cause: `commitEdit` calls `refocus()`, which hands focus back to the grid one animation frame later (so the unmounting input's blur cannot steal it back). In the real app, re-rendering the canvas after the commit makes that frame late, and the next key had already opened the next cell. The deferred hand-back only skipped focus that was *outside* the grid — the new editor is *inside* it — so it pulled focus to the grid, the editor's blur committed "b" and closed, and "," reopened the same cell and replaced it. Event trace: `keydown b @grid → focusin INPUT → focusout INPUT → focusin grid → keydown , @grid`.
 - Fix (`components/notebook/SheetGrid.js`): the deferred hand-back only acts when focus is nowhere (`<body>`); the editor now focuses in a layout effect (before paint, not after); and a printable key that still reaches the grid while a typed-over cell is opening is appended to it rather than dropped.
+- LIVE (2026-10-16): not reproduced through the Chrome extension — it types slower than a frame per key, so the late frame always fires first. The race needs keys within one frame of Tab (fast typists; heavy sheets).
 - Verification: in-app 5/5 correct (was 0/3). New browser regression (`tests/browser/run.mjs`, "table grid — typing straight after Tab"): the harness renders too fast to slip a frame, so the test delays animation frames deliberately — it FAILS on the old SheetGrid and passes on the fix.
 
 ## DEF-030 · P2 · Data loss (small window) · FIXED (verified in-app; browser regression written, NOT yet run)
@@ -173,4 +176,22 @@ Section delete dialog read "It holds 1 block. They can go with the section…" �
 - Repro: HTML block → type `<p>LAST</p>` at the end → immediately click New Sheet → back to Sheet 1. The source and the saved block lack `<p>LAST</p>`. Control (wait 1 s before switching) keeps it.
 - Root cause: `HtmlBlock` saved through a 600 ms debounce and its unmount cleanup only `clearTimeout`-ed it — the pending save was dropped, not flushed. No pagehide/visibilitychange flush either (TextBlockContent has both).
 - Fix (`components/notebook/HtmlBlock.js`): the pending commit is kept in a ref and flushed on editor blur, on unmount, on `pagehide` and on `visibilitychange`.
+- LIVE (2026-10-16, production build, Matas's Chrome): reproduced — typed `<p>LAST</p>`, clicked New Sheet, back to Sheet 1: gone. Control with a 1.5 s pause: kept. Test blocks and sheet deleted afterwards.
 - Verification: in-app scenario 2/2 keeps `<p>LAST</p>` (was lost). Browser regression added to `tests/browser/run.mjs` (unmount with focus still in the editor) — its run was interrupted by Matas and is still pending. Sweep: every other unmount `clearTimeout` in components/ is a display timer (countdown tick, midnight re-render), not a pending write.
+
+## DEF-031 · P1 · Crash (block-level) · FIXED (verified; LIVE-confirmed)
+**Opening the Filter menu of any database — or the Name column's menu, a select with no options, the view menu of a board/calendar with nothing to group by, or the view menu on a database's only view — crashed the whole block** ("This database block couldn't be displayed — text2 is not defined"). The board's own empty state says "Click the highlighted view chip above", which is one of the crashing clicks.
+- Repro (LIVE, production, 2026-10-16): Add → Database → Filter. Or: + → Board → click the Board chip. Error card every time; "Try again" recovers, no data lost.
+- Root cause: four menus in `components/notebook/DatabaseBlock.js` (PropertyMenu, SelectMenu, ViewMenu, FilterMenu) used `text2` without destructuring it from `colors`. Every use is an empty-state hint, so normal-path tests (which had options, filters, several views) never reached it, and the server-render guards cannot open a menu.
+- Fix: destructure `text2` in all four. Guard: new `scripts/check-undef.mjs` (ESLint `no-undef` only, JSON report, fails closed if the report is unreadable) added to `npm run check` — it fails on the old file with exactly these 7 lines and passes across all 188 files now. A first draft passed on the broken code (missing formatter swallowed the report); caught by testing the guard against the old file.
+- Verification: browser regression "database — every menu opens without taking the block down" opens the view menu, title-column menu, empty filter menu and option picker — FAILS on the old file, passes now. In-app: Filter, title menu and the board view menu all open with their hints.
+
+## DEF-032 · P2 · Interaction (canvas frozen) · FIXED (verified; LIVE-confirmed)
+**After deleting a crashed block from its error card, the canvas stayed LOCKED over an empty sheet — wheel and pinch did nothing**, with nothing visible to click away from (Esc releases it, but nothing says so except the chip's tooltip).
+- Repro (LIVE): crash a database (DEF-031) → Delete block on the error card → toolbar still shows LOCKED; scrolling does not move the dot grid. The Delete key path did not do this.
+- Root cause: the error card called the raw `onDeleteBlock(id)`, skipping `deleteBlock()` — which clears the selection, animates, and offers UNDO. More generally nothing pruned `selectedIds` when a block disappeared by any other route (sync from another device, undo of an add, a section taking its children).
+- Fix (`components/notebook/NotebookCanvas.js`): the error card uses `deleteBlock(block)`; and selection of blocks, shapes and the selected connection is pruned to what exists whenever those lists change.
+- Verification: in-app with the crash reinstated in a throwaway build — after the error-card delete LOCKED is gone and the wheel pans (translate 60→−240). Undo-of-add while selected: not LOCKED.
+
+## DEF-006 · update
+LIVE-confirmed 2026-10-16: after Add → Database, `document.activeElement` is `<body>`.

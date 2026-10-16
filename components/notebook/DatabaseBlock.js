@@ -1486,7 +1486,7 @@ function PropertyMenu({
   db, propId, at, colors, dark, onClose,
   onRename, onRetype, onAddOption, onRemoveOption, onDelete,
 }) {
-  const { border, text3 } = colors
+  const { border, text2, text3 } = colors
   const [newOption, setNewOption] = useState('')
   const prop = db.properties.find(p => p.id === propId)
 
@@ -1582,7 +1582,7 @@ function PropertyMenu({
 /* ── option picker, for a select or multi cell ───────────────────────── */
 
 function SelectMenu({ db, rowId, propId, at, colors, dark, onClose, onWrite }) {
-  const { text3 } = colors
+  const { text2, text3 } = colors
   const prop = db.properties.find(p => p.id === propId)
   const row = db.rows.find(r => r.id === rowId)
   if (!prop || !row) return null
@@ -1644,7 +1644,7 @@ function AddViewMenu({ at, colors, dark, onClose, onPick }) {
 }
 
 function ViewMenu({ db, view, at, colors, dark, onClose, onPatch, onDelete }) {
-  const { border, text3 } = colors
+  const { border, text2, text3 } = colors
   const groupables = db.properties.filter(p => isGroupable(p.type))
   const dates = db.properties.filter(p => p.type === 'date')
   const last = db.views.length <= 1
@@ -1771,7 +1771,7 @@ function SortMenu({ db, view, at, colors, dark, onClose, onPatch }) {
 /* ── filter ──────────────────────────────────────────────────────────── */
 
 function FilterMenu({ db, view, at, colors, dark, onClose, onPatch }) {
-  const { border, text3, red } = colors
+  const { border, text2, text3, red } = colors
   const filters = view?.filters || []
   const set = next => onPatch({ filters: next })
   const patchAt = (i, patch) => set(filters.map((f, j) => (j === i ? { ...f, ...patch } : f)))
