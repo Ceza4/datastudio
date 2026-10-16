@@ -11,6 +11,7 @@ import PdfAnnotationLayer from '../../components/notebook/PdfAnnotationLayer'
 import TextBlockToolbar from '../../components/notebook/TextBlockToolbar'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import DatabaseBlock from '../../components/notebook/DatabaseBlock'
+import SheetGrid from '../../components/notebook/SheetGrid'
 import { ToastProvider, useToast } from '../../components/ui/Toast'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import BuilderPanel from '../../components/builder/BuilderPanel'
@@ -101,8 +102,31 @@ function App() {
     <TextRail />
     <Canvas />
     <Database />
+    <Grid />
     <Builder />
     </>
+  )
+}
+
+/* The table block's grid (audit DEF-029).
+   -------------------------------------------------------------------------
+   Mounted only on request so it cannot sit under anything an earlier suite
+   clicks by coordinate. What it guards is a race between frames: Tab commits
+   a cell and schedules a focus hand-back for the NEXT frame; a key typed
+   before that frame opens the next cell, and the hand-back used to steal
+   focus from it, blur-commit it, and let the following key overwrite it. */
+function Grid() {
+  const [on, setOn] = useState(false)
+  const [block, setBlock] = useState({ id: 'g1', type: 'table', headers: ['A', 'B', 'C', 'D'], rows: [['', '', '', ''], ['', '', '', '']] })
+  useEffect(() => {
+    window.__grid = { show: () => setOn(true), rows: () => block.rows }
+  })
+  if (!on) return null
+  return (
+    <div id="grid-host" style={{ position: 'fixed', left: 410, top: 560, width: 520, height: 160, zIndex: 160, display: 'flex', background: colors.surface }}>
+      <SheetGrid block={block} colors={colors} maxHeight={160}
+        onUpdateBlock={(id, patch) => setBlock(b => ({ ...b, ...patch }))} editingRef={{ current: false }} />
+    </div>
   )
 }
 

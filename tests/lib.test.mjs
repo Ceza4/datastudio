@@ -71,6 +71,14 @@ console.log('\n tableToCsv')
   const blanks = tableToCsv({ headers: ['a'], rows: [['1'], ['', ''], ['2']] })
   ok(!/\r\n\r\n/.test(blanks.replace(/\r\n$/, '')), 'fully blank rows are skipped, not emitted as empty lines')
   ok(tableToCsv({ headers: [], rows: [] }) !== undefined, 'an empty table does not throw')
+  /* DEF-027: an unnamed sheet (every header blank) has no header line — it
+     used to start with a row of bare commas. The width is the grid's: a
+     cell past the last header is never shown, so it is not exported. */
+  const unnamed = tableToCsv({ headers: ['', ''], rows: [['a', 'b,c']] })
+  ok(unnamed === 'a,"b,c"', `blank headers produce no header line (got ${JSON.stringify(unnamed)})`)
+  const wide = tableToCsv({ headers: ['x'], rows: [['1', '2', '3']] })
+  ok(wide === 'x\r\n1', 'export is as wide as the grid shows — nothing past the last header')
+  ok(tableToCsv({ headers: [], rows: [['p', 'q']] }) === 'p,q', 'a table with no headers at all still exports its rows')
 }
 
 console.log('\n htmlToText')

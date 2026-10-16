@@ -776,6 +776,35 @@ console.log('\n database — a card added to a column belongs to that column')
      'in the column it was created in')
 }
 
+console.log('\n table grid — typing straight after Tab keeps every key (DEF-029)')
+{
+  await page.evaluate(() => window.__grid.show())
+  await page.waitForTimeout(150)
+  const scroller = page.locator('#grid-host [data-ds-grid-scroll]')
+  const g = await scroller.boundingBox()
+  /* Row 1, column A: past the row gutter and the header row. */
+  await page.mouse.click(g.x + 48 + 30, g.y + 26 + 10)
+  await page.keyboard.type('a')
+  /* In the app, re-rendering the whole canvas after a commit makes the next
+     frame late, so keys typed straight after Tab arrive BEFORE it. This tiny
+     harness renders too fast to show that on its own (the test passed against
+     the broken code until this line), so the frame is made late on purpose. */
+  await page.evaluate(() => { window.__raf = window.requestAnimationFrame; window.requestAnimationFrame = cb => setTimeout(() => cb(performance.now()), 150) })
+  await page.keyboard.press('Tab')
+  await page.keyboard.type('b')        // opens the next cell before the late frame
+  await page.waitForTimeout(300)       // the late frame fires here
+  await page.keyboard.type(',c')       // was: reopened the cell and replaced "b"
+  await page.waitForTimeout(100)
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(200)
+  await page.evaluate(() => { window.requestAnimationFrame = window.__raf })
+  const rows = await page.evaluate(() => window.__grid.rows())
+  ok(rows[0][0] === 'a', 'the first cell keeps what was typed')
+  ok(rows[0][1] === 'b,c', 'and the cell opened by typing straight after Tab keeps EVERY key — was "c"')
+  ok(await page.evaluate(() => document.activeElement?.hasAttribute('data-ds-grid-scroll')),
+     'and the grid holds focus afterwards, so the next key keeps working')
+}
+
 console.log('\n builder — the button opens a panel and nothing else')
 {
   await page.evaluate(() => window.__builder.wipe())

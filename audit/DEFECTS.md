@@ -144,3 +144,26 @@ Section delete dialog read "It holds 1 block. They can go with the section…" �
 - Repro: Import File → doc.pdf + pic.png together. The image covers the PDF; the PDF's left edge is under the sidebar.
 - Fix: the canvas publishes a placer (`placeRef`) using the Add menu's rule (in view, clear of blocks via `lib/placement.js`), remembers spots handed out in the last 4 s so a multi-file import does not stack, uses the type's real size, and moves the camera when no on-screen spot is free. Dropped files still land under the pointer.
 - Verification: PDF + image + CSV table → 0 overlaps (was 2).
+
+## DEF-026 · P2 · Data presentation (exports) · FIXED (verified)
+**Every exported file name lost its non-ASCII letters.** The workspace exporters replaced anything outside `[a-z0-9-_ ]` with "_"; the Word/PDF document exporter replaced anything outside ASCII `\w` with "-".
+- Repro (old code, real outputs): "Ataskaita už rugsėjį" → `Ataskaita u_ rugs_j_`; "Звіт за серпень" → `____ __ _______` (workspace export) and `document` (Word export); "Ataskaita — Vilnius Q3" → `Ataskaita _ Vilnius Q3`.
+- Root cause: two hand-rolled ASCII allow-lists, written separately.
+- Fix: one rule, `lib/filename.js` `safeFileName` — NFC, only characters file systems refuse (control, `< > : " / \ | ? *`) are replaced, dashes → "-", whitespace collapsed, trailing dots/spaces dropped (Windows), reserved DOS names prefixed, 80 characters. Used by `lib/exporters.js` and `lib/docexport.js`.
+- Verification: `tests/filename.test.mjs` (9 assertions: Lithuanian, Ukrainian, emoji, reserved names, path separators, trailing dots, length, empty → fallback). Headless download of a Unicode-named export keeps the name (Chromium with a UTF-8 locale).
+
+## DEF-027 · P3 · Data correctness (exports) · FIXED (verified)
+**A table whose headers are all blank (every new or unnamed sheet) exported a CSV whose first line was bare commas**, so Excel and every importer read a blank header row and shifted the data down a row. Markdown export printed an empty header row.
+- Fix: `tableForExport` — no header line when every header is blank (CSV); column letters A, B, C… as the Markdown header; Markdown cells escape newlines as `<br>` so a multi-line cell no longer breaks the table. Width stays the grid's (one column per header): a cell past the last header is never on screen, so it is not exported — a deliberate choice, documented in code and test.
+- Verification: `tests/lib.test.mjs` +3 assertions; the existing "blank rows are skipped" assertion unchanged.
+
+## DEF-028 · P2 · Sharing · OPEN — needs a product decision (OPEN_QUESTIONS Q6)
+**A project or sheet shared to you by an account outside your workspace is listed under "Shared with me" but cannot be opened.** The row is clickable only when the notebook already exists locally (`notebooks.find(n => n.id === row.docId)`, app/app/page.js); the pull is filtered by `org_id`/`owner_id` (lib/sync.js), and a sheet-level grant deliberately does not carry the `docs` row (0008 §9). So the row reads "A shared project" / "Shared with you", has a default cursor, and does nothing on click — no message says why.
+- Not fixed: whether a shared project opens read-only, opens live (needs an RLS read path for granted docs), or is copied in is a product and security decision. Smallest honest interim: a tooltip/toast on click ("Opening shared projects is coming — ask the owner to invite you to the workspace"). See OPEN_QUESTIONS Q6.
+
+## DEF-029 · P1 · Data loss (typing) · FIXED (verified)
+**In a table, typing straight after Tab or Enter lost characters: "a, Tab, b,c" stored "c" (sometimes ",c").** Fast typists hit this on every row they type in.
+- Repro: Table block → click A1 → type `a` → Tab → immediately type `b,c` → Enter. B1 holds `c`. Reproduced 3/3 in the real app; does not happen when the cell is opened by clicking (no pending hand-back).
+- Root cause: `commitEdit` calls `refocus()`, which hands focus back to the grid one animation frame later (so the unmounting input's blur cannot steal it back). In the real app, re-rendering the canvas after the commit makes that frame late, and the next key had already opened the next cell. The deferred hand-back only skipped focus that was *outside* the grid — the new editor is *inside* it — so it pulled focus to the grid, the editor's blur committed "b" and closed, and "," reopened the same cell and replaced it. Event trace: `keydown b @grid → focusin INPUT → focusout INPUT → focusin grid → keydown , @grid`.
+- Fix (`components/notebook/SheetGrid.js`): the deferred hand-back only acts when focus is nowhere (`<body>`); the editor now focuses in a layout effect (before paint, not after); and a printable key that still reaches the grid while a typed-over cell is opening is appended to it rather than dropped.
+- Verification: in-app 5/5 correct (was 0/3). New browser regression (`tests/browser/run.mjs`, "table grid — typing straight after Tab"): the harness renders too fast to slip a frame, so the test delays animation frames deliberately — it FAILS on the old SheetGrid and passes on the fix.

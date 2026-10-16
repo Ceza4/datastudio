@@ -1,7 +1,7 @@
 'use client'
 import { createPortal } from 'react-dom'
 import Icon from '../ui/Icon'
-import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { memo, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { Z } from '../../lib/theme'
 import { tsvCell } from '../../lib/csv'
 import { revertChange } from '../../lib/undo'
@@ -145,7 +145,11 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const commitRowH = useCallback(m => onUpdateBlock(block.id, { rowHeights: m }), [block.id, onUpdateBlock])
 
   useEffect(() => { editingRef.current = !!editing }, [editing, editingRef])
-  useEffect(() => { if (editing && editorRef.current) editorRef.current.focus() }, [editing])
+  /* LAYOUT effect, not a passive one (audit DEF-029). The editor mounts on
+     the first typed key; a passive effect focused it only after paint, and
+     every key typed in between landed on the grid — which ignores keys while
+     a cell is open. Typing "b,c" quickly after Tab stored "c". */
+  useLayoutEffect(() => { if (editing && editorRef.current) editorRef.current.focus() }, [editing])
 
   /* A sheet switch remounts the grid; the tab strip asks for focus to follow,
      so the keyboard stays on the table. */
@@ -354,8 +358,12 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
       /* Only from nowhere. A blur-commit happens because you clicked into
          something else — a note, the formula of another block — and pulling
          the caret back here would throw away that click. */
+      /* And never from a NEWER editor inside the grid (audit DEF-029). Tab,
+         then typing at once, opens the next cell before this frame fires;
+         taking focus from it blurred and committed that cell, and the next
+         key reopened it and overwrote the text: "b,c" was stored as "c". */
       const a = document.activeElement
-      if (a === el || (a && a !== document.body && !el.contains(a))) return
+      if (a && a !== document.body) return
       el.focus({ preventScroll: true })
     })
   }, [])
@@ -483,7 +491,15 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
 
   /* ── keyboard ─────────────────────────────────────────────────────── */
   function onKeyDown(e) {
-    if (editing) return
+    if (editing) {
+      /* Belt to the layout effect's braces: a character that still reaches
+         the grid while a typed-over cell is opening belongs in that cell. */
+      if (editing.kind === 'type' && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
+        e.preventDefault()
+        setDraft(d => d + e.key)
+      }
+      return
+    }
     const { r2: r, c2: c } = sel
     const ext = e.shiftKey
     const meta = e.ctrlKey || e.metaKey
