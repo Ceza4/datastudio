@@ -287,3 +287,10 @@ The error card's Delete went through `deleteBlock`, whose content check THROWS o
 - Root cause: the autosave effect also runs once on hydration, so every tab writes its unchanged workspace as it boots. The cross-tab guard (`mayOverwrite`) refuses any write over a newer `savedAt`, so the second boot-save was "stale" — banner, `saveStale`, beforeunload. The same happens whenever two tabs apply the same sync pull and both save it.
 - Fix (`lib/persistence.js`): inside the same IndexedDB transaction, a write that is behind but whose contents are IDENTICAL (`sameWorkspace`: notebooks, folders, files, prefs) adopts the other tab's clock and reports OK without writing. A behind write with DIFFERENT contents is still refused exactly as before.
 - Verification: +5 unit tests (`sameWorkspace`); e2e `twotab.js` — old build: banner on one tab in 3/3 simultaneous loads; fixed: 0/3, and a genuine conflict (tab 1 edits, tab 2 edits without reloading) is still refused and warned on tab 2.
+
+## DEF-044 · P2 · Interaction (dead button) · FIXED (verified; LIVE-reproduced)
+**The "Changed in another tab" banner's own Reload button did nothing**: the app's unsaved-changes guard treats a stale tab as unwritten, so the reload the banner recommends triggered "Leave site?" — and where the browser or an extension suppresses that prompt, the click simply had no effect.
+- LIVE (16 Oct 23:10): clicked Reload in the banner → page not reloaded (performance.now() 304 s, banner still up).
+- Fix (`app/app/page.js`): `reloadOnPurpose()` marks the exit as deliberate so beforeunload stands down for it; used by the banner and by both "delete everything" flows (which reload after a confirmed dialog).
+- Verification: e2e `stalereload.js` — genuine two-tab conflict → stale tab → Reload → page reloads (new timeOrigin), banner gone, shows the other tab's newer text.
+- Design note (OPEN_QUESTIONS Q9): the stale tab's own edit is discarded by that reload, as the banner warns. A merge (or "keep mine as a copy") would remove the loss.

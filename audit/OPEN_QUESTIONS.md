@@ -27,6 +27,9 @@ N T K S D A C I each drop a block when the canvas has focus. Now documented and 
 ## Q7 · Copied blocks travel as JSON text
 By design (lib/clipboard.js), but pasting a copied block into a note, an email or Word inserts `datastudio/blocks;v1 {…}`. Recommendation: also write `text/html` with a readable rendering and the payload in a data attribute; canvas paste reads the attribute.
 
+## Q9 · Two tabs editing the same workspace
+When two tabs really do edit at once, the one that saves second is told "changed in another tab" and its edit is discarded on reload (by design, with a warning). Options: (a) keep as is; (b) "Keep my version as a copy" button on the banner; (c) merge non-overlapping block edits automatically (the undo merge in lib/undo.js already does keyed merges). Recommendation: (b) soon, (c) later. False alarms with no edits are fixed (DEF-043).
+
 ## Q8 · Smaller ones
 - Safari: Cmd+V on the canvas now falls back to reading the clipboard (one permission prompt) — untested here, please try once on a Mac.
 - Database footer counts "0 fields" next to a visible Name column (title deliberately not counted). Suggest "1 row · Name only" or count it.

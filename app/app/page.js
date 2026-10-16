@@ -1078,6 +1078,9 @@ export default function AppPage() {
     }
   }, [])
 
+  const leavingOnPurposeRef = useRef(false)
+  const reloadOnPurpose = () => { leavingOnPurposeRef.current = true; window.location.reload() }
+
   /* Warn before closing when there is genuinely something unwritten.
 
      This used to open with `if (!saveError) return` — armed only once a save
@@ -1088,6 +1091,13 @@ export default function AppPage() {
      protection; the flush is the optimistic path. */
   useEffect(() => {
     function handleBeforeUnload(e) {
+      /* A reload the user chose inside the app — the stale banner's Reload,
+         or after confirming "delete everything" — is not an accident to guard
+         against (audit DEF-044). The banner itself says "copy anything you
+         need, then reload"; answering it with "Leave site?" made its own
+         button look broken, and browsers that suppress the prompt simply did
+         nothing. */
+      if (leavingOnPurposeRef.current) return
       const unwritten = saveError || saveStale || debouncedSaveRef.current?.pending?.()
       if (!unwritten) return
       e.preventDefault()
@@ -1333,7 +1343,7 @@ export default function AppPage() {
       await wipeLocalStores()
       /* Reload rather than clearing React state: every block, image URL and
          PDF document in memory still refers to bytes that no longer exist. */
-      window.location.reload()
+      reloadOnPurpose()
     }
     return true
   }
@@ -1377,7 +1387,7 @@ export default function AppPage() {
     })
     if (choice !== 'delete') return
     await wipeLocalStores()
-    window.location.reload()
+    reloadOnPurpose()
   }
 
   /* Import router.
@@ -2938,7 +2948,7 @@ export default function AppPage() {
               : saveError}
           </span>
           {saveStale && (
-            <button onClick={() => window.location.reload()}
+            <button onClick={reloadOnPurpose}
               style={{ marginLeft: 4, flexShrink: 0, padding: '4px 10px', borderRadius: 'var(--ds-radius-xs)', border: `1px solid ${accent}`, background: 'transparent', color: accentText, font: 'inherit', fontWeight: 600, cursor: 'pointer' }}>
               Reload
             </button>
