@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import { pressable } from '../../lib/pressable'
 import Icon from './Icon'
 import { SYNC_OFF, SYNC_SYNCED, SYNC_SYNCING, SYNC_QUEUED, SYNC_ERROR, SYNC_OUTDATED } from '../../lib/sync'
 
@@ -115,6 +116,9 @@ export default function SyncChip({ status, colors, dark, onRetry }) {
       }}
       title={status?.message || look.label}
       onClick={interactive ? (shown === SYNC_OUTDATED ? () => window.location.reload() : onRetry) : undefined}
+      /* Retry / reload is an action — reachable from the keyboard while it is
+         one (audit DEF-038). */
+      {...(interactive && visible ? pressable(shown === SYNC_OUTDATED ? () => window.location.reload() : () => onRetry?.()) : {})}
     >
       <Icon name={look.icon} size={12} />
       {look.label}

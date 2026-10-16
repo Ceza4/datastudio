@@ -67,6 +67,7 @@ import {
   reparent as mmReparent, navigate as mmNavigate, setText as mmSetText,
   toggleCollapsed as mmToggle, nodeAt as mmNodeAt, nodeBox as mmNodeBox, repairMindMap, isDescendant as mmIsDescendant,
 } from '../../lib/mindmap'
+import { pressable } from '../../lib/pressable'
 import VisualsBar, { VISUAL_KEYS, TOOL_HINTS } from '../visuals/VisualsBar'
 import VisualsOverlay from '../visuals/VisualsOverlay'
 import ShapeTextEditor from '../visuals/ShapeTextEditor'
@@ -1549,6 +1550,7 @@ function addBlockAnimated(type, x, y) {
 
   /* A deferred close must never outlive the component that scheduled it. */
   useEffect(() => () => clearTimeout(drawPanelCloseRef.current), [])
+  const drawPanelEscRef = useRef(false)
 
   useEffect(() => {
     if (!ctxMenu) return
@@ -4513,6 +4515,7 @@ function addBlockAnimated(type, x, y) {
             blocks were still there, a screen or two away, with nothing to say
             so. */}
         <span className="ds-title-zoom" data-default={Math.round(nbZoom * 100) === 100 ? '' : undefined}
+          {...pressable(e => e.currentTarget.click())} aria-label={`Zoom ${Math.round(nbZoom * 100)}% — reset to 100%`}
           style={{ fontSize: 12, color: text3, fontFamily: 'var(--ds-font-body)', fontVariantNumeric: 'tabular-nums', padding: '0 4px', cursor: 'pointer', flexShrink: 0 }}
           onClick={() => {
             stopPanAnim()
@@ -4726,10 +4729,31 @@ function addBlockAnimated(type, x, y) {
         <div ref={drawPanelRef} style={{ position: 'relative' }}
           onMouseEnter={() => { clearTimeout(drawPanelCloseRef.current); setShowDrawPanel(true) }}
           onMouseLeave={() => {
+            /* Not while the keyboard is inside it — Tab-ing through the
+               colours must not close the panel because the mouse left. */
+            if (drawPanelRef.current?.contains(document.activeElement)) return
             clearTimeout(drawPanelCloseRef.current)
             drawPanelCloseRef.current = setTimeout(() => setShowDrawPanel(false), 140)
+          }}
+          /* THE KEYBOARD GETS THE PANEL TOO (audit DEF-038). It opened on hover
+             only, so pen colour, size, Smart pen and Clear had no keyboard
+             path at all. Focus inside opens it; focus leaving closes it; Esc
+             closes it and keeps you on the Draw button. */
+          onFocus={() => {
+            if (drawPanelEscRef.current) { drawPanelEscRef.current = false; return }
+            clearTimeout(drawPanelCloseRef.current); setShowDrawPanel(true)
+          }}
+          onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setShowDrawPanel(false) }}
+          onKeyDown={e => {
+            if (e.key !== 'Escape' || !showDrawPanel) return
+            e.preventDefault(); e.nativeEvent.__dsConsumed = true
+            setShowDrawPanel(false)
+            const drawBtn = drawPanelRef.current?.querySelector('button')
+            /* Moving focus back to Draw fires onFocus above — which would open
+               the panel Esc just closed. */
+            if (drawBtn && document.activeElement !== drawBtn) { drawPanelEscRef.current = true; drawBtn.focus() }
           }}>
-          <button onClick={() => setDrawMode(v => !v)}
+          <button onClick={() => setDrawMode(v => !v)} aria-expanded={showDrawPanel}
             className={`ds-tbtn${drawMode ? ' is-on' : ''}`}
             title={drawMode ? 'Turn drawing off' : 'Draw on the canvas · hover for options'}>
             <Icon name="tool-draw" size={14} />
@@ -4782,9 +4806,12 @@ function addBlockAnimated(type, x, y) {
                   {/* Four inks. The fifth was near-white (#E8E6E1), which is
                       invisible on the light canvas. Removed 24 Sep 2026;
                       strokes already drawn in it keep their colour. */}
-                  {['#5B5FE8', '#1D9E75', '#f87171', '#E8B85B'].map(c => (
-                    <div key={c} onClick={() => setDrawColor(c)}
-                      style={{ width: 20, height: 20, borderRadius: '50%', background: c, cursor: 'pointer', border: drawColor === c ? `2px solid ${text}` : `2px solid transparent`, transition: 'border 0.1s', flexShrink: 0 }} />
+                  {/* Buttons, named (audit DEF-038): they were bare divs — no tab
+                      stop, no name — so colour was mouse-only. */}
+                  {[['#5B5FE8', 'Indigo'], ['#1D9E75', 'Green'], ['#f87171', 'Red'], ['#E8B85B', 'Amber']].map(([c, name]) => (
+                    <button key={c} type="button" onClick={() => setDrawColor(c)}
+                      aria-label={`${name} ink`} aria-pressed={drawColor === c} title={`${name} ink`}
+                      style={{ width: 20, height: 20, padding: 0, borderRadius: '50%', background: c, cursor: 'pointer', border: drawColor === c ? `2px solid ${text}` : `2px solid transparent`, transition: 'border 0.1s', flexShrink: 0 }} />
                   ))}
                 </div>
               </div>
@@ -7009,9 +7036,12 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                     })()}
 
                     <div style={{ display: 'flex', gap: 4 }}>
-                      {['#5B5FE8','#1D9E75','#E8B85B','#f87171','#a78bfa','#38bdf8','#fb923c'].map(hex => (
-                        <div key={hex} onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { sectionColor: hex }) }} onMouseDown={e => e.stopPropagation()}
-                          style={{ width: 9, height: 9, borderRadius: '50%', background: hex, cursor: 'pointer', border: hex === (block.sectionColor || accent) ? `2px solid ${text}` : '2px solid transparent' }} />
+                      {/* Buttons, named (audit DEF-038) — they were bare divs. */}
+                      {[['#5B5FE8', 'Indigo'], ['#1D9E75', 'Green'], ['#E8B85B', 'Amber'], ['#f87171', 'Red'], ['#a78bfa', 'Violet'], ['#38bdf8', 'Sky'], ['#fb923c', 'Orange']].map(([hex, name]) => (
+                        <button key={hex} type="button" aria-label={`${name} section`} title={`${name} section`}
+                          aria-pressed={hex === (block.sectionColor || accent)}
+                          onClick={e => { e.stopPropagation(); onUpdateBlock(block.id, { sectionColor: hex }) }} onMouseDown={e => e.stopPropagation()}
+                          style={{ width: 9, height: 9, padding: 0, borderRadius: '50%', background: hex, cursor: 'pointer', border: hex === (block.sectionColor || accent) ? `2px solid ${text}` : '2px solid transparent' }} />
                       ))}
                     </div>
                     <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); deleteBlock(block) }} aria-label="Delete section"

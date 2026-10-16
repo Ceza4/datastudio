@@ -265,6 +265,22 @@ ok(formatBytes(undefined) !== undefined, 'undefined does not throw')
   ok(30000 * 30000 > MAX_PIXELS, 'and a 900MP decompression bomb is not')
 }
 
+/* ── pressable (audit DEF-038) ─────────────────────────────────────── */
+{
+  const { pressable } = await import('../lib/pressable.js')
+  console.log('\n pressable')
+  let hits = 0
+  const p = pressable(() => hits++)
+  ok(p.role === 'button' && p.tabIndex === 0, 'a button role and a tab stop')
+  const ev = (key, same = true) => { const t = {}; return { key, target: t, currentTarget: same ? t : {}, preventDefault() {}, stopPropagation() {} } }
+  p.onKeyDown(ev('Enter')); p.onKeyDown(ev(' '))
+  ok(hits === 2, 'Enter and Space both activate')
+  p.onKeyDown(ev('a')); p.onKeyDown(ev('Tab'))
+  ok(hits === 2, 'other keys do nothing')
+  p.onKeyDown(ev('Enter', false))
+  ok(hits === 2, 'a key pressed inside a child control is left to that child')
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)
 

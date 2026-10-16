@@ -228,3 +228,12 @@ LIVE-confirmed 2026-10-16: after Add → Database, `document.activeElement` is `
 - Root cause: the header row did not wrap and the title was `flex: 1` (basis 0) — it alone absorbed the squeeze beside the 180 px source rail.
 - Fix: the header wraps, the title takes its natural width, the switcher is pinned right and drops to its own line when needed.
 - Verification: "October 2026" 200/200 px; Week "12–18 October 2026" 200/200; Agenda "Upcoming" 129/129; screenshot.
+
+## DEF-038 · P2 · Accessibility (keyboard) · FIXED (verified)
+**Mouse-only controls across the app** (swept with `jsx-a11y/click-events-have-key-events`, 19 hits, each triaged):
+- Draw options panel (pen colour, size, Smart pen, Undo, Clear) opened on hover only; its ink swatches were bare `<div>`s with no name.
+- Sidebar: expanding an imported file or one of a workbook's sheets (columns and "Whole table" live behind it), opening/closing a folder, the "Shared with me" row.
+- Title "100%" (reset zoom), section colour swatches (bare divs), Crosscheck's column cards (the comparison could not be set up without a mouse), the sync chip's Retry/Reload.
+- Fix: `lib/pressable.js` (role=button, tab stop, Enter/Space, ignores keys from child controls; 4 unit tests) on the names/rows above with `aria-expanded`/`aria-pressed`; swatches are named `<button>`s; the Draw panel opens on focus-within, closes on focus leaving, Esc closes it back onto Draw (guarded so that focus does not re-open it), and mouse-leave does not close it while the keyboard is inside.
+- Left as is (correct): the canvas (focusable, own keymap), five handlers that only stop propagation, the toast row (auto-dismisses; its UNDO is a button), sidebar column multi-select (mouse convenience; "Whole table" is a button).
+- Verification: Tab Add → Draw opens the panel; Tab walks Smart pen → 2/4/8 → Undo → Clear; Esc closes onto Draw; leaving closes; hover still works. Keyboard Enter on basic.csv collapses/expands it; Space on a workbook sheet row toggles it; Enter on "135%" resets to 100%.

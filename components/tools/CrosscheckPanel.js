@@ -1,5 +1,6 @@
 'use client'
 import Icon from '../ui/Icon'
+import { pressable } from '../../lib/pressable'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import SendToSheet from './SendToSheet'
 import { Z } from '../../lib/theme'
@@ -309,6 +310,10 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
                   return (
                     <div key={col.id}
                       className={`ds-card${selected ? ' is-selected' : ''}`}
+                      /* Keyboard-pickable (audit DEF-038): the comparison could not
+                         be set up without a mouse. */
+                      {...pressable(() => step === 1 ? setColAId(col.id) : setColBId(col.id))}
+                      aria-pressed={selected}
                       onClick={() => step === 1 ? setColAId(col.id) : setColBId(col.id)}
                       style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <div style={{

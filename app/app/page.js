@@ -1,5 +1,6 @@
 'use client'
 import { renameKeyDown, renameCancelled, selectAllOnFocus } from '../../lib/renameinput'
+import { pressable } from '../../lib/pressable'
 import Icon from '../../components/ui/Icon'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { usePrefs } from '../providers'
@@ -2767,7 +2768,9 @@ export default function AppPage() {
             })
           }}
           style={{ padding: '8px 10px', borderRadius: 6, fontSize: 13, color: text, cursor: 'grab', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, background: dragOverFileId === file.id ? accentDim : undefined, border: dragOverFileId === file.id ? `1px solid ${accent}` : '1px solid transparent' }}>
-          <span style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+          <span {...pressable(() => setExpandedFiles(prev => { const next = new Set(prev); next.has(file.id) ? next.delete(file.id) : next.add(file.id); return next }))}
+            aria-expanded={expandedFiles.has(file.id)}
+            style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
           <button onClick={e => { e.stopPropagation(); const undo = deleteFile(file.id); if (undo) toast('File deleted', { undo }) }}
             style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', fontSize: 11, padding: '2px 4px', borderRadius: 4, opacity: 0, flexShrink: 0 }}
             className="col-actions"
@@ -2805,6 +2808,7 @@ export default function AppPage() {
                     return (
                       <div key={sheet.name} style={{ marginLeft: 14 }}>
                         <div className="sheet-row"
+                          {...pressable(() => toggleSheetOpen(file.id, sheet.name))} aria-expanded={open}
                           onClick={() => toggleSheetOpen(file.id, sheet.name)}
                           title={`Sheet "${sheet.name}"`}
                           style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, color: open ? text : text2 }}>
@@ -3174,7 +3178,8 @@ export default function AppPage() {
                         onClick={e => e.stopPropagation()}
                         style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: `1px solid ${accent}`, color: text, fontFamily: 'var(--ds-font-body)', fontSize: 13, fontWeight: 600, outline: 'none', minWidth: 0 }} />
                     ) : (
-                      <span onClick={() => toggleFolder(folder.id)} style={{ flex: 1, fontSize: 13, fontWeight: 600, color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}>{folder.name}</span>
+                      <span {...pressable(() => toggleFolder(folder.id))} aria-expanded={!folder.collapsed}
+                        onClick={() => toggleFolder(folder.id)} style={{ flex: 1, fontSize: 13, fontWeight: 600, color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}>{folder.name}</span>
                     )}
                     <div className="folder-actions" style={{ opacity: 0, display: 'flex', gap: 2, flexShrink: 0 }}>
                       <button onClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); setRenamingFolderLabel(folder.name) }}
@@ -3299,6 +3304,7 @@ export default function AppPage() {
                         : 'one block'
                   return (
                     <div key={row.docId}
+                      {...(nb ? pressable(() => setActiveNotebookId(nb.id)) : {})}
                       onClick={() => { if (nb) setActiveNotebookId(nb.id) }}
                       style={{
                         padding: '8px 10px', borderRadius: 6, display: 'flex',
