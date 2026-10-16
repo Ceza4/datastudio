@@ -618,9 +618,18 @@ function DocumentBlockInner({
   const editNote = (id, text) => {
     notesRef.current = { ...notesRef.current, [id]: text }
     clearTimeout(noteTimer.current)
-    noteTimer.current = setTimeout(() => patch({ footnotes: notesRef.current }), 350)
+    noteTimer.current = setTimeout(() => { noteTimer.current = null; patch({ footnotes: notesRef.current }) }, 350)
     repaginate()
   }
+  /* A footnote typed in the last 350 ms before the block unmounts (sheet
+     switch, project switch, delete-then-undo) was dropped with the timer —
+     the body has the same flush on unmount, the notes did not (audit
+     DEF-024). */
+  const patchRef = useRef(patch)
+  patchRef.current = patch
+  useEffect(() => () => {
+    if (noteTimer.current) { clearTimeout(noteTimer.current); noteTimer.current = null; patchRef.current({ footnotes: notesRef.current }) }
+  }, [])
   const backToRef = id => {
     const el = ref.current
     const sup = el?.querySelector(`[data-ds-fn="${CSS.escape(id)}"]`)

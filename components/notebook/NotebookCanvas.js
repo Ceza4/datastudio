@@ -255,6 +255,9 @@ export default function NotebookCanvas({
      may touch lib/shares.js (check:tree enforces that boundary), and passed
      down for the same reason onSend and onEdit are. */
   onResolveSharedBlock,
+  /* Filled in here, read by AppPage: where to put a block that arrives with no
+     drop point (Import File, the sidebar's Whole table). See placeImported. */
+  placeRef,
   /* Same shape, for an image reference's thumbnail: the bytes live in
      IndexedDB and only the app layer resolves object URLs. */
   onResolveRefThumb,
@@ -1397,6 +1400,42 @@ function addBlockAnimated(type, x, y) {
     if (!spot.inView) centerOnBlock({ type, x: spot.x, y: spot.y })
     addBlockAnimated(type, spot.x, spot.y)
   }
+
+  /* IMPORTED BLOCKS GO WHERE YOU ARE LOOKING (audit DEF-025).
+
+     Import File and the sidebar's "Whole table" placed their block at a fixed
+     world point, (200,140) plus jitter — the very placement the Add menu
+     dropped because it puts blocks under the 280px sidebar and, three imports
+     in, on top of each other. So: same rule as the Add menu, plus the spots
+     handed out in the last few seconds, because a multi-file import asks for
+     all of them before any block has reached `blocks`. */
+  const pendingSpotsRef = useRef([])
+  useEffect(() => {
+    if (!placeRef) return
+    placeRef.current = (w0, h0, type) => {
+      /* The type's own size wins when it is bigger than the caller's guess —
+         a table renders at its default height whatever its row count. */
+      const d = type ? blockDims({ type, w: w0, h: h0 }) : { w: w0, h: h0 }
+      const w = d.w, h = d.h
+      const now = Date.now()
+      pendingSpotsRef.current = pendingSpotsRef.current.filter(r => now - r.t < 4000)
+      const z = nbZoomRef.current
+      const left = sidebarHidden ? ROW_LEFT_COLLAPSED : ROW_LEFT
+      const view = {
+        x: (left - panRef.current.x) / z, y: (TOP_ROW_H - panRef.current.y) / z,
+        w: (viewSize.w - left) / z, h: (viewSize.h - TOP_ROW_H) / z,
+      }
+      const want = { x: view.x + Math.max(24, (view.w - w) / 2), y: (Math.max(96, viewSize.h * 0.14) - panRef.current.y) / z }
+      const rects = [...blocks.map(b => ({ x: b.x, y: b.y, ...blockFootprint(b) })), ...pendingSpotsRef.current]
+      const spot = findFreeSpot(rects, { x: want.x, y: want.y, w, h }, { gap: BLOCK_GAP, view })
+      pendingSpotsRef.current.push({ x: spot.x, y: spot.y, w, h, t: now })
+      /* No free room on screen: the camera goes to it, as it does for Add —
+         a block that lands out of sight reads as an import that did nothing.
+         Deferred so a multi-file import follows the last one. */
+      if (!spot.inView) setTimeout(() => centerOnBlock({ type, x: spot.x, y: spot.y, w, h }), 0)
+      return { x: spot.x, y: spot.y }
+    }
+  })
 
   /* A Pipeline always points at a database. The newest one on the sheet with
      a Select field is used; with none, a starter "Clients" database is made

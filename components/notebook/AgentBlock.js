@@ -369,13 +369,21 @@ function InstructionsSection({ c, agent, set, head, sec, sheet }) {
   const [draft, setDraft] = useState(agent.instructions)
   const [picking, setPicking] = useState(false)
   const t = useRef(null)
+  /* The last 500 ms of typing was dropped if you switched section or closed
+     the block inside the debounce (audit DEF-024). Flushed on blur and on
+     unmount, from refs so the cleanup sees the latest draft. */
+  const pending = useRef(null)
+  const setRef = useRef(set)
+  setRef.current = set
+  const flush = () => { if (t.current) { clearTimeout(t.current); t.current = null; setRef.current({ instructions: pending.current }) } }
+  useEffect(() => () => flush(), []) // eslint-disable-line react-hooks/exhaustive-deps
   const blocks = visibleBlocks(sheet.blocks())
   const nameOf = id => { const b = blocks.find(x => x.id === id); return b ? (b.name || b.type) : 'Removed block' }
   return <>
     {head('Instructions', 'Sent with every request. Short and specific works best; every word is paid for on each step (cached, so cheaply).')}
     {sec(<>
-      <textarea value={draft} rows={9} aria-label="Instructions" onKeyDown={halt}
-        onChange={e => { const v = e.target.value.slice(0, 8000); setDraft(v); clearTimeout(t.current); t.current = setTimeout(() => set({ instructions: v }), 500) }}
+      <textarea value={draft} rows={9} aria-label="Instructions" onKeyDown={halt} onBlur={flush}
+        onChange={e => { const v = e.target.value.slice(0, 8000); setDraft(v); pending.current = v; clearTimeout(t.current); t.current = setTimeout(() => { t.current = null; set({ instructions: v }) }, 500) }}
         placeholder="For example: You write product copy for DataStudio. Keep sentences short. Never invent prices."
         style={{ resize: 'vertical', border: `1.5px solid ${c.border}`, borderRadius: 8, background: c.base, color: c.text, fontFamily: FONT, fontSize: 13, lineHeight: 1.5, padding: '8px 10px', outline: 'none' }} />
       <span style={{ fontSize: 12, color: c.text3 }}>≈ {Math.ceil(draft.length / 4)} tokens</span>

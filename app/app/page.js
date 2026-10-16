@@ -1558,10 +1558,9 @@ export default function AppPage() {
          than its centre being somewhere below it. Otherwise fall back to the
          old jittered corner, which is what the picker still uses. */
       const at = opts.at
+      const spot = importSpot(targetNb, at, 520, 620, 200, 130, 'pdf')
       addNotebookBlock(
-        targetNb, 'pdf',
-        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
-        at ? Math.max(0, at.y - 20) : 130 + Math.random() * 30,
+        targetNb, 'pdf', spot.x, spot.y,
         null, null, 520, 620,
         { pdfId: id, name: processed.name, pdfPage: 1, pdfFit: 'width', ...sectionPatch(opts) }
       )
@@ -1606,13 +1605,13 @@ export default function AppPage() {
          here would mean an icon-first import could never be expanded to
          anything but a 200×40 image. */
       const asIcon = opts.forceIcon || prefs?.imageDropMode === 'icon'
+      const imgW = Math.round(processed.width * scale), imgH = Math.round(processed.height * scale) + 30
+      const spot = importSpot(targetNb, at, imgW, imgH, 180, 140, 'image')
       addNotebookBlock(
-        targetNb, 'image',
-        at ? Math.max(0, at.x - 40) : 180 + Math.random() * 40,
-        at ? Math.max(0, at.y - 20) : 140 + Math.random() * 30,
+        targetNb, 'image', spot.x, spot.y,
         null, null,
-        Math.round(processed.width * scale),
-        Math.round(processed.height * scale) + 30,
+        imgW,
+        imgH,
         {
           imageId: id, name: processed.name,
           natW: processed.width, natH: processed.height, alt: '', fit: 'contain',
@@ -1650,10 +1649,9 @@ export default function AppPage() {
         shrinkImage: async blob => (await imageFileToDataUrl(new File([blob], 'image', { type: blob.type }))).src,
       })
       const at = opts.at
+      const spot = importSpot(targetNb, at, 900, 1000, 200, 120, 'document')
       addNotebookBlock(
-        targetNb, 'document',
-        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
-        at ? Math.max(0, at.y - 20) : 120 + Math.random() * 30,
+        targetNb, 'document', spot.x, spot.y,
         null, null, 900, 1000,
         { ...patch, ...sectionPatch(opts) },
       )
@@ -1687,10 +1685,9 @@ export default function AppPage() {
       const height = Math.round(Math.min(560, Math.max(120, lines * 21 + 40)))
       const at = opts.at
 
+      const spot = importSpot(targetNb, at, 460, height, 200, 140, 'text')
       addNotebookBlock(
-        targetNb, 'text',
-        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
-        at ? Math.max(0, at.y - 20) : 140 + Math.random() * 30,
+        targetNb, 'text', spot.x, spot.y,
         null, null, 460, height,
         {
           content: html,
@@ -1724,10 +1721,9 @@ export default function AppPage() {
       await putFile(id, processed)
 
       const at = opts.at
+      const spot = importSpot(targetNb, at, 300, 74, 200, 150, 'file')
       addNotebookBlock(
-        targetNb, 'file',
-        at ? Math.max(0, at.x - 40) : 200 + Math.random() * 40,
-        at ? Math.max(0, at.y - 20) : 150 + Math.random() * 30,
+        targetNb, 'file', spot.x, spot.y,
         null, null, 300, 74,
         { fileId: id, name: processed.name, size: processed.size, mime: processed.type, ...sectionPatch(opts) }
       )
@@ -1951,7 +1947,8 @@ export default function AppPage() {
   function addColumnsToNotebook(colInfos) {
     if (!colInfos.length || !activeNotebookId) return
     const { headers, rows } = buildTableFromCols(colInfos)
-    addNotebookBlock(activeNotebookId, 'table', 160 + Math.random() * 40, 140 + Math.random() * 40, headers, rows)
+    const spot = importSpot(activeNotebookId, null, null, null, 160, 140, 'table')  // the table is stored without w/h: its default size is what renders
+    addNotebookBlock(activeNotebookId, 'table', spot.x, spot.y, headers, rows)
     setSelectedSidebarCols([])
   }
 
@@ -2074,6 +2071,18 @@ export default function AppPage() {
      verbatim and asserts the registry reproduces it exactly for all five
      types — including the explicit `w: undefined` on tables, which is load
      bearing and which JSON.stringify would have hidden. */
+  /* Where an imported block lands when nobody dropped it anywhere: in view
+     and clear of other blocks, via the canvas (DEF-025). The old jittered
+     corner is the fallback for a notebook that is not on screen. */
+  const placeRef = useRef(null)
+  function importSpot(nbId, at, w, h, fx, fy, type) {
+    if (at) return { x: Math.max(0, at.x - 40), y: Math.max(0, at.y - 20) }
+    if (nbId === activeNotebookId && placeRef.current) {
+      try { return placeRef.current(w, h, type) } catch { /* fall through */ }
+    }
+    return { x: fx + Math.random() * 40, y: fy + Math.random() * 30 }
+  }
+
   function addNotebookBlock(nbId, type, x, y, customHeaders, customRows, customW, customH, patch) {
     const id = `block_${Date.now()}_${Math.random().toString(36).slice(2)}`
     const block = createBlock(type, {
@@ -3638,6 +3647,7 @@ export default function AppPage() {
                  the canvas and everything under it must stay free of the
                  network half, which `npm run check:tree` enforces. */
               onResolveSharedBlock={sharedBlockFor}
+              placeRef={placeRef}
               /* Document export. Here rather than in the canvas because
                  downloading is an app-level concern — the same reason every
                  other export goes through this layer — and because a real

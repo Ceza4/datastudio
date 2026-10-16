@@ -134,3 +134,13 @@ Environment unless stated: Chromium 141 headless, 1440×900, production build of
 
 ## DEF-023 · P3 · Copy · FIXED
 Section delete dialog read "It holds 1 block. They can go with the section…" — singular now says "It can go…".
+
+## DEF-024 · P3 · Data loss (small window) · FIXED (code-verified)
+**Typing dropped by debounces that were never flushed on unmount:** Document footnotes (350 ms) and Agent instructions (500 ms). Switch sheet/project or close the panel inside the window and the last characters were gone. The Document body already flushed on unmount; these two did not.
+- Fix: flush on unmount (both) and on blur (Agent instructions), from refs so cleanup sees the latest text.
+
+## DEF-025 · P2 · Usability / placement · FIXED (verified)
+**Imported blocks landed at a fixed world point (200,140)+jitter — under the 280 px sidebar, and on top of each other when several files were imported at once.** The Add menu had been fixed for exactly this; Import File, docx/markdown/file attachments and the sidebar's "Whole table" had not.
+- Repro: Import File → doc.pdf + pic.png together. The image covers the PDF; the PDF's left edge is under the sidebar.
+- Fix: the canvas publishes a placer (`placeRef`) using the Add menu's rule (in view, clear of blocks via `lib/placement.js`), remembers spots handed out in the last 4 s so a multi-file import does not stack, uses the type's real size, and moves the camera when no on-screen spot is free. Dropped files still land under the pointer.
+- Verification: PDF + image + CSV table → 0 overlaps (was 2).
