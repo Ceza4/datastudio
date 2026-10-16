@@ -12,6 +12,7 @@ import TextBlockToolbar from '../../components/notebook/TextBlockToolbar'
 import NotebookCanvas from '../../components/notebook/NotebookCanvas'
 import DatabaseBlock from '../../components/notebook/DatabaseBlock'
 import SheetGrid from '../../components/notebook/SheetGrid'
+import HtmlBlock from '../../components/notebook/HtmlBlock'
 import { ToastProvider, useToast } from '../../components/ui/Toast'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import BuilderPanel from '../../components/builder/BuilderPanel'
@@ -103,6 +104,7 @@ function App() {
     <Canvas />
     <Database />
     <Grid />
+    <HtmlHost />
     <Builder />
     </>
   )
@@ -126,6 +128,24 @@ function Grid() {
     <div id="grid-host" style={{ position: 'fixed', left: 410, top: 560, width: 520, height: 160, zIndex: 160, display: 'flex', background: colors.surface }}>
       <SheetGrid block={block} colors={colors} maxHeight={160}
         onUpdateBlock={(id, patch) => setBlock(b => ({ ...b, ...patch }))} editingRef={{ current: false }} />
+    </div>
+  )
+}
+
+/* The HTML block (audit DEF-030): typing is saved 600 ms after it stops. A
+   switch of sheet unmounts the block without a blur, and unmount used to
+   CLEAR that timer — so the last keystrokes never reached the document. */
+function HtmlHost() {
+  const [on, setOn] = useState(false)
+  const saved = useRef([])
+  useEffect(() => {
+    window.__html = { show: () => setOn(true), hide: () => setOn(false), saved: () => saved.current.slice() }
+  })
+  if (!on) return null
+  return (
+    <div id="html-host" style={{ position: 'fixed', left: 410, top: 560, width: 520, height: 200, zIndex: 170, display: 'flex', background: colors.surface }}>
+      <HtmlBlock block={{ id: 'h1', type: 'html', name: 'HTML prototype', html: '', view: { mode: 'code', auto: false } }}
+        colors={colors} active onUpdateBlock={patch => saved.current.push(patch.html)} editingRef={{ current: false }} />
     </div>
   )
 }

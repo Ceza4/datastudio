@@ -805,6 +805,20 @@ console.log('\n table grid — typing straight after Tab keeps every key (DEF-02
      'and the grid holds focus afterwards, so the next key keeps working')
 }
 
+console.log('\n html block — typing just before the block unmounts is saved (DEF-030)')
+{
+  await page.evaluate(() => window.__html.show())
+  await page.waitForTimeout(150)
+  await page.locator('#html-host textarea[aria-label="HTML source"]').click()
+  await page.keyboard.type('<p>LAST</p>')
+  /* Unmounted inside the 600 ms debounce, with focus still in the editor —
+     exactly what a sheet switch from the keyboard or a remote change does. */
+  await page.evaluate(() => window.__html.hide())
+  await page.waitForTimeout(800)
+  const saved = await page.evaluate(() => window.__html.saved())
+  ok(saved.at(-1) === '<p>LAST</p>', `the pending edit is flushed on unmount, not dropped (saved ${JSON.stringify(saved)})`)
+}
+
 console.log('\n builder — the button opens a panel and nothing else')
 {
   await page.evaluate(() => window.__builder.wipe())

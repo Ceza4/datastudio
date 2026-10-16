@@ -96,6 +96,7 @@ function HtmlBlockInner({ block, colors, active, onUpdateBlock, editingRef }) {
     dirty.current = true
     clearTimeout(saveT.current)
     const commit = () => {
+      pendingRef.current = null
       dirty.current = false
       if (byteLength(value) > MAX_HTML_BYTES) return
       const patch = { html: value }
@@ -104,9 +105,31 @@ function HtmlBlockInner({ block, colors, active, onUpdateBlock, editingRef }) {
       onUpdateBlock(patch)
       if (auto) run(value)
     }
+    pendingRef.current = commit
     if (now) commit(); else saveT.current = setTimeout(commit, RUN_DELAY)
   }
-  useEffect(() => () => clearTimeout(saveT.current), [])
+
+  /* FLUSH, never drop (audit DEF-030). Unmount used to clear the timer and
+     nothing else, so HTML typed in the last 600 ms before switching sheet or
+     project was gone — the same hole DEF-024 closed in footnotes and agent
+     instructions. Blur flushes too: leaving the editor is a natural save. */
+  const pendingRef = useRef(null)
+  const flush = useCallback(() => {
+    clearTimeout(saveT.current)
+    const commit = pendingRef.current
+    pendingRef.current = null
+    if (commit && dirty.current) commit()
+  }, [])
+  useEffect(() => {
+    /* Closing or hiding the tab is the same hole (TextBlockContent does this). */
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', flush)
+      flush()
+    }
+  }, [flush])
 
   useEffect(() => {
     const el = prevRef.current
@@ -225,7 +248,7 @@ function HtmlBlockInner({ block, colors, active, onUpdateBlock, editingRef }) {
               onPaste={() => { clearTimeout(saveT.current); setTimeout(() => edit(taRef.current?.value ?? draft, { now: true }), 0) }}
               onScroll={syncGutter}
               onFocus={() => { if (editingRef) editingRef.current = true }}
-              onBlur={() => { if (editingRef) editingRef.current = false }}
+              onBlur={() => { if (editingRef) editingRef.current = false; flush() }}
               onKeyDown={e => {
                 if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
                   e.preventDefault()
