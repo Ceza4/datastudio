@@ -280,3 +280,10 @@ The error card's Delete went through `deleteBlock`, whose content check THROWS o
 ## Accepted as known limits (documented, not changed)
 - `revertChange` is all-or-nothing when an array changed length and something unrecorded (a sync pull) changed the same array afterwards: the undo does nothing but the history still pops and says "Undid …". Safe (never overwrites a collaborator), sometimes ineffective. → OPEN_QUESTIONS Q3.
 - `lib/workbook.js`: time-only cells (serial < 1) map to 1899-12-31 (were 1899-12-30; both drop the time downstream); serials 60/61 both → 1 Mar 1900 (Lotus leap-year bug, cosmetic); in comma-decimal CSVs a value like `192.168.100` reads as 192168100, as Excel in a de-DE locale would.
+
+## DEF-043 · P2 · Persistence (false "changed in another tab") · FIXED (verified; LIVE-reproduced)
+**Opening two tabs together (or restoring a session with two) put one of them into "Changed in another tab … nothing new has been written … reload" — and armed a "Leave site?" prompt — although nobody had changed anything.**
+- LIVE (Matas's Chrome, 16 Oct 23:05): two tabs navigated to /app together → the banner on one tab in 2/2 trials; navigating that tab away was blocked by "Leave site? unsaved changes" on an empty workspace.
+- Root cause: the autosave effect also runs once on hydration, so every tab writes its unchanged workspace as it boots. The cross-tab guard (`mayOverwrite`) refuses any write over a newer `savedAt`, so the second boot-save was "stale" — banner, `saveStale`, beforeunload. The same happens whenever two tabs apply the same sync pull and both save it.
+- Fix (`lib/persistence.js`): inside the same IndexedDB transaction, a write that is behind but whose contents are IDENTICAL (`sameWorkspace`: notebooks, folders, files, prefs) adopts the other tab's clock and reports OK without writing. A behind write with DIFFERENT contents is still refused exactly as before.
+- Verification: +5 unit tests (`sameWorkspace`); e2e `twotab.js` — old build: banner on one tab in 3/3 simultaneous loads; fixed: 0/3, and a genuine conflict (tab 1 edits, tab 2 edits without reloading) is still refused and warned on tab 2.

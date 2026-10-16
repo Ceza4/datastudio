@@ -144,5 +144,18 @@ console.log('\n  formatBytes')
   eq(P.formatBytes(1024 * 1024 * 1024 * 50), '50 GB', 'tens of GB are whole numbers')
 }
 
+/* ── DEF-043: behind but identical is not a conflict ───────────────────── */
+console.log('\n  sameWorkspace')
+{
+  const ws = { notebooks: [{ id: 'n', sheets: [{ id: 's', blocks: [{ id: 'b', type: 'text', content: '<p>x</p>' }] }] }], folders: [], files: [], prefs: { dark: false } }
+  const copy = JSON.parse(JSON.stringify(ws))
+  ok(P.sameWorkspace({ ...copy, savedAt: 2 }, { ...ws, savedAt: 3 }), 'the same contents written by another tab are recognised, whatever the clocks say')
+  const edited = JSON.parse(JSON.stringify(ws)); edited.notebooks[0].sheets[0].blocks[0].content = '<p>y</p>'
+  ok(!P.sameWorkspace(edited, ws), 'one changed character is a real conflict and is still refused')
+  ok(!P.sameWorkspace({ ...copy, prefs: { dark: true } }, ws), 'a changed preference counts too')
+  ok(!P.sameWorkspace({ ...copy, folders: [{ id: 'f' }] }, ws), 'and a folder')
+  ok(!P.sameWorkspace(null, ws), 'nothing stored is not "the same"')
+}
+
 console.log(`\n ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)
