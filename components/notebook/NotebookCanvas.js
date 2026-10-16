@@ -1014,13 +1014,19 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
       : `${cut ? 'Cut' : 'Copied'} ${n} ${noun}.`)
   }
 
-  async function pasteFromClipboard() {
-    let text = ''
-    try {
-      text = await navigator.clipboard.readText()
-    } catch {
-      toast('Your browser would not let the page read the clipboard.', { tone: 'warn' })
-      return
+  /* `given` comes from a native paste event (Ctrl+V — see the 'paste'
+     listener below), which needs no permission. Without it (the palette's
+     Paste command) the clipboard has to be read, which may prompt. */
+  const lastPasteRef = useRef(null)
+  async function pasteFromClipboard(given) {
+    let text = typeof given === 'string' ? given : ''
+    if (typeof given !== 'string') {
+      try {
+        text = await navigator.clipboard.readText()
+      } catch {
+        toast('Your browser would not let the page read the clipboard.', { tone: 'warn' })
+        return
+      }
     }
     const parsed = parseClipboard(text)
     if (!parsed) {
@@ -1038,13 +1044,43 @@ const shapeById = id => shapesView.find(sh => sh.id === id)
       x: (-panRef.current.x + viewSize.w / 2) / nbZoomRef.current,
       y: (-panRef.current.y + viewSize.h / 2) / nbZoomRef.current,
     }
-    const { blocks: nb, shapes: ns } = materialise(parsed, { x: centre.x - 160, y: centre.y - 80 })
+    /* Paste the same thing again without moving the view and it cascades
+       24px down-right each time (audit DEF-039) — it used to land exactly on
+       top of the last copy, which reads as "paste did nothing". */
+    const base = { x: centre.x - 160, y: centre.y - 80 }
+    const key = `${activeSheet?.id}|${text}`
+    const lp = lastPasteRef.current
+    if (lp && lp.key === key && Math.abs(lp.base.x - base.x) < 1 && Math.abs(lp.base.y - base.y) < 1) lp.n += 1
+    else lastPasteRef.current = { key, base, n: 0 }
+    const step = 24 * lastPasteRef.current.n
+    const { blocks: nb, shapes: ns } = materialise(parsed, { x: base.x + step, y: base.y + step })
     const n = onPasteBlocks?.({ blocks: nb, shapes: ns }) ?? 0
     if (!n) return
     setSelectedIds(new Set(nb.map(b => b.id)))
     setSelectedShapeIds(new Set(ns.map(s => s.id)))
     toast(`Pasted ${n} ${n === 1 ? 'item' : 'items'}.`)
   }
+
+  /* Ctrl+V on the canvas, through the native 'paste' event (audit DEF-039).
+     Same gates as the canvas keymap: nothing while a block is full screen,
+     and only when the canvas itself (or nothing) has focus — a paste into a
+     note, a cell or an input belongs to that element. */
+  const pasteRef = useRef(null)
+  pasteRef.current = pasteFromClipboard
+  useEffect(() => {
+    function onPaste(e) {
+      if (focusRef.current) return
+      /* By FOCUS, not e.target: Chrome aims a paste event at wherever the
+         page's text selection sits — after clicking New Sheet that was a span
+         in the sidebar — even while the canvas has the keyboard. */
+      const a = document.activeElement
+      if (a !== containerRef.current && a !== document.body && a !== null) return
+      e.preventDefault()
+      pasteRef.current?.(e.clipboardData?.getData('text/plain') || '')
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [])
 
   /* Which fields survive a duplicate is now declared per type in the
      registry. The hand-written version knew about text and kanban only, so
@@ -2299,11 +2335,13 @@ function addBlockAnimated(type, x, y) {
           copySelection({ cut: k === 'x' })
           return
         }
-        if (k === 'v') {
-          e.preventDefault()
-          pasteFromClipboard()
-          return
-        }
+        /* Ctrl+V is NOT handled here any more (audit DEF-039). Reading the
+           clipboard from a keydown means navigator.clipboard.readText(): a
+           permission prompt in Chrome the first time, and in Firefox a
+           "Paste" bubble to click on EVERY paste. Letting the key through
+           makes the browser fire a native 'paste' event carrying the text,
+           with no prompt at all — handled by the listener below. */
+        if (k === 'v') return
       }
 
       /* Shapes, before the `selectedIds.size === 0` bail below — that early
