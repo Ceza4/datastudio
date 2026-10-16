@@ -191,6 +191,7 @@ export default function AddMenu({ anchorRect, colors, onPick, onClose }) {
         data-active={on ? 'true' : 'false'}
         onMouseEnter={() => { if (mouseLive.current) setActive(i) }}
         onClick={() => onPick(item.type)}
+        aria-keyshortcuts={item.key ? item.key.toUpperCase() : undefined}
         style={{
           display: 'flex', alignItems: 'center', gap: 10, width: '100%',
           padding: '8px 10px', border: 'none', borderRadius: 6, cursor: 'pointer',
@@ -218,6 +219,15 @@ export default function AddMenu({ anchorRect, colors, onPick, onClose }) {
             </span>
           )}
         </span>
+        {/* The single key that makes this block from the canvas (DEF-036). */}
+        {item.key && (
+          <kbd aria-hidden="true" style={{
+            flexShrink: 0, minWidth: 20, height: 20, padding: '0 6px', borderRadius: 4,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            border: `1px solid ${on ? accent : raised}`, background: on ? 'transparent' : raised,
+            color: on ? accent : text3, fontFamily: 'var(--ds-font-mono)', fontSize: 11,
+          }}>{item.key.toUpperCase()}</kbd>
+        )}
       </button>
     )
   }

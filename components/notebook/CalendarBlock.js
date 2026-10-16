@@ -161,7 +161,12 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
           nothing led. Now the chevrons touch, Today sits just off them, the
           title owns the middle, and the switcher is pinned right. */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+        /* WRAPS (audit DEF-037). At the block's default size the row is ~340px
+           beside the source rail; the title was flex-basis 0, so it alone paid
+           for the squeeze and "October 2026" rendered as a 9px "C". With a
+           natural-width basis and wrapping, the switcher drops to its own line
+           instead and the month stays readable. */
+        display: 'flex', alignItems: 'center', gap: '6px 10px', padding: '8px 10px', flexWrap: 'wrap',
         borderBottom: `1px solid ${border}`, flexShrink: 0,
       }}>
         {view !== 'agenda' && (
@@ -189,7 +194,7 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
             it's why the sheet's cell reference and the status bar read as
             considered and this row didn't. */}
         <span title={title} style={{
-          flex: 1, minWidth: 0,
+          flex: '1 1 auto', minWidth: 0,
           fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-fs-lg)',
           fontWeight: 500, letterSpacing: 0.2, color: text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -201,7 +206,7 @@ function CalendarBlockInner({ block, blocks, colors, dark, onUpdateBlock, onTele
             track is what makes the three read as one choice with three
             positions — which is what they are. */}
         <div style={{
-          display: 'flex', gap: 2, flexShrink: 0, padding: 2,
+          display: 'flex', gap: 2, flexShrink: 0, padding: 2, marginLeft: 'auto',
           background: raised, border: `1px solid ${border}`,
           borderRadius: 'var(--ds-radius-md)',
           /* SUNKEN TRACK, RAISED THUMB — the cue a native segmented control

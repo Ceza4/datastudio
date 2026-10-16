@@ -215,3 +215,16 @@ LIVE-confirmed 2026-10-16: after Add → Database, `document.activeElement` is `
 - Fix: project and sheet names are `role="button" tabIndex=0` (Enter/Space = click, F2 = rename, `aria-expanded` on projects, `aria-current` on the active one); rows stay plain divs so the × is a sibling, not nested. Hover-only actions also reveal on `:focus-within`. Parked toolbar and collapsed sidebar get the real `inert`.
 - Verification: Tab walk from page start — before: 10 off-screen toolbar buttons, then no project/sheet stops; after: Hide sidebar → Import → Folder → Project → My Project → its × → Sheet 1 → × → Sheet 2 → × → New Sheet → … Keyboard: focus "Sheet 1", Enter → active (`aria-current=page`); F2 → rename input; type + Enter → renamed. Collapsed sidebar: Tab skips it entirely.
 - Not changed (noted): DOM order puts the right-hand island (Builder…Account) before the title island and toolbar, so Tab order is sidebar → right → title → centre. Moving it is a layout refactor; logged in OPEN_QUESTIONS.
+
+## DEF-036 · P2 · Interaction (hidden shortcuts) · FIXED (verified)
+**Pressing D, A or C on the canvas created a Document, Task or Calendar block — keys documented nowhere** (the ? list and Settings showed only N T K S I; the Add menu shows no keys). A stray keypress with the canvas focused dropped a block with no explanation. And Chat's key, M, could never fire: the canvas reads M first as "enter keyboard mode".
+- Found by: a Visuals scenario pressing C (connector) with the bar not open → a Calendar appeared.
+- Fix: D/A/C added to the "Creating" list (lib/shortcuts.js); Chat's dead binding removed; every Add-menu row shows its key (kbd, matching the "esc" badge) with `aria-keyshortcuts`.
+- Guard (tests/registry.equivalence.test.mjs): every key in TYPE_BY_KEY is documented, nothing documented is unbound, no create key is one the canvas handles first (M, G), and the Add menu shows every key — fails on the old code (missing a, c, m, d; shadowed m), passes now.
+- Product question kept open: should single letters create blocks at all (OPEN_QUESTIONS)? Documenting them is the non-destructive fix.
+
+## DEF-037 · P2 · Visual · FIXED (verified)
+**At its default size the Calendar's month title — the one thing saying where you are — rendered as a 9 px stub (a lone "C" between Today and the view switch).** Width 9 of 110.
+- Root cause: the header row did not wrap and the title was `flex: 1` (basis 0) — it alone absorbed the squeeze beside the 180 px source rail.
+- Fix: the header wraps, the title takes its natural width, the switcher is pinned right and drops to its own line when needed.
+- Verification: "October 2026" 200/200 px; Week "12–18 October 2026" 200/200; Agenda "Upcoming" 129/129; screenshot.

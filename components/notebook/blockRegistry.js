@@ -588,9 +588,10 @@ export const BLOCK_TYPES = {
     menuGroup: 'collaborate',
     desc: 'A conversation about this sheet',
     keywords: 'chat message conversation comment discuss talk thread share',
-    /* 'm' for message. 'c' is the calendar and the rest of the alphabet near
-       it is spoken for. */
-    key: 'm',
+    /* No key (audit DEF-036). It was 'm', which the canvas reads FIRST as
+       "enter keyboard mode" — so the binding could never fire, and the
+       registry advertised a shortcut that did not exist. Chat is one Add-menu
+       pick away. */
     resizable: 'both',
     rail: null,
     /* Excluded from every export. A conversation is not part of the artefact
@@ -927,6 +928,8 @@ export const ADD_ITEMS = BLOCK_TYPE_IDS
   label: BLOCK_TYPES[type].label,
   icon: BLOCK_TYPES[type].icon,
   desc: BLOCK_TYPES[type].desc || '',
+  /* Shown on the row, so a single-key create is never a surprise. */
+  key: BLOCK_TYPES[type].key || '',
   keywords: BLOCK_TYPES[type].keywords || '',
   menuGroup: BLOCK_TYPES[type].menuGroup || 'organize',
 }))

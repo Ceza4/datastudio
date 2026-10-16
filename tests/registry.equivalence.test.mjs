@@ -279,6 +279,22 @@ ok(new Set(orders).size === orders.length, 'no two types claim the same menu pos
 const keys = Object.values(BLOCK_TYPES).map(d => d.key).filter(Boolean)
 ok(new Set(keys).size === keys.length, 'no two types claim the same shortcut key')
 
+/* DEF-036: a key that creates a block must be documented, and must not be one
+   the canvas reads first (M = keyboard mode, G = grab, V = visuals select). */
+{
+  const { SHORTCUT_GROUPS } = await import('../lib/shortcuts.js')
+  const creating = SHORTCUT_GROUPS.find(g => g.title === 'Creating').rows.map(r => r[0].toLowerCase())
+  const bound = Object.keys(TYPE_BY_KEY)
+  const undocumented = bound.filter(k => !creating.includes(k))
+  ok(undocumented.length === 0, `every single-key create is in the shortcuts list (missing: ${undocumented.join(', ') || 'none'})`)
+  const phantom = creating.filter(k => !bound.includes(k))
+  ok(phantom.length === 0, `and the list documents no key that does nothing (phantom: ${phantom.join(', ') || 'none'})`)
+  const shadowed = bound.filter(k => ['m', 'g'].includes(k))
+  ok(shadowed.length === 0, `no create key is one the canvas handles first (shadowed: ${shadowed.join(', ') || 'none'})`)
+  ok(ADD_ITEMS.filter(i => i.key).length === bound.filter(k => !BLOCK_TYPES[TYPE_BY_KEY[k]].hiddenFromAddMenu).length,
+     'the Add menu shows the key on every row that has one')
+}
+
 for (const id of LEGACY_TYPES) {
   const d = BLOCK_TYPES[id]
   ok(typeof d.create === 'function' && typeof d.hasContent === 'function' && Array.isArray(d.cloneFields)
