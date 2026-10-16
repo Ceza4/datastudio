@@ -317,3 +317,11 @@ The error card's Delete went through `deleteBlock`, whose content check THROWS o
 ## Live notes (16 Oct, not code defects)
 - Account → Privacy: "Privacy policy" and "Terms of service" are marked SOON on an account with an active Pro plan → OPEN_QUESTIONS Q11.
 - Account → Security: "Change email" and "Two-factor authentication" share the same person icon; a lock/shield for 2FA would read better.
+
+## DEF-048 · P2 · Chat (first message fails) · FIXED (unit-verified; LIVE-reproduced)
+**The first message typed into a newly added Chat block failed with "That chat block no longer exists." and stayed unsent.** Sending the same text ~8 s later worked.
+- LIVE (16 Oct 23:27): Add → Chat → type → Enter → red "That chat block no longer exists."; after ~8 s, Send → delivered, labelled "You". (Message then unsent and the block deleted.)
+- Root cause: the server checks a message against `public.blocks` (0010 trigger, foreign_key_violation 23503), and a new block reaches the server only when the workspace sync push drains — debounced 2 s, up to 10 s. Nothing waited for it.
+- Fix (`lib/chat.js`): that one error is retried at 1.5 / 2.5 / 4 s while the message stays shown as pending; every other error reports at once; a block that really is gone still reports after the retries.
+- Verification: tests/chat.test.mjs +3 (sent after two "no such block" replies — 3 attempts; a permission error reports after 1 attempt). Not re-run live — the fix is not deployed.
+- Answers OPEN_QUESTIONS Q8 "Someone": live, your own message reads "You" — the earlier "Someone" was the test double.

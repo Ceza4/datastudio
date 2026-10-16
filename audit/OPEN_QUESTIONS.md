@@ -45,5 +45,5 @@ Account → Privacy shows "Privacy policy — SOON" and "Terms of service — SO
 - Should a new Table take the keyboard on add (type straight into A1), like Notes does?
 - Ctrl+A on the canvas excludes sections (by design?).
 - Sync error detail only appears in the chip's tooltip.
-- Chat shows your own messages as "Someone" in the test setup (no account snapshot there); please glance at one live message — it should read "You".
+- ~~Chat "Someone" label~~ — checked live: your own message reads "You". Resolved.
 - Clicking the 16 px strip left of the sidebar creates a text block hidden under it.

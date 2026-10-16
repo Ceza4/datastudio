@@ -173,5 +173,28 @@ console.log('\n  the plain-text contract')
      'lib/chatstore.js exports NOTHING html-shaped — 0009 stores body unsanitised on the promise it never meets a parser')
 }
 
+/* ── DEF-048: the first message in a brand-new chat block ─────────────── */
+console.log('\n  postMessage waits for a new block to reach the server')
+{
+  const { postMessage, blockNotOnServerYet } = await import('../lib/chat.js')
+  const fake = (failures, err) => {
+    let inserts = 0
+    const chain = {
+      insert() { inserts++; return { select: () => ({ single: async () => (inserts <= failures ? { error: err } : { data: { id: 'x' }, error: null }) }) } },
+      select() { return this }, eq() { return this }, order() { return this }, in() { return this },
+      limit: async () => ({ data: [], error: null }),
+    }
+    return { client: { from: () => chain, rpc: async () => ({ data: [], error: null }) }, count: () => inserts }
+  }
+  const missing = { code: '23503', message: 'That chat block no longer exists.' }
+  ok(blockNotOnServerYet(missing) && !blockNotOnServerYet({ code: '42501', message: 'denied' }), 'only the "no such block" error is treated as not-synced-yet')
+  const f1 = fake(2, missing)
+  const r1 = await postMessage({ blockId: 'blk_new', body: 'hi' }, { client: f1.client })
+  ok(r1.ok && f1.count() === 3, `sent once the block has synced (attempts: ${f1.count()})`)
+  const f2 = fake(9, { code: '42501', message: 'permission denied' })
+  const r2 = await postMessage({ blockId: 'blk_x', body: 'hi' }, { client: f2.client })
+  ok(!r2.ok && f2.count() === 1, 'any other error reports at once, without retrying')
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)
