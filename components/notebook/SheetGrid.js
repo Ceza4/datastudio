@@ -138,6 +138,11 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
   const scrollRef = useRef(null)
   const editorRef = useRef(null)
   const dragSel = useRef(false)
+  /* Which selection a header click made, so the menu can tell "these three
+     columns" from "these three columns' every row". Compared by identity: any
+     later change of selection is a new object and no longer a header pick. */
+  const headerSel = useRef({ sel: null, kind: null })   // kind: 'cols' | 'rows' | 'all'
+  const pickHeader = (next, kind) => { headerSel.current = { sel: next, kind }; setRanges([]); setSel(next) }
   const undoStack = useRef([])
   const redoStack = useRef([])
 
@@ -166,11 +171,25 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     return () => ro.disconnect()
   }, [])
 
+  /* THE CELL MENU CLOSES ON ANY PRESS OUTSIDE IT — inside this table too.
+     It listened in the bubble phase, where the grid's own mousedown
+     stopPropagation hid every press inside the table from it, so the menu
+     only went away when you clicked off the block. Capture phase sees them.
+
+     A RIGHT press inside the table only closes the menu: the contextmenu
+     that follows it is the same gesture, and reopening the menu one cell
+     over is not what "click somewhere else" means (18 Oct 2026). */
+  const menuRef = useRef(null)
+  const menuClosedAtRef = useRef(0)
   useEffect(() => {
     if (!menu) return
-    const close = () => setMenu(null)
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
+    const close = e => {
+      if (menuRef.current?.contains(e.target)) return
+      if (e.button === 2 && scrollRef.current?.contains(e.target)) menuClosedAtRef.current = e.timeStamp
+      setMenu(null)
+    }
+    window.addEventListener('mousedown', close, true)
+    return () => window.removeEventListener('mousedown', close, true)
   }, [menu])
 
   const widthOf = useCallback(c => colW[c] ?? DEFAULT_COL_W, [colW])
@@ -518,8 +537,8 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
     if (meta && k === 'y') { e.preventDefault(); redo(); return }
     if (meta && k === 'd') { e.preventDefault(); fillDown(); return }
     if (meta && k === 'a') {
-      e.preventDefault(); setRanges([])
-      setSel({ r1: 0, c1: 0, r2: Math.max(nRows - 1, 0), c2: Math.max(nCols - 1, 0) })
+      e.preventDefault()
+      pickHeader({ r1: 0, c1: 0, r2: Math.max(nRows - 1, 0), c2: Math.max(nCols - 1, 0) }, 'all')
       return
     }
 
@@ -767,8 +786,10 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
 
   function ctxMenu(e, r, c) {
     e.preventDefault(); e.stopPropagation()
-    if (!isSelected(r, c)) { setRanges([]); setSel({ r1: r, c1: c, r2: r, c2: c }) }
-    setMenu({ x: e.clientX, y: e.clientY, r, c })
+    if (menuClosedAtRef.current && e.timeStamp - menuClosedAtRef.current < 1000) { menuClosedAtRef.current = 0; return }
+    let target = sel
+    if (!isSelected(r, c)) { target = { r1: r, c1: c, r2: r, c2: c }; setRanges([]); setSel(target) }
+    setMenu({ x: e.clientX, y: e.clientY, r, c, ins: insertCounts(target) })
   }
 
   /* Menu items are plain data — a label and an action name — rather than
@@ -777,18 +798,36 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
      undoStack.current), which React's lint correctly flags: anything
      reachable during render must not read a ref. Dispatch happens in the
      click handler below, where reading refs is legal. */
+  /* HOW MANY TO INSERT, the way Excel counts it: as many rows as are
+     selected, as many columns as are selected (18 Oct 2026). Three rows
+     selected → "Insert 3 rows above". The exception is the axis a header
+     click filled for you: picking column C selects every row of it, and that
+     means "insert ONE row here", not a thousand. */
+  /* Worked out when the menu opens (an event, so the ref may be read) and
+     kept in `menu`, which the labels and the actions both read. */
+  function insertCounts(s) {
+    const m = normR(s)
+    const kind = headerSel.current.sel === s ? headerSel.current.kind : null
+    return {
+      rows: kind === 'cols' || kind === 'all' ? 1 : m.r2 - m.r1 + 1,
+      cols: kind === 'rows' || kind === 'all' ? 1 : m.c2 - m.c1 + 1,
+    }
+  }
+  const nounN = (n, one) => (n > 1 ? `${n} ${one}s` : one)
+
   const menuItems = menu ? (() => {
     const m = normR(sel)
     const multiR = m.r2 > m.r1 ? 's' : ''
     const multiC = m.c2 > m.c1 ? 's' : ''
+    const ins = menu.ins
     return [
-      { label: 'Insert row above', act: 'rowAbove', icon: 'grid-row-insert-above' },
-      { label: 'Insert row below', act: 'rowBelow', icon: 'grid-row-insert-below' },
+      { label: `Insert ${nounN(ins.rows, 'row')} above`, act: 'rowAbove', icon: 'grid-row-insert-above' },
+      { label: `Insert ${nounN(ins.rows, 'row')} below`, act: 'rowBelow', icon: 'grid-row-insert-below' },
       { label: `Duplicate row${multiR}`, act: 'rowDup', icon: 'grid-row-duplicate' },
       { label: `Delete row${multiR}`, act: 'rowDel', icon: 'grid-row-delete', danger: true },
       { sep: true },
-      { label: 'Insert column left', act: 'colLeft', icon: 'grid-col-insert-left' },
-      { label: 'Insert column right', act: 'colRight', icon: 'grid-col-insert-right' },
+      { label: `Insert ${nounN(ins.cols, 'column')} left`, act: 'colLeft', icon: 'grid-col-insert-left' },
+      { label: `Insert ${nounN(ins.cols, 'column')} right`, act: 'colRight', icon: 'grid-col-insert-right' },
       { label: `Delete column${multiC}`, act: 'colDel', icon: 'grid-col-delete', danger: true },
       { sep: true },
       { label: 'Fill down', act: 'fillDown', icon: 'grid-fill-down' },
@@ -798,13 +837,14 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
 
   function runMenuAction(act) {
     const m = normR(sel)
+    const ins = menu?.ins || { rows: 1, cols: 1 }
     switch (act) {
-      case 'rowAbove':  insertRows(m.r1, 1); break
-      case 'rowBelow':  insertRows(m.r2 + 1, 1); break
+      case 'rowAbove':  insertRows(m.r1, ins.rows); break
+      case 'rowBelow':  insertRows(m.r2 + 1, ins.rows); break
       case 'rowDup':    duplicateRows(m.r1, Math.min(m.r2, nRows - 1)); break
       case 'rowDel':    deleteRows(m.r1, Math.min(m.r2, nRows - 1)); break
-      case 'colLeft':   insertCols(m.c1, 1); break
-      case 'colRight':  insertCols(m.c2 + 1, 1); break
+      case 'colLeft':   insertCols(m.c1, ins.cols); break
+      case 'colRight':  insertCols(m.c2 + 1, ins.cols); break
       case 'colDel':    deleteCols(m.c1, Math.min(m.c2, nCols - 1)); break
       case 'fillDown':  fillDown(); break
       case 'clear':     clearSelection(); break
@@ -836,7 +876,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
             width: GUTTER_W, height: HEAD_H, float: 'left', cursor: 'pointer',
           }}
             title="Select all"
-            onMouseDown={e => { e.preventDefault(); setRanges([]); setSel({ r1: 0, c1: 0, r2: Math.max(nRows - 1, 0), c2: Math.max(nCols - 1, 0) }) }} />
+            onMouseDown={e => { e.preventDefault(); pickHeader({ r1: 0, c1: 0, r2: Math.max(nRows - 1, 0), c2: Math.max(nCols - 1, 0) }, 'all') }} />
 
           {/* column headers */}
           <div style={{ position: 'sticky', top: 0, zIndex: 5, height: HEAD_H, marginLeft: GUTTER_W }}>
@@ -854,7 +894,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
                     borderBottom: active ? `2px solid ${accent}` : `1px solid ${border}`,
                   }}
                   title={label || colName(c)}
-                  onMouseDown={ev => { ev.preventDefault(); setRanges([]); setSel({ r1: 0, c1: c, r2: Math.max(displayRows - 1, 0), c2: c }) }}
+                  onMouseDown={ev => { ev.preventDefault(); pickHeader({ r1: 0, c1: c, r2: Math.max(displayRows - 1, 0), c2: c }, 'cols') }}
                   onContextMenu={ev => ctxMenu(ev, 0, c)}>
                   <span style={{ fontSize: 11, lineHeight: '10px', color: active ? accent : text3, fontWeight: 600, opacity: 0.7 }}>
                     {colName(c)}
@@ -878,7 +918,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
               const active = r >= n.r1 && r <= n.r2
               return (
                 <div key={r}
-                  onMouseDown={ev => { ev.preventDefault(); setRanges([]); setSel({ r1: r, c1: 0, r2: r, c2: Math.max(displayCols - 1, 0) }) }}
+                  onMouseDown={ev => { ev.preventDefault(); pickHeader({ r1: r, c1: 0, r2: r, c2: Math.max(displayCols - 1, 0) }, 'rows') }}
                   onContextMenu={ev => ctxMenu(ev, r, 0)}
                   style={{
                     ...headBase, position: 'absolute', top: rowOff[r], left: 0,
@@ -947,8 +987,20 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
 
               return (
                 <div key={`${r}:${c}`}
-                  onMouseDown={ev => { ev.preventDefault(); dragSel.current = true; selectCell(r, c, ev) }}
-                  onMouseEnter={() => { if (dragSel.current) setSel(p => ({ ...p, r2: r, c2: c })) }}
+                  /* Drag-select is the LEFT button's. A right press used to
+                     start it too, and the release landed on the cell menu
+                     (portalled, outside this scroller's onMouseUp), so the
+                     drag never ended and plain hovering went on extending
+                     the selection. The right button's selection is
+                     ctxMenu's job: it keeps a range you right-click inside. */
+                  onMouseDown={ev => { ev.preventDefault(); if (ev.button !== 0) return; dragSel.current = true; selectCell(r, c, ev) }}
+                  /* `buttons & 1`: a release anywhere — off the table, off
+                     the window — still ends the drag at the next hover. */
+                  onMouseEnter={ev => {
+                    if (!dragSel.current) return
+                    if (!(ev.buttons & 1)) { dragSel.current = false; return }
+                    setSel(p => ({ ...p, r2: r, c2: c }))
+                  }}
                   onDoubleClick={() => beginEdit(r, c, value)}
                   onContextMenu={ev => ctxMenu(ev, r, c)}
                   style={{
@@ -1015,7 +1067,7 @@ function SheetGridInner({ block, colors, maxHeight, onUpdateBlock, editingRef })
           subtree, which is what a portal does. Same reason BlockPicker and the
           slash menu portal. See lib/canvasgeom.js. */}
       {menu && typeof document !== 'undefined' && createPortal(
-        <div style={{
+        <div ref={menuRef} style={{
           position: 'fixed', top: menu.y, left: menu.x, zIndex: Z.popover,
           background: surface, border: `1px solid ${border}`, borderRadius: 8,
           boxShadow: 'var(--ds-shadow-lg)', overflow: 'hidden', minWidth: 180,
