@@ -84,7 +84,15 @@ const SUPABASE_ORIGIN = (() => {
   try { return new URL(process.env.NEXT_PUBLIC_SUPABASE_URL || '').origin }
   catch { return '' }
 })()
-const SUPABASE_WS = SUPABASE_ORIGIN ? SUPABASE_ORIGIN.replace(/^https:/, 'wss:') : ''
+/* https → wss in production; http → ws for a local Supabase (or the
+   double `npm run dev:local` runs), whose realtime socket was refused. */
+const SUPABASE_WS = SUPABASE_ORIGIN ? SUPABASE_ORIGIN.replace(/^http(s?):/, 'ws$1:') : ''
+
+/* `next dev` ONLY. React's development build uses eval() to rebuild call
+   stacks for its error overlay, and said so in a console error on every
+   load. NODE_ENV is inlined at build time, so a production build never
+   carries this — React itself never uses eval in production. */
+const DEV_EVAL = process.env.NODE_ENV === 'development' ? " 'unsafe-eval'" : ''
 
 /* WHY script-src STILL ALLOWS 'unsafe-inline', WRITTEN DOWN PROPERLY.
 
@@ -133,7 +141,7 @@ function buildCsp() {
        reviewer would actually read. Left as a plain pointer instead, because
        the failure mode of the old version was a reviewer concluding the policy
        was nonce-based and moving on. */
-    "script-src 'self' 'unsafe-inline'",
+    `script-src 'self' 'unsafe-inline'${DEV_EVAL}`,
     /* Permanent, and not a compromise: the entire codebase styles through
        inline style objects by design, and there is no XSS worth having through
        a style attribute once script-src is closed. */
