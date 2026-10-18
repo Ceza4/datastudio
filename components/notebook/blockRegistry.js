@@ -891,6 +891,39 @@ export const BLOCK_TYPES = {
     hasContent: () => false,
     cloneFields: [],
   },
+
+  /* CURVE FIT (18 Oct 2026). Was a modal panel; now a block that sits next to
+     its table. It stores SETTINGS, never data: `sourceId` names the table it
+     reads (on the same sheet), and the fit is recomputed from that table on
+     every render, so editing a number re-fits. Made by "Curve fit" in the
+     sheet rail, not the Add menu — a fit with no table is nothing. See
+     components/notebook/CurveFitBlock.js. */
+  curvefit: {
+    label: 'Curve fit',
+    icon: 'tool-curvefit',
+    order: 20,
+    menuGroup: 'data',
+    desc: 'A curve fitted to two columns of a table',
+    keywords: 'curve fit regression model residuals r2 least squares',
+    hiddenFromAddMenu: true,
+    key: null,
+    resizable: 'both',
+    rail: null,
+    /* The numbers go out through "Add results to canvas" / "Send to a
+       column", which make ordinary tables; the block itself is a tool. */
+    exportAs: [],
+    focusSelector: null,
+    create: ({ id, x, y, w, h }) => ({
+      id, type: 'curvefit', x, y, w: w || 880, h: h || 620, name: '',
+      sourceId: null, xCol: null, yCol: null, model: 'linear', guesses: null,
+    }),
+    dims: { w: 880, h: 620 },
+    minDims: { w: 560, h: 360 },
+    /* Settings only; the data stays in the table. Rebuilt in two clicks. */
+    hasContent: () => false,
+    /* A duplicate fits the same table — the way to compare two models. */
+    cloneFields: ['sourceId', 'xCol', 'yCol', 'model', 'guesses'],
+  },
 }
 
 /* ── derived lookups ──────────────────────────────────────────────────── */

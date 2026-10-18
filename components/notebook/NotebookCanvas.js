@@ -34,7 +34,7 @@ import CommandPalette from '../builder/CommandPalette'
 import { starterPipelineDb, firstStageProp, firstValueProp } from '../../lib/builder'
 import ExportPanel from '../tools/ExportPanel'
 import SheetToolbar from '../tools/SheetToolbar'
-import CurveFitPanel from '../tools/CurveFitPanel'
+import CurveFitBlock from './CurveFitBlock'
 import ImageToolbar from '../tools/ImageToolbar'
 import PdfToolbar from '../tools/PdfToolbar'
 import TaskToolbar from '../tools/TaskToolbar'
@@ -1664,7 +1664,8 @@ function addBlockAnimated(type, x, y) {
   const ROW_RIGHT = 162     // profile island (~130) + its 16 inset + 16 gutter
 
   /* Keep the viewport-lock ref in step with the selection. A block being
-     selected freezes pan and zoom — see handleWheel and startPan. */
+     selected freezes wheel pan and zoom — see handleWheel. Dragging with
+     the middle or right button still pans: that is never an accident. */
   useEffect(() => {
     /* Shapes freeze the camera exactly like blocks do. Two selection sets,
        one rule — if the lock only knew about blocks, selecting a shape would
@@ -3249,9 +3250,9 @@ function addBlockAnimated(type, x, y) {
   }
 
   /* The camera move itself, shared by all three ways of starting one.
-     Returns the move handler, so the caller decides which event family feeds
-     it — right-drag is a mouse gesture, Space and middle-drag are pointer
-     gestures. Written once because three copies of `clientX - origin` is
+     Returns the move handler, so the caller decides when to feed it — the
+     right button only once it has moved past the slop, Space and middle-drag
+     at once. Written once because three copies of `clientX - origin` is
      exactly the kind of duplication that drifts one pan out of step with the
      other two and nobody notices for a month. */
   function panFrom(clientX, clientY) {
@@ -3264,18 +3265,117 @@ function addBlockAnimated(type, x, y) {
     }
   }
 
-  function startPan(e) {
-    if (e.button !== 2) return
-    if (selectionLockRef.current || focusRef.current) return   // frozen while a block is selected
-    e.preventDefault()
-    const onMove = panFrom(e.clientX, e.clientY)
-    function onUp() {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+  /* ── Right button: drag to pan, click for the menu (18 Oct 2026) ─────────
+     Anywhere on the canvas, over a block too — before, a right-drag only
+     panned from empty canvas and only with nothing selected, so with a mouse
+     you had to hunt for a gap first. Like middle-drag it ignores the
+     selection lock: holding a button down and dragging is never an accident.
+
+     Press, then:
+       · moved RIGHT_DRAG_SLOP px → it is a pan; no menu opens on release
+       · released without moving → the right-click it always was: the block
+         menu, a table cell's menu, a text block's menu, whatever is under it
+
+     THE MENU HAS TO WAIT, AND THE BROWSERS DISAGREE ABOUT WHEN IT COMES.
+     macOS fires `contextmenu` on PRESS, Windows and Linux on RELEASE. On
+     press nobody can know yet whether this is a drag, so a `contextmenu` that
+     arrives while the button is down is held back (window capture, below) and
+     replayed on the element it was aimed at once the release says "click".
+     One arriving after a pan is swallowed.
+
+     NOT TAKEN OVER: full screen (the camera is pinned), a stroke in progress
+     (right-click abandons it), form fields, and Shift — Document's
+     Shift+right-click is the browser's own menu for spelling, and a replayed
+     event cannot open that.
+
+     The block under the press is selected on RELEASE, not on press: a pan
+     that starts over a block must not select it on the way past. */
+  const RIGHT_DRAG_SLOP = 4
+  const rightGestureRef = useRef(null)          // { moved, ctx } while the button is down
+  const swallowMenuUntilRef = useRef(0)
+
+  function startRightPan(e) {
+    if (focusRef.current || isDrawing.current || e.shiftKey) return
+    if (e.target?.closest?.('input, textarea, select')) return
+    const id = e.pointerId
+    const el = containerRef.current
+    const sx = e.clientX, sy = e.clientY
+    const blockId = e.target?.closest?.('[data-ds-block-wrap]')?.getAttribute('data-ds-block-wrap') || null
+    const multi = e.ctrlKey || e.metaKey
+    let onMove = null
+    rightGestureRef.current = { moved: false, ctx: null }
+    /* A new press is a new question. Without this, a right-click within half
+       a second of a pan lost its menu to the previous pan's swallow window. */
+    swallowMenuUntilRef.current = 0
+
+    function track(ev) {
+      if (ev.pointerId !== id) return
+      const g = rightGestureRef.current
+      if (!g) return
+      if (!g.moved) {
+        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < RIGHT_DRAG_SLOP) return
+        g.moved = true
+        onMove = panFrom(sx, sy)
+        pointerPanRef.current = true
+        setPanCursor('grabbing')
+        try { el?.setPointerCapture?.(id) } catch { /* pointer already gone */ }
+      }
+      onMove(ev)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    function end(ev) {
+      if (ev && ev.pointerId !== id) return
+      window.removeEventListener('pointermove', track)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+      const g = rightGestureRef.current
+      rightGestureRef.current = null
+      if (!g) return
+      if (g.moved) {
+        try { el?.releasePointerCapture?.(id) } catch { /* already released */ }
+        pointerPanRef.current = false
+        setPanCursor(spaceHeldRef.current ? 'grab' : null)
+        swallowMenuUntilRef.current = performance.now() + 500
+        return
+      }
+      if (ev?.type === 'pointercancel') return
+      if (blockId && !selectedIds.has(blockId)) selectBlock(blockId, multi)
+      const c = g.ctx
+      if (c?.target?.isConnected) {
+        c.target.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, composed: true, view: window, button: 2,
+          clientX: c.clientX, clientY: c.clientY, screenX: c.screenX, screenY: c.screenY,
+          ctrlKey: c.ctrlKey, metaKey: c.metaKey, altKey: c.altKey, shiftKey: c.shiftKey,
+        }))
+      }
+    }
+    window.addEventListener('pointermove', track)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
   }
+
+  useEffect(() => {
+    function onContextMenu(ev) {
+      const g = rightGestureRef.current
+      if (g) {
+        // Button still down (macOS): hold it until the release decides.
+        ev.preventDefault(); ev.stopPropagation()
+        if (!g.moved) {
+          g.ctx = {
+            target: ev.target, clientX: ev.clientX, clientY: ev.clientY, screenX: ev.screenX, screenY: ev.screenY,
+            ctrlKey: ev.ctrlKey, metaKey: ev.metaKey, altKey: ev.altKey, shiftKey: ev.shiftKey,
+          }
+        }
+        return
+      }
+      if (performance.now() < swallowMenuUntilRef.current) {
+        // The release of a pan (Windows, Linux): no menu.
+        swallowMenuUntilRef.current = 0
+        ev.preventDefault(); ev.stopPropagation()
+      }
+    }
+    window.addEventListener('contextmenu', onContextMenu, true)
+    return () => window.removeEventListener('contextmenu', onContextMenu, true)
+  }, [])
 
   /* ── Space-to-pan and middle-drag-to-pan ───────────────────────────────
      The two gestures every canvas tool has trained into people's hands.
@@ -3835,6 +3935,20 @@ function addBlockAnimated(type, x, y) {
     const L = latestRef.current
     if (id) L.onTeleport?.({ notebookId: L.notebookId, sheetId: L.sheetId, blockId: id })
   }, [])
+  /* "Curve fit" in the sheet rail: the fit is a block beside its table
+     (blockRegistry's `curvefit`). One per table is the default — a second
+     click goes to the one already there; Duplicate makes another to compare
+     models. */
+  function openCurveFit(src) {
+    if (!src) return
+    const existing = blocks.find(b => b.type === 'curvefit' && b.sourceId === src.id)
+    if (existing) { revealBlock(existing.id); return }
+    const { w } = blockDims(src)
+    const id = onAddBlock('curvefit', src.x + w + 40, src.y, null, null, null, null, {
+      sourceId: src.id, name: `${src.name || 'Table'} — fit`,
+    })
+    revealBlock(id)
+  }
   const openAgentSettings = useCallback((agentId, section) => {
     requestAgentSection(agentId, section)
     const b = (latestRef.current.blocks || []).find(x => x.type === 'agent' && x.agentId === agentId)
@@ -4960,7 +5074,11 @@ function addBlockAnimated(type, x, y) {
           dark={dark}
           colors={colors}
           activeTool={sheetTool}
-          onOpenTool={id => (id === 'crosscheck' ? onOpenCrosscheck?.() : setSheetTool(id))}
+          onOpenTool={id => {
+            if (id === 'crosscheck') onOpenCrosscheck?.()
+            else if (id === 'curvefit') openCurveFit(soleTableBlock)
+            else setSheetTool(id)
+          }}
         />
       )}
 
@@ -5019,22 +5137,6 @@ function addBlockAnimated(type, x, y) {
         sheetName={activeSheet?.name}
         dark={dark}
         onUpdateBlock={onUpdateBlock}
-      />
-
-      <CurveFitPanel
-        open={sheetTool === 'curvefit' && !!soleTableBlock}
-        onClose={() => setSheetTool(null)}
-        block={soleTableBlock}
-        tables={blocks.filter(b => b.type === 'table')}
-        onWriteToTable={(id, patch) => onUpdateBlock(id, patch)}
-        onAddResultTable={({ headers, rows }) => {
-          const src = soleTableBlock
-          const { w } = blockDims(src)
-          onAddBlock('table', src.x + w + 40, src.y, headers, rows, 380, 300, {
-            name: `${src.name || 'Table'} — fit`,
-          })
-          setSheetTool(null)
-        }}
       />
 
       {/* A mode that swallows the arrow keys without saying so is
@@ -5208,6 +5310,9 @@ function addBlockAnimated(type, x, y) {
              long as it is open (independent review). */
           dismissPressRef.current = e.target === e.currentTarget &&
             !!document.querySelector('[data-ds-dismiss-trigger][aria-expanded="true"]')
+          // The right button: a pan if it moves, the menu if it does not.
+          // Nothing is stopped here — what is underneath still gets the press.
+          if (e.button === 2 && !spaceHeldRef.current) { startRightPan(e); return }
           // Space + any button, or the middle button on its own. Both mean
           // "move the camera", and neither may reach what is underneath.
           if (!(e.button === 1 || spaceHeldRef.current)) return
@@ -5227,7 +5332,7 @@ function addBlockAnimated(type, x, y) {
              events — so without this, pressing on a shape starts a rubber
              band across it instead of dragging it. */
           if (startShapeGesture(e)) return
-          handleDrawMouseDown(e); startPan(e); startMarquee(e)
+          handleDrawMouseDown(e); startMarquee(e)
         }}
         onDoubleClick={handleShapeDoubleClick}
         onMouseMove={handleDrawMouseMove}
@@ -5247,9 +5352,8 @@ function addBlockAnimated(type, x, y) {
             abandonInk()
             return
           }
-          // Right-clicking empty canvas releases the selection, so the pan
-          // gesture is available again immediately rather than silently
-          // doing nothing while the viewport lock is engaged.
+          // Right-clicking empty canvas releases the selection, which also
+          // lifts the viewport lock on wheel pan and zoom.
           if (e.target === e.currentTarget && selectedIds.size > 0) {
             setSelectedIds(new Set())
             setSelectedConnId(null)
@@ -5828,7 +5932,9 @@ function addBlockAnimated(type, x, y) {
               onMouseEnter={() => setHoveredBlockId(block.id)}
               onMouseLeave={() => setHoveredBlockId(null)}
               onPointerDownCapture={e => {
-                if (e.button === 2 && selectedIds.has(block.id)) return
+                /* Right button: selected on release, if it was a click —
+                   see startRightPan. */
+                if (e.button === 2) return
                 if (mindMapMode && e.button === 0) {
                   e.preventDefault(); e.stopPropagation()
                   if (!mindMapMaster) { setMindMapMaster(block.id) }
@@ -6555,6 +6661,48 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                         || null)}
                       refThumb={blockCb(block.id, 'chatRefThumb', () => (refId) =>
                         latestRef.current.onResolveRefThumb?.(refId) || null)}
+                    />
+                  </div>
+                  <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />
+                </div>
+              )}
+
+              {/* CURVE FIT BLOCK — a fit of a table on this sheet, read live
+                  from it. Fixed height; the tool scrolls its own body. */}
+              {block.type === 'curvefit' && (
+                <div style={{
+                  width: block.w || 880, height: block.h || 620,
+                  display: 'flex', flexDirection: 'column',
+                }}>
+                  <BlockHandle
+                    notebookId={nb.id}
+                    block={block}
+                    attribution={attribution.get(block.id) || null}
+                    presence={presence.get(block.id) || null}
+                    label="curve fit"
+                    colors={colors}
+                    renaming={renamingBlockId === block.id}
+                    onStartRename={() => setRenamingBlockId(block.id)}
+                    onStopRename={() => setRenamingBlockId(null)}
+                    onRename={value => onUpdateBlock(block.id, { name: value })}
+                    onDelete={() => deleteBlock(block)}
+                    onHeaderDragStart={e => startBlockDrag(e, block)}
+                    backlinks={backlinks.get(block.id) || EMPTY_BACKLINKS}
+                    onTeleport={onTeleport}
+                  />
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <CurveFitBlock
+                      fit={block}
+                      block={blocks.find(b => b.id === block.sourceId && b.type === 'table') || null}
+                      tables={blocks.filter(b => b.type === 'table')}
+                      onUpdate={patch => onUpdateBlock(block.id, patch)}
+                      onWriteToTable={(id, patch) => onUpdateBlock(id, patch)}
+                      onAddResultTable={({ headers, rows }) => {
+                        const src = blocks.find(b => b.id === block.sourceId)
+                        onAddBlock('table', block.x + (block.w || 880) + 40, block.y, headers, rows, 380, 300, {
+                          name: `${src?.name || 'Table'} — fit results`,
+                        })
+                      }}
                     />
                   </div>
                   <Ports {...portProps} show={mindMapMode || !!linking} blockId={block.id} />

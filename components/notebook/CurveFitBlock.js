@@ -1,13 +1,20 @@
 'use client'
 import Icon from '../ui/Icon'
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { fit, curvePoints, MODELS } from '../../lib/curvefit'
-import SendToSheet from './SendToSheet'
-import { Z } from '../../lib/theme'
+import SendToSheet from '../tools/SendToSheet'
 
-/* CurveFitPanel
+/* CurveFitBlock
    --------------------------------------------------------------------------
    The first sheet tool, built to the handoff notes.
+
+   A BLOCK, NOT A PANEL (18 Oct 2026). It used to be a modal over the canvas
+   that closed on any outside click and forgot everything. Now "Curve fit" in
+   the sheet rail puts one of these next to the table: it moves, resizes and
+   pans with the canvas, is saved with the sheet, and re-fits live when the
+   table's numbers change. It holds only its settings — { sourceId, xCol,
+   yCol, model, guesses } — and reads the data from the source table, so a
+   fit is never a stale copy. See blockRegistry's `curvefit` entry.
 
    Deliberate choices from that document:
    · Model list is split by tier, and the tier is shown, because Tier 1 is
@@ -33,7 +40,10 @@ const fmt = (v, d = 5) => {
   return Number(v.toFixed(d)).toString()
 }
 
-export default function CurveFitPanel({ open, onClose, block, onAddResultTable, tables = [], onWriteToTable }) {
+/* `fit` is the curve-fit block; `block` the table it reads (null when that
+   table is gone). Settings are written back with onUpdate, so they survive a
+   reload and travel with a duplicate. */
+export default function CurveFitBlock({ fit: self, block, onUpdate, onAddResultTable, tables = [], onWriteToTable }) {
   const [sendOpen, setSendOpen] = useState(false)
   const [sendWhat, setSendWhat] = useState('fitted')
   const columns = useMemo(() => (block?.headers || []).map((h, i) => ({
@@ -42,49 +52,38 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
     numeric: (block.rows || []).filter(r => NUM(r?.[i]) !== null).length,
   })), [block])
 
-  const [modelId, setModelId] = useState('linear')
+  const modelId = MODELS[self.model] ? self.model : 'linear'
+  const setModelId = v => onUpdate({ model: v, guesses: null })
 
-  /* Column choice and manual guesses are DERIVED from a session key rather
-     than synced by effects. The obvious shape — `useEffect(() => { setXCol(…);
-     setYCol(…); setManual(null) }, [open, block.id])` — reads naturally but
-     costs a second render pass every time the panel opens or the block
-     changes, and React's compiler rejects it. Tagging the stored value with
-     the session it belongs to gives the same reset behaviour for free: when
-     the tag doesn't match, the default is used. */
-  const sessionKey = `${block?.id ?? ''}`
-
+  /* Unset columns fall back to the first two numeric ones, worked out from
+     the data each render — so a fit made before the table had numbers picks
+     them up once it does, without anyone having to reopen it. */
   const numericCols = useMemo(() => columns.filter(c => c.numeric > 1), [columns])
   const defaultX = numericCols[0]?.idx ?? 0
   const defaultY = numericCols[1]?.idx ?? defaultX
+  const xCol = Number.isInteger(self.xCol) && self.xCol < columns.length ? self.xCol : defaultX
+  const yCol = Number.isInteger(self.yCol) && self.yCol < columns.length ? self.yCol : defaultY
+  const setXCol = v => onUpdate({ xCol: v, guesses: null })
+  const setYCol = v => onUpdate({ yCol: v, guesses: null })
 
-  const [colState, setColState] = useState(null)   // { key, x, y }
-  const fresh = colState?.key === sessionKey
-  const xCol = fresh ? colState.x : defaultX
-  const yCol = fresh ? colState.y : defaultY
-  const setXCol = v => setColState({ key: sessionKey, x: v, y: yCol })
-  const setYCol = v => setColState({ key: sessionKey, x: xCol, y: v })
-
-  // Guesses belong to one model on one block; either changing invalidates them.
-  const guessKey = `${sessionKey}:${modelId}`
-  const [manualState, setManualState] = useState(null)  // { key, values }
-  const manual = manualState?.key === guessKey ? manualState.values : null
-  const setManual = values => setManualState(values == null ? null : { key: guessKey, values })
-
-  useEffect(() => {
-    if (!open) return
-    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
+  // Guesses belong to one model on one pair of columns; changing either clears them.
+  const manual = Array.isArray(self.guesses) ? self.guesses : null
+  const setManual = values => onUpdate({ guesses: values })
 
   const result = useMemo(() => {
-    if (!open || !block) return null
+    if (!block) return null
     const xs = (block.rows || []).map(r => r?.[xCol])
     const ys = (block.rows || []).map(r => r?.[yCol])
     return fit(xs, ys, modelId, { initial: manual || undefined })
-  }, [open, block, xCol, yCol, modelId, manual])
+  }, [block, xCol, yCol, modelId, manual])
 
-  if (!open || !block) return null
+  if (!block) {
+    return (
+      <div style={{ height: '100%', display: 'grid', placeItems: 'center', padding: 24, textAlign: 'center', color: 'var(--ds-text-3)', fontSize: 13, background: 'var(--ds-surface)' }}>
+        The table this fit reads from is no longer on this sheet.
+      </div>
+    )
+  }
 
   const model = MODELS[modelId]
   const tier1 = Object.entries(MODELS).filter(([, m]) => m.tier === 1)
@@ -127,22 +126,14 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
   }
 
   return (
-    <>
-      <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: Z.panel }} />
-      <div className="ds-island" role="dialog" aria-label="Curve fitting"
-        style={{
-          position: 'fixed', top: 74, left: '50%', transform: 'translateX(-50%)', zIndex: Z.panel,
-          width: 940, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 110px)',
-          overflowY: 'auto', padding: 16,
-        }}>
+    <div role="region" aria-label="Curve fitting"
+      style={{ height: '100%', overflowY: 'auto', padding: 16, background: 'var(--ds-surface)', color: 'var(--ds-text)', fontFamily: 'var(--ds-font-body)', boxSizing: 'border-box' }}>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-          <span style={{ fontFamily: 'var(--ds-font-head)', fontSize: 14, fontWeight: 700 }}>Curve fitting</span>
           <span className="ds-chip">{model.tier === 1 ? 'TIER 1 · EXACT' : 'TIER 2 · ITERATIVE'}</span>
           <span style={{ flex: 1, fontSize: 12, color: 'var(--ds-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {block.name || 'Table'}
+            Data: {block.name || 'Table'}
           </span>
-          <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', color: 'var(--ds-text-3)', cursor: 'pointer', fontSize: 16, padding: 2 }}>×</button>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: 16, alignItems: 'start' }}>
@@ -345,7 +336,6 @@ export default function CurveFitPanel({ open, onClose, block, onAddResultTable, 
             )}
           </div>
         </div>
-      </div>
-    </>
+    </div>
   )
 }

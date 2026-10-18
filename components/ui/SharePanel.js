@@ -200,7 +200,7 @@ export default function SharePanel({
           {/* A character, not an icon: the generated set has no close glyph
               (129 icons, none of them an ×), and hand-editing icon-paths.js to
               add one would break the rule that keeps the set honest. Same
-              choice ExportPanel and CurveFitPanel already made. */}
+              choice ExportPanel and the curve-fit tool already made. */}
           <button
             onClick={onClose}
             aria-label="Close"
