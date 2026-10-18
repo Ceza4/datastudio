@@ -25,6 +25,10 @@ const nextConfig = {
      lockfiles it finds walking up, and a stray ~/package-lock.json made it
      pick the home directory — so the dev server watched everything in it. */
   turbopack: { root: fileURLToPath(new URL('.', import.meta.url)) },
+  /* Next 16.4 writes an AGENTS.md into the project on every `next dev`.
+     This repo documents itself in its own files; an untracked file that
+     reappears after every start is noise. */
+  agentRules: false,
   async headers() {
     return [{
       /* Every path except the HTML prototype shell, which DataStudio frames
