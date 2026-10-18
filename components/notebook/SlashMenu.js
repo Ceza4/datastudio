@@ -226,6 +226,7 @@ export default function SlashMenu({ x, y, filter, activeIdx, colors, onSelect, o
       ref={listRef}
       role="listbox"
       aria-label="Insert block"
+      data-ds-slash-menu=""
       onMouseDown={e => { e.preventDefault(); e.stopPropagation() }}
       style={{
         position: 'fixed', left, top, zIndex: Z.popover,
@@ -233,6 +234,8 @@ export default function SlashMenu({ x, y, filter, activeIdx, colors, onSelect, o
         boxShadow: 'var(--ds-shadow-lg)', padding: 6,
         fontFamily: 'var(--ds-font-body)', width: MENU_W,
         maxHeight: MENU_H, overflowY: 'auto',
+        /* Reaching the end of the list must not hand the wheel on. */
+        overscrollBehavior: 'contain',
       }}>
 
       {filtered.length === 0 && (

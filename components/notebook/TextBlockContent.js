@@ -133,10 +133,18 @@ function TextBlockContentInner({
   }, [slashMenu])
 
   /* Scrolling or panning the canvas leaves the menu stranded at stale
-     coordinates, because it's positioned from a caret rect measured once. */
+     coordinates, because it's positioned from a caret rect measured once.
+
+     Except the wheel over the MENU ITSELF: that is scrolling its list, and
+     closing on it made the commands below the fold unreachable with a mouse
+     (18 Oct 2026). The menu is portalled to <body>, so that wheel never
+     reaches the canvas either — nothing moves under it. */
   useEffect(() => {
     if (!slashMenu) return
-    function bail() { slashRef.current = null; setSlashMenu(null) }
+    function bail(e) {
+      if (e?.type === 'wheel' && e.target?.closest?.('[data-ds-slash-menu]')) return
+      slashRef.current = null; setSlashMenu(null)
+    }
     window.addEventListener('wheel', bail, { passive: true })
     window.addEventListener('resize', bail)
     return () => {
