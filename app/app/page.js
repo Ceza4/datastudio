@@ -34,8 +34,9 @@ import ChatBlock from '../../components/notebook/ChatBlock'
    block. NOTHING IN THE RENDER TREE TALKS TO A SERVER — the note in
    NotebookCanvas.js explains what breaks when that slips, and the browser
    harness is what catches it. */
-import { fetchThread, postMessage, editMessage, unsendMessage, subscribeThread, shareIntoThread } from '../../lib/chat'
-import { onThreads, totalUnread, loadThreads, subscribeInbox, clearThreadList, shareIntoDm, startThread } from '../../lib/dm'
+import { fetchThread, postMessage, editMessage, unsendMessage, subscribeThread, shareIntoThread, isThreadId } from '../../lib/chat'
+import { chatHome } from '../../lib/chatstore'
+import { onThreads, totalUnread, loadThreads, subscribeInbox, clearThreadList, shareIntoDm, startThread, markRead } from '../../lib/dm'
 import { makeColors, Z } from '../../lib/theme'
 import * as H from '../../lib/undo'
 import SettingsPanel from '../../components/settings/SettingsPanel'
@@ -49,7 +50,7 @@ import { normalizeCanvasBg } from '../../lib/canvasbg'
 import { lockViewportZoom } from '../../lib/viewportlock'
 import { markdownToHtml, markdownTitle, MARKDOWN_EXTS } from '../../lib/markdown'
 import { processPdfFile, putPdf, newPdfId, prunePdfs, PDF_EXTS } from '../../lib/pdfs'
-import { createBlock, ICON_FOOTPRINT, growBlocksToMin, repairBlocks } from '../../components/notebook/blockRegistry'
+import { createBlock, blockDims, ICON_FOOTPRINT, growBlocksToMin, repairBlocks } from '../../components/notebook/blockRegistry'
 import { migrateInk } from '../../lib/shapes'
 import { flashcardFileIds } from '../../lib/flashcards'
 import { newNotebookId, newSheetId, newSheetFileId, newFolderId } from '../../lib/ids'
@@ -337,12 +338,24 @@ export default function AppPage() {
      identity on every document change, so depending on the array would tear
      down and re-establish a realtime subscription every time anybody nudged a
      block. The ids only change when a chat block is added or removed, which is
-     exactly when the subscriptions should change. */
+     exactly when the subscriptions should change.
+
+     A People conversation opened on the canvas is watched by its THREAD id
+     (chatHome), once however many blocks show it. Having it open on the sheet
+     counts as reading it, so its unread badge clears as messages arrive. Only
+     the owner's own blocks: somebody else's is not drawn for us, and its
+     thread is not ours to read. */
+  /* Not `signedInUserId`: that is declared further down, and reading it here
+     would be a TDZ crash. */
+  const meId = account?.userId || null
   const activeChatIds = useMemo(() => {
     const nb = notebooks.find(n => n.id === activeNotebookId)
     const sheet = (nb?.sheets || []).find(sh => sh.id === (nb.activeSheetId || nb.sheets?.[0]?.id))
-    return (sheet?.blocks || []).filter(b => b?.type === 'chat').map(b => b.id).join(',')
-  }, [notebooks, activeNotebookId])
+    const ids = (sheet?.blocks || [])
+      .filter(b => b?.type === 'chat' && !b.floating && (!b.threadId || b.ownerId === meId))
+      .map(chatHome)
+    return [...new Set(ids)].join(',')
+  }, [notebooks, activeNotebookId, meId])
 
   useEffect(() => {
     const ids = activeChatIds ? activeChatIds.split(',') : []
@@ -350,8 +363,9 @@ export default function AppPage() {
     const offs = ids.map(id => {
       /* Swallowed: a workspace with no network still opens, and a chat block
          with no thread reads as "no messages yet" rather than as an error. */
-      fetchThread(id).catch(() => {})
-      return subscribeThread(id, () => {})
+      const read = () => { if (isThreadId(id) && !document.hidden) markRead(id).catch(() => {}) }
+      fetchThread(id).then(read).catch(() => {})
+      return subscribeThread(id, read)
     })
     return () => { for (const off of offs) { try { off() } catch { /* already gone */ } } }
   }, [activeChatIds])
@@ -478,6 +492,30 @@ export default function AppPage() {
     if (!res.ok) { toast(res.reason || 'Could not add that to the conversation.', { tone: 'warn' }); return }
     toast(share.granted ? `Shared with ${share.granted} ${share.granted === 1 ? 'person' : 'people'}` : 'Added to the conversation')
   }, [notebooks, activeNotebookId, toast])
+
+  /* A People conversation, opened on the canvas — where conversations are
+     meant to be had; the panel's window is for a quick reply.
+
+     A chat block with `threadId` is a private VIEW of the thread
+     (blockRegistry's `chat` entry). Already on this sheet: go to it. Not yet:
+     add one where you are looking. Other sheets may show it too — that is
+     allowed, and each is just another view. The panel closes so the block is
+     what you see. */
+  const openThreadOnCanvas = (threadId, name) => {
+    const nb = notebooks.find(n => n.id === activeNotebookId)
+    const sheet = nb && (nb.sheets || []).find(sh => sh.id === _getActiveSheetId(nb))
+    if (!sheet || !signedInUserId || !threadId) { toast('Open a project first.', { tone: 'warn' }); return }
+    const existing = (sheet.blocks || []).find(b => b?.type === 'chat' && b.threadId === threadId && b.ownerId === signedInUserId)
+    const id = existing?.id || (() => {
+      const { w, h } = blockDims({ type: 'chat' })
+      const at = importSpot(activeNotebookId, null, w, h, 200, 140, 'chat')
+      return addNotebookBlock(activeNotebookId, 'chat', at.x, at.y, undefined, undefined, undefined, undefined,
+        { threadId, ownerId: signedInUserId, name: name || '' })
+    })()
+    setPeopleOpen(false)
+    setActiveThreadId(null)
+    setRevealRequest({ blockId: id, nonce: Date.now() })
+  }
 
   /* A block of mine, wherever it lives — what a card in a conversation shows
      to its sender (the other side resolves it through the grant). */
@@ -2987,15 +3025,14 @@ export default function AppPage() {
           operate — it is a status light, and it belongs out of the way of the
           controls. Outside the canvas transform, so `position: fixed` needs no
           portal (see lib/canvasgeom.js for when it would). */}
-      {/* ── PEOPLE + THE FLOATING THREAD ──────────────────────────────────
+      {/* ── PEOPLE + THE QUICK-REPLY WINDOW ───────────────────────────────
           The panel portals itself; this is just where it is mounted from.
 
-          THE THREAD BEHIND A PERSON IS A REAL CHAT BLOCK, marked `floating` so
-          NotebookCanvas does not draw it. That is what lets the window be a
-          window while `chat_messages` and every grant check still key on a
-          block id that actually exists — see the note on the `floating` filter
-          in NotebookCanvas. It is created lazily, on the first click, so a
-          workspace where nobody has ever opened a conversation carries none. */}
+          A conversation is a THREAD with members (migration 0010), not a
+          block. The panel's window is the small, quick-reply view of it; the
+          place to actually talk is a chat block on the canvas, which "Open on
+          canvas" adds (openThreadOnCanvas). Both render ChatBlock against the
+          same thread id. */}
       <PeoplePanel
         open={peopleOpen}
         colors={colors}
@@ -3005,9 +3042,11 @@ export default function AppPage() {
         onOpenThread={setActiveThreadId}
         notify={(msg, tone) => toast(msg, tone ? { tone } : undefined)}
         onClose={() => { setPeopleOpen(false); setActiveThreadId(null) }}
+        onOpenOnCanvas={openThreadOnCanvas}
         renderChat={threadId => (
           <ChatBlock
-            block={{ id: threadId, w: 340, h: 400 }}
+            /* Fills the panel's small window, whatever size it is. */
+            block={{ id: threadId, w: '100%', h: '100%' }}
             colors={colors}
             dark={dark}
             /* The SAME network calls the canvas's chat blocks use; lib/chat.js
@@ -3731,7 +3770,11 @@ export default function AppPage() {
               onChatSend={(blockId, body) => postMessage({ blockId, body })}
               onChatEdit={(id, blockId, body) => editMessage(id, blockId, body)}
               onChatUnsend={(id, blockId) => unsendMessage(id, blockId)}
-              onChatShareBlock={handleChatShareBlock}
+              /* A drop on a People conversation goes to its members: same
+                 path as a drop on their row in the panel. */
+              onChatShareBlock={(home, refBlockId) => (isThreadId(home)
+                ? shareBlockToThread(home, refBlockId)
+                : handleChatShareBlock(home, refBlockId))}
               agentHost={agentHost}
               /* THE ONLY PATH from a shared block's id to its contents.
 

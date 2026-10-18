@@ -209,5 +209,19 @@ console.log('\n  a message being sent survives a refresh')
   ok(!threadFor('blk_p').some(m => m.id === 'm1'), 'a confirmed message unsent elsewhere still disappears (only PENDING rows are kept)')
 }
 
+console.log('\n  a People conversation opened on the canvas is a view of its thread')
+{
+  const { createBlock, blockHasContent, clonepatch } = await import('../components/notebook/blockRegistry.js')
+  const own = createBlock('chat', { id: 'blk_own', x: 0, y: 0 })
+  const view = createBlock('chat', { id: 'blk_view', x: 0, y: 0, patch: { threadId: 'thr_ana', ownerId: ME } })
+  eq(store.chatHome(own), 'blk_own', 'a plain chat block reads and writes its own thread')
+  eq(store.chatHome(view), 'thr_ana', 'a People conversation block reads and writes the thread it shows')
+  ok(blockHasContent(own) === true, 'deleting a plain chat block still asks — its conversation goes with it')
+  ok(blockHasContent(view) === false, 'deleting a People conversation block does not ask — the thread stays in People')
+  const ownCopy = clonepatch(own), viewCopy = clonepatch(view)
+  ok(!('threadId' in ownCopy) && !('ownerId' in ownCopy), 'a duplicated plain chat block is a new, empty thread')
+  eq([viewCopy.threadId, viewCopy.ownerId], ['thr_ana', ME], 'a duplicated People conversation block is a second view of the same thread')
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

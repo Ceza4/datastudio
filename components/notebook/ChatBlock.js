@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useCallback, memo } from 'react'
 import {
   onThread, threadFor, groupThread, isMine, authorLabel, authorHue,
-  timeLabel, isUnsent, wasEdited, carriesBlock, UNSENT_TEXT, draftProblem, MAX_BODY,
+  timeLabel, isUnsent, wasEdited, carriesBlock, UNSENT_TEXT, draftProblem, MAX_BODY, chatHome,
 } from '../../lib/chatstore'
 import BlockRefCard from './BlockRefCard'
 
@@ -75,7 +75,7 @@ function ChatBlock({
      would mean re-subscribing every time the id prop changed for no gain. */
   useEffect(() => onThread(() => bump(n => n + 1)), [])
 
-  const messages = groupThread(threadFor(block.id))
+  const messages = groupThread(threadFor(chatHome(block)))
 
   /* STICK TO THE BOTTOM, BUT ONLY IF YOU WERE ALREADY THERE.
      Scrolling someone back down while they are reading history is the most

@@ -578,7 +578,20 @@ export const BLOCK_TYPES = {
          document.
 
      So this entry is almost empty on purpose, and that emptiness is the
-     feature. */
+     feature.
+
+     A PEOPLE CONVERSATION ON THE CANVAS (18 Oct 2026). A chat block may
+     instead carry `threadId` (a `thr_` id from lib/dm.js) and `ownerId`.
+     It is then a VIEW of that private thread, not a thread of its own:
+       · messages are read and written by thread id, so 0010's membership
+         check is what guards them, not the sheet's grants;
+       · the canvas draws it for its owner only, like an agent block — a
+         colleague who can read the sheet must not even see that a
+         conversation with Ana sits here;
+       · deleting it closes the view and nothing else, so it does not ask;
+       · the same thread may be open on any number of sheets, so a duplicate
+         keeps `threadId` and `ownerId` (a plain chat block has neither, and
+         its duplicate is still a new empty thread). */
   chat: {
     label: 'Chat',
     icon: 'block-chat',
@@ -609,13 +622,16 @@ export const BLOCK_TYPES = {
        cares about: the thing worth losing is on the server, and this function
        cannot see it without a round trip. Answering `true` unconditionally
        means deleting one always asks — which is right, because deleting the
-       block cascades the whole conversation away. */
-    hasContent: () => true,
-    /* NOTHING is cloned. Duplicating a chat block gives you a NEW empty
-       thread, not a second view of the old one — copying the id would give
-       two blocks one conversation, and copying the messages would forge
-       everybody's words into a thread they never posted in. */
-    cloneFields: [],
+       block cascades the whole conversation away. A People conversation is
+       the exception: its block is only a view (see above). */
+    hasContent: b => !b?.threadId,
+    /* NOTHING of the block's own thread is cloned. Duplicating a chat block
+       gives you a NEW empty thread, not a second view of the old one — copying
+       the id would give two blocks one conversation, and copying the messages
+       would forge everybody's words into a thread they never posted in.
+       `threadId` and `ownerId` exist only on a People conversation, where a
+       second view of the same thread is exactly what is wanted. */
+    cloneFields: ['threadId', 'ownerId'],
   },
 
   file: {

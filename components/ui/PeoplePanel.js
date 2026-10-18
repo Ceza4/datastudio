@@ -47,10 +47,17 @@ import { postMessage } from '../../lib/chat'
 
   The message list itself is ChatBlock, rendered by the host through
   `renderChat(threadId)` — one chat surface in the app, not two.
+
+  THE WINDOW IS FOR A QUICK REPLY (18 Oct 2026). The place to talk is a chat
+  block on the canvas: ON CANVAS asks the host (`onOpenOnCanvas`) to open the
+  thread there as a private view of it — blockRegistry's `chat` entry has the
+  rules. So the window stays small: the latest messages, the composer, and a
+  drop target for blocks.
   -------------------------------------------------------------------------- */
 
 const PANEL_W = 300
-const CHAT_W = 340
+const CHAT_W = 320
+const CHAT_H = 340
 const ROW_H = 50
 
 export default function PeoplePanel({
@@ -61,6 +68,7 @@ export default function PeoplePanel({
   activeThreadId,
   onOpenThread,          // (threadId | null)
   renderChat,            // (threadId) => node
+  onOpenOnCanvas,        // (threadId, name) — the conversation as a canvas block
   notify,                // (message, tone?) => void
   onClose,
 }) {
@@ -266,7 +274,7 @@ export default function PeoplePanel({
   const chatPane = activeThread && (
     /* The whole conversation is a drop target too: a block released over it
        goes to everyone in it (the canvas hit-tests this attribute). */
-    <div data-ds-person-row={`grp:${activeThread.id}`} style={{ ...card, width: CHAT_W, maxWidth: '100%', height: 460 }}>
+    <div data-ds-person-row={`grp:${activeThread.id}`} style={{ ...card, width: CHAT_W, maxWidth: '100%', height: CHAT_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, padding: '10px 12px', borderBottom: `1px solid ${border}` }}>
         {activeThread.kind === 'group'
           ? <GroupAvatar thread={activeThread} />
@@ -289,6 +297,10 @@ export default function PeoplePanel({
         {activeThread.kind === 'group' && (
           <button type="button" style={btn()} onClick={() => setView(v => (v === 'members' ? 'list' : 'members'))}
             aria-pressed={view === 'members'}>People</button>
+        )}
+        {onOpenOnCanvas && (
+          <button type="button" style={btn()} onClick={() => onOpenOnCanvas(activeThread.id, threadLabel(activeThread))}
+            title="Open this conversation as a block on the canvas">On canvas</button>
         )}
         <button type="button" onClick={() => onOpenThread?.(null)} aria-label="Close conversation" title="Close"
           style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', padding: '0 2px' }}>

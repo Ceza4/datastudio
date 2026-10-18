@@ -144,7 +144,7 @@ function AgentBlockInner({ block, colors: c, host, sheet, onUpdateBlock, onRevea
     <div onMouseDown={halt} style={{ display: 'grid', gridTemplateColumns: '184px 1fr', height: '100%', background: c.surface, fontFamily: FONT, minHeight: 0 }}>
       <nav aria-label="Agent sections" onPointerDown={halt} style={{ borderRight: `1px solid ${c.borderDim}`, background: c.base, padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px 10px' }}>
-          <span style={{ width: 28, height: 28, borderRadius: 8, background: c.accentDim, display: 'grid', placeItems: 'center' }}><Spark size={16} color={c.accent} /></span>
+          <span style={{ width: 28, height: 28, borderRadius: 8, background: c.accentDim, color: c.accent, display: 'grid', placeItems: 'center' }}><Icon name="block-agent" size={16} /></span>
           <span style={{ minWidth: 0 }}>
             <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: c.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{agent.name}</span>
             <span style={{ display: 'block', fontSize: 11, color: c.text3 }}>{isSub ? `Sub-agent of ${parent?.name || '…'}` : modelById(agent.model).name}</span>
@@ -170,7 +170,7 @@ function AgentBlockInner({ block, colors: c, host, sheet, onUpdateBlock, onRevea
       <div onPointerDown={halt} style={{ overflowY: 'auto', minWidth: 0, minHeight: 0 }}>
         {cur === 'overview' && <>
           <div style={{ padding: '16px 18px 12px', borderBottom: `1px solid ${c.borderDim}`, display: 'flex', gap: 12, alignItems: 'center' }}>
-            <span style={{ width: 44, height: 44, borderRadius: 12, background: c.accentDim, display: 'grid', placeItems: 'center', flexShrink: 0 }}><Spark size={20} color={c.accent} /></span>
+            <span style={{ width: 44, height: 44, borderRadius: 12, background: c.accentDim, color: c.accent, display: 'grid', placeItems: 'center', flexShrink: 0 }}><Icon name="block-agent" size={20} /></span>
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
               <Field c={c} value={agent.name} onChange={v => set({ name: v.slice(0, 60) || 'Agent' })} big aria="Agent name" />
               <Field c={c} value={agent.role} placeholder="What this agent is for" onChange={v => set({ role: v.slice(0, 160) })} aria="Short description" />

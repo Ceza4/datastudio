@@ -16,6 +16,7 @@ import PdfBlock from './PdfBlock'
 import TaskBlock from './TaskBlock'
 import CalendarBlock from './CalendarBlock'
 import ChatBlock from './ChatBlock'
+import { chatHome } from '../../lib/chatstore'
 import DocumentBlock, { PAGE_BREAK_HTML } from './DocumentBlock'
 import DatabaseBlock from './DatabaseBlock'
 import CountdownBlock from './CountdownBlock'
@@ -726,26 +727,23 @@ const drawPanelRef = useRef(null)
   // Stable empty-array fallback. `activeSheet?.blocks || []` minted a new
   // array on every render whenever the sheet was missing, which made any
   // effect depending on `blocks` re-run forever.
-  /* ── FLOATING BLOCKS ARE REAL BLOCKS THAT ARE NOT ON THE CANVAS ──────────
-     A direct-message thread opened from the People panel needs a real block id:
-     `chat_messages` (migration 0009) keys on one, and grants are checked
-     against one. But it must not be PLACED on the sheet — the decision was
-     explicit that tapping a person opens a floating window, never a block
-     somebody then has to tidy off their canvas.
+  /* ── BLOCKS THAT ARE IN THE DOCUMENT BUT NOT DRAWN ───────────────────────
+     `floating`: LEGACY, kept on purpose. Before migration 0010 a People
+     conversation was a chat block hidden in the current project, flagged
+     `floating`. Conversations are threads now (lib/dm.js) and nothing creates
+     these any more — but documents saved back then still carry them, and
+     dropping the filter would put those old hidden chats on people's canvases.
 
-     Both are satisfied by one flag. The block exists in the document, so every
-     id, grant and membership check works exactly as it does for any other chat
-     block; it is simply not drawn here, and the People panel renders its thread
-     instead. That is a smaller and more honest mechanism than a parallel
-     "threads" store that would have to re-derive its own permissions.
+     Agents, agent chats, and a People conversation opened on the canvas
+     (`chat` with a `threadId`) are PRIVATE: drawn for their owner only. Signed
+     out, nobody is the owner, so none of them is drawn.
 
-     Filtered out of `blocks` rather than skipped at the render site, so it is
-     also invisible to hit-testing, marquee selection, snap targets, section
+     Filtered out of `blocks` rather than skipped at the render site, so they
+     are also invisible to hit-testing, marquee selection, snap targets, section
      containment and export — a block you cannot see must not be selectable by
      dragging a box over where it is not.
 
-     Nothing in this component needs the unfiltered list: the thread lookup lives
-     in app/app/page.js, which reads the notebook directly, and persistence never
+     Nothing in this component needs the unfiltered list: persistence never
      passes through here at all. */
   /* A PLAIN FILTER IN A useMemo, and both halves of that matter.
 
@@ -763,7 +761,7 @@ const drawPanelRef = useRef(null)
   /* Agents are private: an agent or agent-chat block owned by somebody else
      is not rendered at all, for anybody but its owner. */
   const agentUserId = agentHost?.userId || null
-  const blocks = useMemo(() => (activeSheet?.blocks || EMPTY_BLOCKS).filter(b => !b.floating && !((b.type === 'agent' || b.type === 'agentchat') && b.ownerId && b.ownerId !== agentUserId)), [activeSheet?.blocks, agentUserId])
+  const blocks = useMemo(() => (activeSheet?.blocks || EMPTY_BLOCKS).filter(b => !b.floating && !((b.type === 'agent' || b.type === 'agentchat' || (b.type === 'chat' && b.threadId)) && b.ownerId && b.ownerId !== agentUserId)), [activeSheet?.blocks, agentUserId])
 
   /* THREADS ARE NOT LOADED HERE, AND THAT IS THE SECOND TIME THIS LESSON HAS
      BEEN LEARNED IN THIS CODEBASE.
@@ -2747,7 +2745,9 @@ function addBlockAnimated(type, x, y) {
         for (const w of wires) if (w.dot) w.dot.style.display = ''
         setHoverChatId(null)
         detach()
-        latestRef.current.onChatShareBlock?.(currentHoverChat, block.id)
+        /* Into the thread the chat block shows: its own, or the People
+           conversation it is a view of. */
+        latestRef.current.onChatShareBlock?.(chatHome(blocks.find(b => b.id === currentHoverChat)) || currentHoverChat, block.id)
         return
       }
 
@@ -4714,9 +4714,13 @@ function addBlockAnimated(type, x, y) {
             it is a mode you enter on purpose, not a button you need every minute.
 
             Agent shipped (1 Oct 2026): it takes you to your agent on this
-            sheet, or adds one where there is room. Still no icon until the
-            agent glyph is drawn. Without a host (the browser harness) it
-            stays the disabled placeholder it was. */}
+            sheet, or adds one where there is room. Without a host (the browser
+            harness) it stays the disabled placeholder it was.
+
+            Icon and label like Snap (18 Oct 2026): it was the only button in
+            the row without an icon. `block-agent` is the same mark the Add
+            menu and the agent block use, and the label collapses with the
+            others on a narrow screen (.ds-tbtn-label). */}
         {agentHost ? (
           <button className="ds-tbtn" title="Your agent on this sheet"
             onClick={() => {
@@ -4725,13 +4729,15 @@ function addBlockAnimated(type, x, y) {
               const p = viewSpot(blockDims({ type: 'agent' }).w)
               addBlockFree('agent', p.x, p.y)
             }}>
-            Agent
+            <Icon name="block-agent" size={14} />
+            <span className="ds-tbtn-label">Agent</span>
           </button>
         ) : (
           <button disabled aria-disabled="true" className="ds-tbtn"
             title="Agent · coming soon"
             style={{ opacity: 0.55, cursor: 'default' }}>
-            Agent
+            <Icon name="block-agent" size={14} />
+            <span className="ds-tbtn-label">Agent</span>
           </button>
         )}
 
@@ -6509,11 +6515,16 @@ onContextMenu={e => handleBlockContextMenu(e, block.id)}
                          and defeat ChatBlock's memo — the same treatment the
                          calendar's onTeleport gets above. */
                       onSend={blockCb(block.id, 'chatSend', () => (body) =>
-                        latestRef.current.onChatSend?.(block.id, body))}
+                        latestRef.current.onChatSend?.(chatHome(block), body))}
                       onEdit={blockCb(block.id, 'chatEdit', () => (id, body) =>
-                        latestRef.current.onChatEdit?.(id, block.id, body))}
+                        latestRef.current.onChatEdit?.(id, chatHome(block), body))}
                       onUnsend={blockCb(block.id, 'chatUnsend', () => (id) =>
-                        latestRef.current.onChatUnsend?.(id, block.id))}
+                        latestRef.current.onChatUnsend?.(id, chatHome(block)))}
+                      /* A People conversation opened here (blockRegistry's
+                         `chat` entry): only its members read it. */
+                      emptyHint={block.threadId
+                        ? 'Only the people in this conversation can read it. Drag a block here to share it with them.'
+                        : undefined}
                       /* A reference names a block by id; the thread has no way
                          to know what it was called. Resolved against THIS
                          sheet, which covers the common case, and falls back to
