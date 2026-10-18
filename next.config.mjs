@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 /** @type {import('next').NextConfig} */
 
 /* SECURITY HEADERS
@@ -19,6 +21,10 @@
    -------------------------------------------------------------------------- */
 
 const nextConfig = {
+  /* THIS folder is the project root. Without it Next guesses from the
+     lockfiles it finds walking up, and a stray ~/package-lock.json made it
+     pick the home directory — so the dev server watched everything in it. */
+  turbopack: { root: fileURLToPath(new URL('.', import.meta.url)) },
   async headers() {
     return [{
       /* Every path except the HTML prototype shell, which DataStudio frames

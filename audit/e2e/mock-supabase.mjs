@@ -92,6 +92,13 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/rest/v1/rpc/')) {
     const fn = p.slice('/rest/v1/rpc/'.length)
     if (fn === 'my_account') return send(200, { user_id: USER.id, plan: process.env.MOCK_PLAN || 'max', plan_label: 'Max', org_id: '00000000-0000-4000-8000-0000000000aa', org_name: 'E2E Org', cloud: process.env.MOCK_PLAN !== 'free', email: USER.email, name: 'E2E Tester', role: 'owner', status: 'active', limits: { doc_bytes: 21474836480, asset_bytes: 268435456000, max_file_bytes: 1073741824 }, usage: { doc_bytes: 0, asset_bytes: 0, notebooks: 0 } })
+    /* Same shape as 0012's ai_balance(), so the agent's Usage section has
+       something real to show locally. */
+    if (fn === 'ai_balance') {
+      const start = new Date(); start.setUTCDate(1); start.setUTCHours(0, 0, 0, 0)
+      const end = new Date(start); end.setUTCMonth(end.getUTCMonth() + 1)
+      return send(200, { plan: 'max', monthly: 5000, used: 0, topup: 0, remaining: 5000, period_start: start.toISOString(), period_end: end.toISOString() })
+    }
     return send(200, [])
   }
   if (p.startsWith('/rest/v1/')) {
