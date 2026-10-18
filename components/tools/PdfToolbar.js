@@ -15,7 +15,7 @@ import { Z } from '../../lib/theme'
 
 /* Tools that put the annotation layer into a mode. */
 export const PDF_TOOLS = [
-  { id: 'select', label: 'Select', icon: 'action-check', ready: true,
+  { id: 'select', label: 'Select', icon: 'tool-select', ready: true,
     hint: 'Click an annotation to select it · Delete removes it' },
   /* Editing what the document already says, and adding something it doesn't,
      are two different intentions and the labels have to say which is which —

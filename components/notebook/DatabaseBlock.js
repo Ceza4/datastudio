@@ -494,7 +494,7 @@ function ViewBar({ db, view, colors, onSelect, onOpenMenu, sortCount, filterCoun
 
       <BarBtn label="Sort" icon={sortCount ? 'grid-sort-asc' : 'grid-sort-desc'} count={sortCount}
         colors={colors} onClick={e => onOpenMenu({ kind: 'sort', at: anchorOf(e.currentTarget) })} />
-      <BarBtn label="Filter" icon="nav-search" count={filterCount}
+      <BarBtn label="Filter" icon="grid-filter" count={filterCount}
         colors={colors} onClick={e => onOpenMenu({ kind: 'filter', at: anchorOf(e.currentTarget) })} />
     </div>
   )
@@ -567,7 +567,7 @@ function TableView({
             }}
             onMouseEnter={e => { e.currentTarget.style.color = accent }}
             onMouseLeave={e => { e.currentTarget.style.color = text2 }}>
-            <Icon name={PROPERTY_TYPES[p.type]?.icon || 'nav-notebook'} size={12}
+            <Icon name={PROPERTY_TYPES[p.type]?.icon || 'block-text'} size={12}
               style={{ color: text3, flexShrink: 0 }} />
             <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {p.name}
@@ -1198,7 +1198,7 @@ function CalendarView({ db, view, rows, colors, dark, editing, onOpenCell, onClo
 
   if (!dateProp) {
     return (
-      <Empty colors={colors} icon="status-info"
+      <Empty colors={colors} icon="block-calendar"
         title="This calendar has no date to place rows by"
         body="A calendar reads one Date column. Add one with the + at the right of the table header, then pick it from the view menu." />
     )

@@ -324,7 +324,7 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
               {[
                 { id: 'plan', icon: 'plan-upgrade', label: 'Plan', meta: account?.label || 'Free' },
                 { id: 'security', icon: 'state-lock', label: 'Security', meta: factors === null ? '' : factors.length ? '2FA on' : '2FA off' },
-                { id: 'privacy', icon: 'storage-drive', label: 'Privacy', meta: '' },
+                { id: 'privacy', icon: 'state-shield', label: 'Privacy', meta: '' },
               ].map(c => (
                 <button key={c.id} style={row} onClick={() => { setNotice(null); setPage(c.id) }}>
                   <Icon name={c.icon} size={14} />
@@ -523,8 +523,8 @@ export default function AccountButton({ account, colors, dark, onChanged, onSign
               <Icon name="action-export" size={14} />
               <span style={{ flex: 1 }}>Export everything</span>
             </button>
-            <SoonRow icon="status-info" label="Privacy policy" row={row} text3={text3} />
-            <SoonRow icon="status-info" label="Terms of service" row={row} text3={text3} />
+            <SoonRow icon="block-document" label="Privacy policy" row={row} text3={text3} />
+            <SoonRow icon="block-document" label="Terms of service" row={row} text3={text3} />
             <details>
                 <summary style={{ ...row, color: 'var(--ds-red)', listStyle: 'none', cursor: 'pointer' }}>
                   <Icon name="action-delete" size={14} />

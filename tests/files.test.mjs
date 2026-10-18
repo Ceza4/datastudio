@@ -47,7 +47,7 @@ console.log('\n labels')
   ok(fileKind('a.sketch') === 'Sketch', 'and a long one is not — SKETCH reads as an acronym it is not')
   ok(fileKind('noext') === 'File', 'no extension falls back to something sayable')
   ok(fileIcon('a.docx') === 'format-word' && fileIcon('a.zip') === 'nav-folder', 'families get their own icon')
-  ok(fileIcon('a.wat') === 'block-text',
+  ok(fileIcon('a.wat') === 'block-file',
      'and an unknown format still gets ONE — a chip with no icon reads as broken, not as unknown')
 }
 

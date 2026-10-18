@@ -123,7 +123,7 @@ export default function ImageToolbar({
             <Icon name={busy === 'crop' ? 'status-spinner' : 'action-check'} size={14} />
             {busy === 'crop' ? 'Cropping…' : 'Apply crop'}
           </button>
-          <button className="ds-tbtn" style={btn} onClick={onCancelCrop}><Icon name="draw-exit" size={14} />Cancel</button>
+          <button className="ds-tbtn" style={btn} onClick={onCancelCrop}><Icon name="action-close" size={14} />Cancel</button>
         </>
       ) : (
         <>

@@ -321,7 +321,7 @@ function Links({ card, colors, onPatch, onFocus, onBlur, toast }) {
           <a href={safeUrl(l.url) || undefined} target="_blank" rel="noopener noreferrer"
             style={{ flex: 1, minWidth: 0, color: colors.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.label || l.url}</a>
           <button type="button" aria-label="Remove link" onClick={() => onPatch({ links: card.links.filter(x => x.id !== l.id) })} style={iconBtn(colors)}>
-            <Icon name="action-delete" size={12} />
+            <Icon name="action-close" size={12} />
           </button>
         </div>
       ))}
@@ -369,7 +369,7 @@ function Attachments({ card, colors, onPatch, toast }) {
             style={{ flex: 1, minWidth: 0, textAlign: 'left', border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', color: colors.accent, fontFamily: 'var(--ds-font-body)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</button>
           <span style={{ fontSize: 11, color: colors.text3 }}>{formatSize(a.size)}</span>
           <button type="button" aria-label="Remove attachment" onClick={() => onPatch({ attachments: card.attachments.filter(x => x.id !== a.id) })} style={iconBtn(colors)}>
-            <Icon name="action-delete" size={12} />
+            <Icon name="action-close" size={12} />
           </button>
         </div>
       ))}

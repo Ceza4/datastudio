@@ -230,7 +230,7 @@ function TaskBlockInner({ block, blocks, connections, colors, dark, onUpdateBloc
             fontSize: 'var(--ds-fs-xs)', color: text3, lineHeight: 1.5,
             /* No border and no fill. Whitespace does what a box was doing. */
           }}>
-            <Icon name="share-people" size={12} style={{ flexShrink: 0 }} />
+            <Icon name="auth-account" size={12} style={{ flexShrink: 0 }} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {block.assignee}
             </span>

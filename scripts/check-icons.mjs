@@ -29,7 +29,7 @@ const NAMES = new Set([...SRC.matchAll(/^ {2}'([^']+)':/gm)].map(m => m[1]))
    CSS values, class names — and the noise would make the check useless. */
 const ICON_ID = new RegExp(
   '^(action|app|auth|block|cc|draw|format|grid|handle|history|img|nav|plan' +
-  '|settings|share|size|state|status|storage|sync|text|theme|tool|view)-[a-z0-9-]+$'
+  '|prop|settings|share|size|state|status|storage|sync|text|theme|tool|view)-[a-z0-9-]+$'
 )
 
 /* THE ONE COLLISION BETWEEN TWO NAMESPACES

@@ -7,7 +7,7 @@
 
   Geometry lives in ./icon-paths.js, which is GENERATED from the .svg files:
 
-      node scripts/build-icons.mjs ../icons
+      npm run icons      (reads icons/*.svg in this repo)
 
   Don't hand-edit that file — the next rebuild overwrites it. Edit the SVGs
   and regenerate. The build script validates every file first (viewBox,

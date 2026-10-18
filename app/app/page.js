@@ -3569,7 +3569,7 @@ export default function AppPage() {
             <button onClick={() => setBuilderOpen(o => !o)} aria-label="Builder" aria-expanded={builderOpen}
               data-ds-builder-button
               className={`ds-tbtn${builderOpen ? ' is-on' : ''}`}>
-              <Icon name="action-duplicate" size={14} />
+              <Icon name="nav-builder" size={14} />
               Builder
             </button>
 

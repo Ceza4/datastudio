@@ -292,7 +292,7 @@ export default function PeoplePanel({
         )}
         <button type="button" onClick={() => onOpenThread?.(null)} aria-label="Close conversation" title="Close"
           style={{ background: 'none', border: 'none', color: text3, cursor: 'pointer', padding: '0 2px' }}>
-          <Icon name="draw-exit" size={12} />
+          <Icon name="action-close" size={12} />
         </button>
       </div>
       {view === 'members' && activeThread.kind === 'group'

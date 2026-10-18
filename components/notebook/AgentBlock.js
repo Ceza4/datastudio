@@ -22,14 +22,14 @@ import { needsPerson, openSuggestions } from '../../lib/agent/runner.js'
 import { FONT, MONO, Spark, Btn, Seg, Label, Note, Spinner, Pill, useAgentSession, permTone, stop as halt } from './agent/ui'
 
 const SECTIONS = [
-  ['overview', 'Overview', 'view-grid'],
-  ['chats', 'Chats', 'history-version'],
-  ['model', 'Model & effort', 'settings-gear'],
-  ['instructions', 'Instructions', 'action-rename'],
+  ['overview', 'Overview', 'view-overview'],
+  ['chats', 'Chats', 'block-chat'],
+  ['model', 'Model & effort', 'settings-sliders'],
+  ['instructions', 'Instructions', 'block-document'],
   ['permissions', 'Permissions', 'state-lock'],
-  ['subagents', 'Sub-agents', 'share-people'],
-  ['usage', 'Usage & limits', 'tool-statistics'],
-  ['privacy', 'Privacy', 'status-info'],
+  ['subagents', 'Sub-agents', 'block-agent'],
+  ['usage', 'Usage & limits', 'plan-usage'],
+  ['privacy', 'Privacy', 'state-shield'],
 ]
 const STARTERS = ['Polish the selected note', 'Summarise this sheet', 'Build a prototype in an HTML block', 'Check this table for errors']
 const creating = new Set()
@@ -190,7 +190,7 @@ function AgentBlockInner({ block, colors: c, host, sheet, onUpdateBlock, onRevea
               {STARTERS.map(s => <button key={s} type="button" onClick={() => newChat(s)} style={{ border: `1.5px solid ${c.borderDim}`, background: c.base, borderRadius: 8, padding: '5px 10px', fontFamily: FONT, fontSize: 12, color: c.text2, cursor: 'pointer' }}>{s}</button>)}
             </div>
           </>, 'ask')}
-          {isSub && sec(<Note c={c} icon={<Icon name="share-people" size={14} />}>{parent?.name || 'Its parent'} hands {agent.name} a short brief. It works on its own, never sees the whole conversation, and reports back once.</Note>, 'subnote')}
+          {isSub && sec(<Note c={c} icon={<Icon name="block-agent" size={14} />}>{parent?.name || 'Its parent'} hands {agent.name} a short brief. It works on its own, never sees the whole conversation, and reports back once.</Note>, 'subnote')}
           {sec(<>
             <Label c={c}>{isSub ? 'Recent runs' : 'Recent chats'}</Label>
             {(isSub ? runsOf(agent.id).slice(0, 6) : chats.slice(0, 6)).map(x => {
@@ -198,7 +198,7 @@ function AgentBlockInner({ block, colors: c, host, sheet, onUpdateBlock, onRevea
               return (
                 <button key={isSub ? x.toolId : x.id} type="button" onClick={() => (isSub ? null : openChatBlock(x))}
                   style={{ display: 'flex', alignItems: 'center', gap: 10, border: 'none', background: 'transparent', padding: '4px 0', textAlign: 'left', cursor: isSub ? 'default' : 'pointer', fontFamily: FONT }}>
-                  <Icon name={isSub ? 'share-people' : 'history-version'} size={14} />
+                  <Icon name={isSub ? 'block-agent' : 'block-chat'} size={14} />
                   <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: c.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{isSub ? (x.brief || '').slice(0, 80) : x.name}</span>
                   {st && <Pill c={c} tone={st[0]}>{st[1]}</Pill>}
                   <span style={{ fontSize: 12, color: c.text3, whiteSpace: 'nowrap' }}>{isSub ? `${x.credits || 0} credits` : ago(x.updatedAt)}</span>
@@ -263,7 +263,7 @@ function AgentBlockInner({ block, colors: c, host, sheet, onUpdateBlock, onRevea
             <Label c={c}>Allowed in chats</Label>
             {chats.filter(ch => Object.keys(ch.grants || {}).some(k => k.startsWith(`${agent.id}:`) || subs.some(s => k.startsWith(`${s.id}:`)))).map(ch => (
               <div key={ch.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Icon name="history-version" size={14} />
+                <Icon name="block-chat" size={14} />
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: 13, color: c.text }}>{ch.name}</span>
                   <span style={{ display: 'block', fontSize: 12, color: c.text3 }}>{Object.keys(ch.grants).map(k => PERM_LABEL[k.split(':')[1]]).join(' · ')}</span>
@@ -285,7 +285,7 @@ function AgentBlockInner({ block, colors: c, host, sheet, onUpdateBlock, onRevea
           {sec(<>
             {subs.map(s => (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
-                <Icon name="share-people" size={14} />
+                <Icon name="block-agent" size={14} />
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: 13, fontWeight: 500, color: c.text }}>{s.name}</span>
                   <span style={{ display: 'block', fontSize: 12, color: c.text3 }}>{modelById(s.model).name}{s.effort && modelById(s.model).effort ? ` · ${EFFORTS.find(e => e[0] === s.effort)?.[1]} effort` : ''}{s.role ? ` · ${s.role}` : ''}</span>
@@ -352,7 +352,7 @@ function ChatsSection({ c, agent, chats, head, sec, onNew, onOpen, onDelete, she
         </div>
       ) : (
         <div key={ch.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Icon name="history-version" size={14} />
+          <Icon name="block-chat" size={14} />
           <button type="button" onClick={() => onOpen(ch)} style={{ flex: 1, minWidth: 0, border: 'none', background: 'transparent', padding: '4px 0', textAlign: 'left', cursor: 'pointer', fontFamily: FONT }}>
             <span style={{ display: 'block', fontSize: 13, color: c.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ch.name}</span>
             <span style={{ display: 'block', fontSize: 12, color: c.text3 }}>{ago(ch.updatedAt)} · {ch.credits || 0} credits</span>
@@ -395,7 +395,7 @@ function InstructionsSection({ c, agent, set, head, sec, sheet }) {
         {agent.pinned.map(id => (
           <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: `1.5px solid ${c.borderDim}`, borderRadius: 8, padding: '3px 4px 3px 9px', fontSize: 12, color: c.text, background: c.base }}>
             {nameOf(id)}
-            <button type="button" aria-label={`Unpin ${nameOf(id)}`} onClick={() => set({ pinned: agent.pinned.filter(x => x !== id) })} style={{ border: 'none', background: 'transparent', color: c.text3, cursor: 'pointer', display: 'grid', placeItems: 'center' }}><Icon name="action-delete" size={12} /></button>
+            <button type="button" aria-label={`Unpin ${nameOf(id)}`} onClick={() => set({ pinned: agent.pinned.filter(x => x !== id) })} style={{ border: 'none', background: 'transparent', color: c.text3, cursor: 'pointer', display: 'grid', placeItems: 'center' }}><Icon name="action-close" size={12} /></button>
           </span>
         ))}
         <Btn c={c} kind="ghost" size="sm" onClick={() => setPicking(p => !p)}><Icon name="action-add" size={12} />Pin block</Btn>
@@ -424,7 +424,7 @@ function PermGroup({ c, agent, parent, defaultOpen, onSet }) {
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', border: 'none', background: c.base, padding: '10px 12px', cursor: 'pointer', textAlign: 'left', fontFamily: FONT }}>
         <Icon name={open ? 'nav-chevron-down' : 'nav-chevron-right'} size={12} />
-        {agent.parentId ? <Icon name="share-people" size={14} /> : <Spark size={14} color={c.accent} />}
+        {agent.parentId ? <Icon name="block-agent" size={14} /> : <Spark size={14} color={c.accent} />}
         <span style={{ fontSize: 13, fontWeight: 600, color: c.text }}>{agent.name}</span>
         <span style={{ marginLeft: 'auto', fontSize: 12, color: c.text3, whiteSpace: 'nowrap' }}>{allowed} allowed · {asks} ask first</span>
       </button>
@@ -495,7 +495,7 @@ function TopUp({ c, onClose }) {
       <div style={{ display: 'flex', alignItems: 'center' }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: c.text }}>Top up · 1 credit = €0.01</span>
         <span style={{ flex: 1 }} />
-        <button type="button" aria-label="Close" onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: c.text3 }}><Icon name="action-delete" size={14} /></button>
+        <button type="button" aria-label="Close" onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: c.text3 }}><Icon name="action-close" size={14} /></button>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 8 }}>
         {amounts.map(e => (

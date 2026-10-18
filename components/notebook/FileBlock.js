@@ -74,7 +74,7 @@ function FileBlockInner({ block, colors, dark, onUpdateBlock }) {
         border: `1px solid ${missing ? red : border}`,
         color: missing ? red : text2,
       }}>
-        <Icon name={missing ? 'action-delete' : fileIcon(name)} size={16} />
+        <Icon name={missing ? 'status-error' : fileIcon(name)} size={16} />
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>

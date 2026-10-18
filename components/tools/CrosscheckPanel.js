@@ -253,7 +253,7 @@ export default function CrosscheckPanel({ open, onClose, sourceColumns, onAddToN
         )}
         <button onClick={onClose} className="ds-btn ds-btn-ghost"
           aria-label="Close Crosscheck"
-          style={{ marginLeft: 'auto', padding: '4px 6px', display: 'flex' }}><Icon name="action-delete" size={14} /></button>
+          style={{ marginLeft: 'auto', padding: '4px 6px', display: 'flex' }}><Icon name="action-close" size={14} /></button>
       </div>
 
       {/* Step rail */}

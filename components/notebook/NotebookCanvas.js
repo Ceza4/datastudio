@@ -4651,7 +4651,7 @@ function addBlockAnimated(type, x, y) {
           onOpenRecord={(sourceId, rowId) => openRecord(sourceId, rowId, null)}
           commands={focus ? [
             { id: 'focus-exit', label: 'Exit full screen', icon: 'view-fullscreen-exit', hint: focusShortcutLabel(), keywords: 'fullscreen focus leave', run: () => exitFocus() },
-            { id: 'keys', label: 'Keyboard shortcuts', icon: 'status-info', hint: '?', keywords: 'help keys', run: () => setShortcutsOpen(true) },
+            { id: 'keys', label: 'Keyboard shortcuts', icon: 'nav-keyboard', hint: '?', keywords: 'help keys', run: () => setShortcutsOpen(true) },
           ] : [
             ...(soleSelected && canFocus(soleSelected) ? [{
               id: 'focus-enter', label: `Full screen: ${soleSelected.name || getBlockType(soleSelected.type)?.label || 'block'}`,
@@ -4664,9 +4664,9 @@ function addBlockAnimated(type, x, y) {
             })),
             { id: 'snap', label: snapEnabled ? 'Turn snap off' : 'Turn snap on', icon: 'tool-snap', keywords: 'grid align magnet', run: toggleSnap },
             { id: 'draw', label: drawMode ? 'Stop drawing' : 'Draw on the canvas', icon: 'tool-draw', keywords: 'pen ink', run: () => setDrawMode(v => !v) },
-            { id: 'visuals', label: visualsOn ? 'Close Visuals' : 'Open Visuals', icon: 'tool-mindmap', keywords: 'shapes diagram sticky connector whiteboard', run: () => setVisualsOn(!visualsOn) },
+            { id: 'visuals', label: visualsOn ? 'Close Visuals' : 'Open Visuals', icon: 'tool-shapes', keywords: 'shapes diagram sticky connector whiteboard', run: () => setVisualsOn(!visualsOn) },
             { id: 'mindmap', label: 'Start a mind map', icon: 'tool-mindmap', keywords: 'visuals tree brainstorm', run: () => { setVisualsOn(true); onVisualTool('mindmap') } },
-            { id: 'keys', label: 'Keyboard shortcuts', icon: 'status-info', hint: '?', keywords: 'help keys', run: () => setShortcutsOpen(true) },
+            { id: 'keys', label: 'Keyboard shortcuts', icon: 'nav-keyboard', hint: '?', keywords: 'help keys', run: () => setShortcutsOpen(true) },
           ]}
         />
       )}
@@ -4922,7 +4922,7 @@ function addBlockAnimated(type, x, y) {
                 </button>
                 <button onClick={() => { setDrawMode(false); setShowDrawPanel(false) }}
                   style={{ flex: 1, minWidth: 0, height: 32, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 10px', whiteSpace: 'nowrap', background: raised, border: `1px solid ${border}`, borderRadius: 6, color: text2, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--ds-font-body)' }}>
-                  <Icon name="draw-exit" size={14} /> Exit
+                  <Icon name="action-close" size={14} /> Exit
                 </button>
               </div>
             </div>
@@ -5094,7 +5094,7 @@ function addBlockAnimated(type, x, y) {
           <span>{mindMapMaster ? 'Now click the target block · Esc to finish' : 'Click a source block — or just drag from any block’s port dot'}</span>
           <button onClick={() => { setMindMapMode(false); setMindMapMaster(null) }} aria-label="Exit mind map mode"
             style={{ background: 'none', border: 'none', color: accentText, cursor: 'pointer', padding: 0, lineHeight: 1, opacity: 0.7, display: 'flex' }}>
-            <Icon name="action-delete" size={14} />
+            <Icon name="action-close" size={14} />
           </button>
         </div>
       )}

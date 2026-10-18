@@ -159,7 +159,7 @@ export default function TaskToolbar({ block, blocks, connections, dark, colors, 
             }}
             onMouseEnter={e => { e.currentTarget.style.color = 'var(--ds-red)' }}
             onMouseLeave={e => { e.currentTarget.style.color = text3 }}>
-            <Icon name="action-delete" size={12} />
+            <Icon name="action-close" size={12} />
           </button>
         )}
       </Label>

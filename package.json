@@ -10,7 +10,7 @@
     "test": "node tests/run.mjs",
     "pdf:worker": "node scripts/sync-pdf-worker.mjs",
     "postinstall": "node scripts/sync-pdf-worker.mjs",
-    "icons": "node scripts/build-icons.mjs ../../icons",
+    "icons": "node scripts/build-icons.mjs icons",
     "icons:check": "node scripts/check-icons.mjs",
     "check:geom": "node scripts/check-canvas-geom.mjs",
     "check:hooks": "node scripts/check-hook-order.mjs",

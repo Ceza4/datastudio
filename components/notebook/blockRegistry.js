@@ -234,10 +234,10 @@ export const BLOCK_TYPES = {
      "restore" export-only behaviour and break the ruler. */
   document: {
     label: 'Document',
-    /* Placeholder, per the standing icon pipeline: no document-shaped glyph
-       exists in the 129-icon set yet. `format-word` is the nearest real shape
-       and is at least about documents. Swap when the real one is drawn. */
-    icon: 'format-word',
+    /* A page with lines. `format-word` (the page with a W) stays for .docx
+       files and the Word export, so a Document block no longer looks like an
+       attachment. Icon audit, Oct 2026: icons/ICON_AUDIT.md. */
+    icon: 'block-document',
     order: 13,
     menuGroup: 'write',
     desc: 'Long-form writing on real pages',
@@ -449,7 +449,7 @@ export const BLOCK_TYPES = {
 
   calendar: {
     label: 'Calendar',
-    icon: 'status-info',
+    icon: 'block-calendar',
     order: 8,
     /* Menu metadata. Both menus read these; nothing hand-maintains a
        second copy — see ADD_MENU_GROUPS. */
@@ -494,7 +494,7 @@ export const BLOCK_TYPES = {
 
   database: {
     label: 'Database',
-    icon: 'block-table',
+    icon: 'block-database',
     order: 9,
     /* IN THE SLASH MENU TOO, and this flag is the whole point of the
        unification: `database` used to be hand-typed into SlashMenu.COMMANDS as
@@ -581,7 +581,7 @@ export const BLOCK_TYPES = {
      feature. */
   chat: {
     label: 'Chat',
-    icon: 'share-people',
+    icon: 'block-chat',
     order: 11,
     /* Menu metadata. Both menus read these; nothing hand-maintains a
        second copy — see ADD_MENU_GROUPS. */
@@ -620,7 +620,7 @@ export const BLOCK_TYPES = {
 
   file: {
     label: 'File',
-    icon: 'block-text',
+    icon: 'block-file',
     order: 10,
     /* Menu metadata. Both menus read these; nothing hand-maintains a
        second copy — see ADD_MENU_GROUPS. */
@@ -654,15 +654,10 @@ export const BLOCK_TYPES = {
 
   countdown: {
     label: 'Countdown',
-    /* A CLOCK FACE THAT ALREADY EXISTS, under a name earned by another job.
-       'history-version' is a circle with two hands — see icon-paths.js — which
-       is exactly the picture a countdown wants. The alternative was reusing
-       'status-info', an info circle, which the calendar already borrows and
-       which says nothing about time at all. icon-paths.js is GENERATED and its
-       header says not to hand-edit it, so a purpose-named glyph means an SVG
-       plus `node scripts/build-icons.mjs`. Worth doing eventually; not worth
-       blocking a block type on. */
-    icon: 'history-version',
+    /* An hourglass. It borrowed 'history-version' (a clock) until the icon
+       audit, which put it next to "Version history" in the Document ribbon
+       and the agent's chat list, three jobs for one face. */
+    icon: 'block-countdown',
     /* 12 was the last free slot — document took 13 — and in Organize it lands
        after calendar, which is where the other date-shaped thing already is. */
     order: 12,
@@ -727,7 +722,7 @@ export const BLOCK_TYPES = {
      doc and lib/database.js (stageSummary, moveRow, addActivity). */
   pipeline: {
     label: 'Pipeline',
-    icon: 'block-kanban',
+    icon: 'block-pipeline',
     order: 14,
     menuGroup: 'data',
     desc: 'Stages, cards and value per stage, from a database',
@@ -752,7 +747,7 @@ export const BLOCK_TYPES = {
 
   record: {
     label: 'Record',
-    icon: 'nav-notebook',
+    icon: 'block-record',
     order: 15,
     /* Not in the Add menu: a Record is opened FROM something (a pipeline
        card, the Ctrl/⌘K palette, a relationship chip), never made empty. */
@@ -833,8 +828,8 @@ export const BLOCK_TYPES = {
      on a sheet everybody can edit. See components/notebook/AgentBlock.js. */
   agent: {
     label: 'Agent',
-    /* Placeholder glyph until an agent icon is drawn (npm run icons). */
-    icon: 'tool-simulate',
+    /* The agent's asterisk, the same mark as the Spark avatar in AgentBlock. */
+    icon: 'block-agent',
     order: 18,
     menuGroup: 'ai',
     desc: 'An AI agent that works in this sheet',
@@ -858,7 +853,7 @@ export const BLOCK_TYPES = {
 
   agentchat: {
     label: 'Agent chat',
-    icon: 'tool-simulate',
+    icon: 'block-agent-chat',
     order: 19,
     menuGroup: 'ai',
     desc: 'One conversation with an agent',

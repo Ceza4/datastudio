@@ -377,7 +377,7 @@ export default function BuilderPanel({ colors, dark, notebook, onUseTemplate, on
               color: visualsOn ? accent : text2,
               fontFamily: body, fontSize: 13, textAlign: 'left',
             }}>
-            <Icon name="tool-mindmap" size={14} />
+            <Icon name="tool-shapes" size={14} />
             <span style={{ flex: 1 }}>
               <span style={{ display: 'block' }}>{visualsOn ? 'Close Visuals' : 'Visuals'}</span>
               <span style={{ display: 'block', fontSize: 11, color: text3, marginTop: 2 }}>

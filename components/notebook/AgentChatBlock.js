@@ -26,10 +26,10 @@ const STEP_TOOLS = new Set(['list_blocks', 'read_block', 'create_block', 'move_b
 function stepLine(use, card) {
   const i = use.input || {}
   switch (use.name) {
-    case 'list_blocks': return { icon: 'view-grid', title: 'Read the sheet map' }
+    case 'list_blocks': return { icon: 'view-overview', title: 'Read the sheet map' }
     case 'read_block': return { icon: 'nav-search', title: 'Read a block', detail: i.block_id }
     case 'create_block': return { icon: 'action-add', title: `Created ${i.type || 'a block'}${i.name ? ` “${i.name}”` : ''}`, blockId: card?.blockId }
-    case 'move_block': return { icon: 'size-fit', title: `Moved ${card?.blockName ? `“${card.blockName}”` : 'a block'}`, blockId: i.block_id }
+    case 'move_block': return { icon: 'handle-grip', title: `Moved ${card?.blockName ? `“${card.blockName}”` : 'a block'}`, blockId: i.block_id }
     case 'delete_block': return { icon: 'action-delete', title: card ? `Deleted “${card.blockName}”` : 'Tried to delete a block' }
     default: return { icon: 'status-info', title: use.name }
   }
@@ -362,7 +362,7 @@ function SubRun({ c, run }) {
     <div style={{ border: `1.5px solid ${c.borderDim}`, borderRadius: 10, overflow: 'hidden' }}>
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', border: 'none', background: 'transparent', padding: '8px 10px', cursor: 'pointer', fontFamily: FONT, fontSize: 12, color: c.text2, textAlign: 'left' }}>
-        <Icon name="share-people" size={14} /><span style={{ color: c.text, fontWeight: 500 }}>{run.name}</span><span>· {modelById(run.model).name}</span>
+        <Icon name="block-agent" size={14} /><span style={{ color: c.text, fontWeight: 500 }}>{run.name}</span><span>· {modelById(run.model).name}</span>
         <span style={{ marginLeft: 'auto' }}>{status}</span>
       </button>
       {(open || run.status === 'running') && (
